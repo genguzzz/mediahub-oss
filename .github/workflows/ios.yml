@@ -1,0 +1,121 @@
+name: iOS IPA
+
+# Builds an unsigned IPA on a GitHub-hosted Mac. Signing happens on the phone (全能签).
+#   push to main        → build only (artifact), to catch breakage early
+#   push tag vX.Y.Z      → build + GitHub Release with the IPA
+#   manual run           → build only
+# Publishing to a self-hosted 全能签 source happens outside GitHub: scripts/publish.sh pulls the
+# release IPA and hands it to your source publisher, so no publish token lives in GitHub.
+# Cut a release with: ./scripts/release.sh 0.2.0 "更新说明"
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+    paths: ["app/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # The release script pushes its "Release vX" commit together with the tag; build it once, via the tag.
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'Release v')
+    # AetherEngine requires Xcode 27 (its own CI uses the same preview image).
+    runs-on: xcode-27
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: app
+    env:
+      BUILD_NUMBER: ${{ github.run_number }}
+      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        run: |
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$IS_TAG" = "true" ]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [ "$TAG_VERSION" != "$PKG" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match app/package.json version $PKG"; exit 1
+            fi
+            git fetch --force origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+            NOTES=$(git for-each-ref "refs/tags/$GITHUB_REF_NAME" --format='%(contents:subject)%0a%0a%(contents:body)' | sed '/^-----BEGIN PGP/,$d')
+          else
+            NOTES=$(git log -1 --format=%s)
+          fi
+          echo "VERSION=$PKG" >> "$GITHUB_ENV"
+          { echo "NOTES<<__EOF__"; echo "$NOTES"; echo "__EOF__"; } >> "$GITHUB_ENV"
+          echo "Building $PKG ($BUILD_NUMBER)"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Expo prebuild (generate ios/)
+        run: npx expo prebuild --platform ios --clean --non-interactive
+
+      - name: Pods
+        working-directory: app/ios
+        run: pod install
+
+      - name: Archive (no signing)
+        working-directory: app/ios
+        run: |
+          set -o pipefail
+          xcodebuild -version
+          WS=$(ls -d *.xcworkspace | head -1); SCHEME=${WS%.xcworkspace}
+          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/app.xcarchive" archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tee "$RUNNER_TEMP/xcodebuild.log" | grep -E "error:|\*\* ARCHIVE" || true
+          test -d "$RUNNER_TEMP/app.xcarchive/Products/Applications"
+
+      - name: Package IPA
+        run: |
+          APP=$(ls -d "$RUNNER_TEMP"/app.xcarchive/Products/Applications/*.app | head -1)
+          mkdir -p "$RUNNER_TEMP/ipa/Payload" && cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          PL="$APP/Info.plist"
+          echo "BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PL")" >> "$GITHUB_ENV"
+          echo "APP_NAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PL")" >> "$GITHUB_ENV"
+          echo "MIN_IOS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$PL")" >> "$GITHUB_ENV"
+          PLIST_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PL")
+          test "$PLIST_VERSION" = "$VERSION" || { echo "::error::Info.plist version $PLIST_VERSION != $VERSION"; exit 1; }
+          IPA="$RUNNER_TEMP/MediaHub-$VERSION.ipa"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$IPA" Payload)
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
+          ls -la "$IPA"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediaHub-${{ env.VERSION }}-${{ github.run_number }}
+          path: ${{ env.IPA }}
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: xcodebuild-log-${{ github.run_number }}
+          path: ${{ runner.temp }}/xcodebuild.log
+
+      - name: GitHub Release
+        if: env.IS_TAG == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf "BUNDLE_ID=%s\nAPP_NAME=%s\nMIN_IOS=%s\nBUILD=%s\n" "$BUNDLE_ID" "$APP_NAME" "$MIN_IOS" "$BUILD_NUMBER" > "$RUNNER_TEMP/ipa.env"
+          gh release create "$GITHUB_REF_NAME" "$IPA" "$RUNNER_TEMP/ipa.env" --title "影库 $VERSION" --notes "$NOTES" --verify-tag

@@ -1,0 +1,15 @@
+[Unit]
+Description=影库 (mediahub) backend
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/mediahub/app
+EnvironmentFile=/opt/mediahub/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/local/bin/node src/server.ts
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

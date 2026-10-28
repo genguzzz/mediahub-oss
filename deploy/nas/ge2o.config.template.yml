@@ -1,0 +1,61 @@
+# go-emby2openlist (ge2o) — playback only. nginx (:8920 https) forwards PlaybackInfo/stream/original etc. to ge2o
+# (127.0.0.1:8095 http); ge2o 302s to the 115 CDN. Browse requests go to Emby directly (see nginx-emby.conf).
+# Replace {{OPENLIST_TOKEN}} and {{GE2O_API_SECRET}}; set /opt/ge2o/config.yml to mode 600.
+emby:
+  host: http://emby-host:8096
+  mount-path: ""                 # 库是 strm，不用挂载路径
+  episodes-unplay-prior: false
+  resort-random-items: false
+  proxy-error-strategy: origin   # 302 失败就回源，退化为 Emby 服务端中转
+  images-quality: 90            # 图片已不经过 ge2o（nginx 直连 Emby 并缓存），此项基本无效
+  images-original: false
+  strm:
+    # strm 内容是 http://openlist-host:5244/d/115/...?sign=…（OpenList 内网直链）。
+    # ge2o 在内网带着客户端的完整请求头（含 UA）跟随 OpenList 的 302，拿到 115 CDN 最终地址再 302 给客户端；
+    # OpenList 的 115 驱动按请求 UA 生成链接，所以客户端用同一 UA 访问 CDN 不会 403。
+    internal-redirect-enable: true
+    path-map: []
+  download-strategy: 403
+  local-media-roots: []
+  custom-css-js:
+    debug-mode: false
+
+openlist:
+  host: http://openlist-host:5244
+  token: "{{OPENLIST_TOKEN}}"
+  local-tree-gen:
+    enable: false
+    ffmpeg-enable: false
+    virtual-containers: ""
+    strm-containers: ""
+    music-containers: ""
+    auto-remove-max-count: 6000
+    refresh-interval: 60
+    scan-prefixes: []
+    allow-containers: ""
+    threads: 2
+
+video-preview:
+  enable: false                  # 只对阿里云盘有效
+
+path:
+  emby2openlist: []
+
+cache:
+  enable: true
+  expired: 6h
+
+ssl:
+  enable: false                  # TLS 在 NAS nginx 上做；ge2o 只在容器 8095 提供 http（宿主 127.0.0.1:8095）
+
+log:
+  disable-color: true
+
+ge2o:
+  api-secret: "{{GE2O_API_SECRET}}"
+  web:
+    disable: true
+    disable-emby-btn: true
+  trusted-proxies:
+    - 127.0.0.0/8
+    - 172.16.0.0/12

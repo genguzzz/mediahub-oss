@@ -1,0 +1,24 @@
+{
+  "name": "mediahub-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "影库 backend: one authenticated API over MoviePilot + the Prowlarr115 plugin (search, ingest, 115/qB/OpenList/Emby status), image cache, Expo Updates",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^10.1.0",
+    "fastify": "^5.0.0",
+    "undici": "^7.30.1",
+    "zod": "^4.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}

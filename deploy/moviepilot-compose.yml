@@ -1,0 +1,23 @@
+# MoviePilot V3 with the Prowlarr115 plugin. Put plugin/prowlarr115 + plugin/package.v3.json under ./config/local-plugins/plugins.v3/ (see docs/DEPLOY_PROMPT.md).
+services:
+  moviepilot:
+    image: jxxghp/moviepilot-v3:latest
+    container_name: moviepilot
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - PUID=0
+      - PGID=0
+      - UMASK=022
+      - NGINX_PORT=3000
+      - PORT=3001
+      # 不自动升级：插件 Prowlarr115 包装了 MP 搜索内部函数，升级可能改掉（2026-10-12 升到 v3.1.2 时网页搜索失效）。
+      # 手动升级：docker compose pull && docker compose up -d，然后看日志里插件搜索是否出现「N 个关键词 [...]」
+      - MOVIEPILOT_AUTO_UPDATE=false
+      # 本地插件源（Prowlarr115）
+      - PLUGIN_LOCAL_REPO_PATHS=/config/local-plugins
+    volumes:
+      - ./config:/config
+    ports:
+      - 127.0.0.1:3000:3000
+    mem_limit: 1536m
