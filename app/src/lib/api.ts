@@ -237,6 +237,33 @@ export interface Task {
   eta?: number;
   peers?: number;
   buffer?: { reason: string; since: number; uploaded: number; uploading: string[] };
+  stalled?: number | null;      // epoch s when the plugin flagged it (115 at 0% / missing for 30 min)
+  autoBufferAt?: number | null; // when the plugin switches to the NAS buffer by itself
+  episodes?: number[];          // episodes this release was picked for (subscription numbering)
+  subId?: number | null;
+}
+
+export interface TaskFiles {
+  ok: boolean;
+  status: string;
+  files: { name: string; size: number; progress: number; uploaded?: boolean }[];
+  offline: { status: number; percent: number; size: number; peers: number; rate: number; added: number; updated: number } | null;
+  qb?: { state: string; seeds: number; peers: number; swarmSeeds: number; rate: number; eta: number };
+  note: string;
+  error?: string;
+}
+
+export interface Candidate {
+  id: string; title: string; size: number; seeders: number; magnet: string; source: string; group: string; res: string;
+  episodes: number[]; score: number | null; why: string[]; tags?: string[]; recommended: boolean; current: boolean; blacklisted?: string | null; pubdate?: string;
+}
+
+export interface SubEpisode { ep: number; tmdbEp: number; state: "未播" | "缺" | "已提交" | "下载中" | "卡住" | "入库中" | "失败" | "已取消" | "已入库"; hash: string | null; detail: string }
+export interface SubDetail {
+  ok: boolean; error?: string; warnings: string[];
+  sub: { id: number; name: string; year: string; season: number | null; source: string; mediaId: string; total: number; lack: number | null; state: string; user: string; lastSearch: string; lastUpdate: string; poster: string | null };
+  tmdb: { id: number | null; season: number; offset: number; episodes: number; aired: number };
+  episodes: SubEpisode[];
 }
 
 // key: identifier for /v1/av/cancel; step: offline (115) | scrape (strm written, MDC) | done.

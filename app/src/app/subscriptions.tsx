@@ -59,7 +59,8 @@ export default function SubscriptionsScreen() {
         renderItem={({ item: s }) => {
           const st = STATE[s.state] ?? { text: s.state || "—", color: () => colors.textSoft };
           return (
-            <Card onPress={s.tmdbid ? () => router.push({ pathname: "/media/[type]/[id]", params: { type: s.type, id: String(s.tmdbid) } }) : undefined} style={{ flexDirection: "row", gap: 12 }}>
+            <Card onPress={() => (s.type === "tv" ? router.push({ pathname: "/subscription/[id]", params: { id: String(s.id) } })
+              : s.tmdbid ? router.push({ pathname: "/media/[type]/[id]", params: { type: s.type, id: String(s.tmdbid) } }) : undefined)} style={{ flexDirection: "row", gap: 12 }}>
               <Poster source={img(s.poster)} width={52} />
               <View style={{ flex: 1, gap: 4 }}>
                 <Text style={styles.title} numberOfLines={2}>{s.title}{s.season ? ` · 第 ${s.season} 季` : ""}</Text>

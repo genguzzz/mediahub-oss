@@ -4,8 +4,8 @@ import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanim
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Card, CopyText, ErrorBox, Loading, PillButton, Poster, ProgressBar, Row, Screen, SectionTitle, Sheet, TopBar, confirm, styles, tap, toast, toastError } from "@/components/ui";
-import { api, img, pipelineQuery, type MediaBrief, type Step, type TaskEvent } from "@/lib/api";
+import { Card, CopyText, ErrorBox, Loading, PillButton, Poster, ProgressBar, Row, Screen, SectionTitle, Sheet, Tag, TopBar, confirm, styles, tap, toast, toastError } from "@/components/ui";
+import { api, img, pipelineQuery, type Candidate, type MediaBrief, type Step, type TaskEvent, type TaskFiles } from "@/lib/api";
 import { ago, bytes, clock, dur, eta, pct, speed } from "@/lib/format";
 import { useQuery } from "@/lib/query";
 import { colors } from "@/lib/theme";
@@ -19,7 +19,7 @@ const STEP_HINT: Record<string, string> = {
 };
 
 export default function TaskScreen() {
-  const { hash } = useLocalSearchParams<{ hash: string }>();
+  const { hash, reselect: openReselect } = useLocalSearchParams<{ hash: string; reselect?: string }>();
   const router = useRouter();
   const q = useQuery("pipeline", pipelineQuery, { interval: 8_000, staleMs: 4_000 });
   const t = q.data?.tasks.find((x) => x.hash === hash);
@@ -27,7 +27,12 @@ export default function TaskScreen() {
   const [now, setNow] = useState(() => Date.now());
   const [open, setOpen] = useState<string | null>(null);
   const [retarget, setRetarget] = useState(false);
+  const [reselect, setReselect] = useState(openReselect === "1");
   const running = !!t && t.steps.some((s) => s.state === "active");
+  const moving = !!t && (t.status === "downloading" || t.status === "buffer");
+  // Download detail: 115 state or the NAS buffer's per-file progress; polled while moving.
+  const files = useQuery(hash && t ? `task:files:${hash}` : null, () => api<TaskFiles>(`/v1/pipeline/${hash}/files`, { timeoutMs: 45_000 }), { interval: moving ? 15_000 : undefined, staleMs: 10_000 });
+  const canReselect = !!t?.tmdbid && (moving || t?.failed || ["cancelled", "no-video", "dead", "too-big"].includes(t?.status ?? ""));
   // Event log: refetched with the task while something is still running.
   const ev = useQuery(hash ? `task:ev:${hash}` : null, () => api<{ events: TaskEvent[] }>(`/v1/pipeline/${hash}/events`), { interval: running ? 10_000 : undefined, staleMs: 5_000 });
   const events = ev.data?.events ?? [];
@@ -81,6 +86,30 @@ export default function TaskScreen() {
             </View>
           ) : null}
 
+          {t.stalled && moving ? (
+            <Card style={{ marginTop: 12, borderColor: colors.warning, gap: 8 }}>
+              <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                <Ionicons name="hourglass-outline" size={18} color={colors.warning} />
+                <Text style={[styles.title, { flex: 1 }]}>下载不动</Text>
+                <Text style={styles.faint}>已等 {dur(now / 1000 - t.added)}</Text>
+              </View>
+              <Text style={[styles.body, { color: colors.textSoft }]}>
+                {files.data?.note ? `${files.data.note.replace(/[。.]$/, "")}。` : "115 离线一直是 0%。"}
+                {t.autoBufferAt && t.status === "downloading" ? `若不处理，${clock(t.autoBufferAt, now)} 自动改用 NAS 缓冲。` : ""}
+              </Text>
+            </Card>
+          ) : null}
+
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
+            {t.status === "downloading" ? <PillButton small variant={t.stalled ? "primary" : "soft"} icon="server-outline" label="改用 NAS 缓冲" loading={busy === "改用缓冲"} onPress={() => confirm("改用 NAS 缓冲", "用 NAS 上的 qBittorrent 下载，下完一个文件传一个到 115。", "改用缓冲", () => void retry("buffer", "改用缓冲"))} style={{ flexGrow: 1 }} /> : null}
+            {canReselect ? <PillButton small variant="soft" icon="swap-horizontal" label="换一个资源" onPress={() => { tap(); setReselect(true); }} style={{ flexGrow: 1 }} /> : null}
+            {t.failed || t.status === "buffer" ? <PillButton small variant="soft" icon="cloud-upload-outline" label="重新提交 115 离线" loading={busy === "重新提交"} onPress={() => retry("offline", "重新提交")} style={{ flexGrow: 1 }} /> : null}
+            {t.tmdbid && !moving ? <PillButton small variant="soft" icon="albums-outline" label="在媒体库中查看" onPress={openInLibrary} style={{ flexGrow: 1 }} /> : null}
+            {["done", "uploaded", "superseded", "needs-id"].includes(t.status) ? <PillButton small variant="soft" icon="git-compare-outline" label="改为另一部作品" onPress={() => setRetarget(true)} style={{ flexGrow: 1 }} /> : null}
+            {!moving && !["cancelled", "superseded"].includes(t.status) ? <PillButton small variant="soft" icon="refresh" label="重新生成 strm" loading={busy === "重试入库"} onPress={() => retry("strm", "重试入库")} style={{ flexGrow: 1 }} /> : null}
+            {moving || t.status === "uploaded" ? <PillButton small variant="danger" icon="trash-outline" label="取消任务" loading={busy === "取消"} onPress={() => confirm("取消任务", "会删除 115 离线任务和已下到 115 的文件；缓冲中的连 qB 种子和本地文件一起删。已生成的 strm 不动。", "取消任务", () => void act("取消", () => api(`/v1/pipeline/${hash}/cancel`, { body: {} }), "已取消"), true)} style={{ flexGrow: 1 }} /> : null}
+          </View>
+
           <Summary steps={t.steps} now={now} />
 
           <SectionTitle title="进度" right={<Text style={styles.faint}>点步骤看日志</Text>} />
@@ -110,6 +139,8 @@ export default function TaskScreen() {
             </>
           ) : null}
 
+          <DownloadDetail f={files.data} loading={files.loading && !files.data} error={files.error} now={now} />
+
           <SectionTitle title="详情" />
           <Card>
             <Row label="种子" value={t.name} />
@@ -136,24 +167,15 @@ export default function TaskScreen() {
             {events.map((e, i) => <EventLine key={i} e={e} now={now} showStep />)}
           </Card>
 
-          <SectionTitle title="操作" />
-          <View style={{ gap: 10 }}>
-            {t.tmdbid ? <PillButton variant="soft" icon="albums-outline" label="在媒体库中查看" onPress={openInLibrary} /> : null}
-            {["done", "uploaded", "superseded", "needs-id"].includes(t.status) ? (
-              <PillButton variant="soft" icon="swap-horizontal" label="认错作品了？改为另一部" onPress={() => setRetarget(true)} />
-            ) : null}
-            <PillButton variant="soft" icon="refresh" label="重新生成 strm 并刮削" loading={busy === "重试入库"} onPress={() => retry("strm", "重试入库")} />
-            {t.status === "downloading" ? <PillButton variant="soft" icon="server-outline" label="改用 NAS 缓冲下载" loading={busy === "改用缓冲"} onPress={() => retry("buffer", "改用缓冲")} /> : null}
-            {t.failed || t.status === "buffer" ? <PillButton variant="soft" icon="cloud-upload-outline" label="重新提交 115 离线" loading={busy === "重新提交"} onPress={() => retry("offline", "重新提交")} /> : null}
-            <PillButton
-              variant="danger"
-              icon="trash-outline"
-              label="取消任务"
-              loading={busy === "取消"}
-              onPress={() => confirm("取消任务", "会删除 115 离线任务和已下到 115 的文件；缓冲中的连 qB 种子和本地文件一起删。已生成的 strm 不动。", "取消任务", () => void act("取消", () => api(`/v1/pipeline/${hash}/cancel`, { body: {} }), "已取消"), true)}
-            />
-          </View>
         </ScrollView>
+      ) : null}
+      {t ? (
+        <ReselectSheet
+          visible={reselect}
+          hash={t.hash}
+          onClose={() => setReselect(false)}
+          onDone={(next) => { setReselect(false); void q.refresh(); if (next) router.replace({ pathname: "/task/[hash]", params: { hash: next } }); }}
+        />
       ) : null}
       {t ? (
         <RetargetSheet
@@ -166,6 +188,108 @@ export default function TaskScreen() {
         />
       ) : null}
     </Screen>
+  );
+}
+
+// 115 offline state (no file list until it finishes) or the NAS buffer's files with per-file progress.
+function DownloadDetail({ f, loading, error, now }: { f?: TaskFiles; loading: boolean; error?: string | null; now: number }) {
+  if (loading) return null;
+  if (error) return <Text style={[styles.faint, { marginTop: 12, color: colors.danger }]}>下载细节：{error}</Text>;
+  if (!f?.ok || (!f.offline && !f.qb && !f.files.length && !f.note)) return null;
+  return (
+    <>
+      <SectionTitle title="下载细节" />
+      <Card style={{ gap: 6 }}>
+        {f.offline ? (
+          <>
+            <Row label="115 状态" value={{ 0: "等待", 1: "下载中", 2: "已完成", [-1]: "失败" }[f.offline.status] ?? String(f.offline.status)} />
+            <Row label="进度" value={`${pct(f.offline.percent)}${f.offline.size ? ` · ${bytes(f.offline.size)}` : " · 大小未知"}`} />
+            <Row label="连接" value={`${f.offline.peers ?? 0} 个 peer · ${speed(f.offline.rate || 0)}`} />
+            {f.offline.updated ? <Row label="115 最后更新" value={ago(f.offline.updated, now)} /> : null}
+          </>
+        ) : null}
+        {f.qb ? (
+          <>
+            <Row label="qB 状态" value={f.qb.state} />
+            <Row label="做种 / 下载者" value={`已连 ${f.qb.seeds ?? 0} / ${f.qb.peers ?? 0}（全网做种 ${f.qb.swarmSeeds ?? "?"}）`} />
+            <Row label="速度" value={`${speed(f.qb.rate || 0)}${f.qb.eta && f.qb.eta < 8_640_000 ? ` · 剩 ${eta(f.qb.eta)}` : ""}`} />
+          </>
+        ) : null}
+        {f.note ? <Text style={styles.faint}>{f.note}</Text> : null}
+        {f.files.map((x) => (
+          <View key={x.name} style={{ gap: 3, paddingTop: 6 }}>
+            <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+              <Text style={[styles.body, { flex: 1, fontSize: 13 }]} numberOfLines={2}>{x.name}</Text>
+              {x.uploaded ? <Tag text="已传 115" color={colors.success} /> : null}
+            </View>
+            {x.progress < 100 ? <ProgressBar value={x.progress} /> : null}
+            <Text style={styles.faint}>{[bytes(x.size), x.progress < 100 ? pct(x.progress) : ""].filter(Boolean).join(" · ")}</Text>
+          </View>
+        ))}
+      </Card>
+    </>
+  );
+}
+
+// Pick another release for the same work / season / episodes; the old one is cancelled and blacklisted.
+function ReselectSheet({ visible, hash, onClose, onDone }: { visible: boolean; hash: string; onClose: () => void; onDone: (next?: string) => void }) {
+  const q = useQuery(visible ? `task:cand:${hash}` : null, () => api<{ ok: boolean; error?: string; results: Candidate[]; elapsed?: number }>(`/v1/pipeline/${hash}/candidates`, { timeoutMs: 95_000 }), { staleMs: 120_000 });
+  const [pick, setPick] = useState<Candidate | null>(null);
+  const [busy, setBusy] = useState<"offline" | "buffer" | null>(null);
+  const go = async (buffer: boolean) => {
+    if (!pick) return;
+    setBusy(buffer ? "buffer" : "offline");
+    try {
+      const r = await api<{ ok: boolean; error?: string; hash?: string; warning?: string }>(`/v1/pipeline/${hash}/reselect`, { body: { magnet: pick.magnet, title: pick.title, buffer }, timeoutMs: 125_000 });
+      if (!r.ok) throw new Error(r.error || "提交失败");
+      toast("已换资源", r.warning || (buffer ? "新资源用 NAS 缓冲下载" : "新资源已提交 115 离线"));
+      onDone(r.hash);
+    } catch (e) {
+      toastError("未能换资源", e);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const err = q.error || (q.data && !q.data.ok ? q.data.error : null);
+  const list = q.data?.results ?? [];
+  return (
+    <Sheet
+      visible={visible}
+      onClose={onClose}
+      title="换一个资源"
+      scroll
+      footer={pick ? (
+        <View style={{ gap: 8 }}>
+          <Text style={styles.faint} numberOfLines={2}>已选：{pick.title}</Text>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <PillButton icon="cloud-download-outline" label="115 离线" loading={busy === "offline"} disabled={!!busy} onPress={() => void go(false)} style={{ flex: 1 }} />
+            <PillButton variant="soft" icon="server-outline" label="NAS 缓冲" loading={busy === "buffer"} disabled={!!busy} onPress={() => void go(true)} style={{ flex: 1 }} />
+          </View>
+        </View>
+      ) : undefined}
+    >
+      <Text style={[styles.faint, { marginBottom: 8 }]}>按这一集重新搜索并打分。换掉后，旧资源会取消（删除 115 上已下的部分）并拉黑，订阅不会再选它。</Text>
+      {q.loading && !q.data ? <Loading text="正在搜索，约 5–40 秒" /> : null}
+      {err ? <Text style={[styles.faint, { color: colors.danger }]}>{err}</Text> : null}
+      {q.data?.ok && !list.length ? <Text style={styles.faint}>没有找到其他资源</Text> : null}
+      {list.map((c) => {
+        const on = pick?.id === c.id;
+        return (
+          <Pressable key={c.id} disabled={c.current} onPress={() => { tap(); setPick(on ? null : c); }}
+            style={({ pressed }) => ({ paddingVertical: 10, paddingHorizontal: 10, marginBottom: 6, borderRadius: 12, borderWidth: 1,
+              borderColor: on ? colors.primary : colors.border, backgroundColor: on ? colors.primary + "14" : colors.card, opacity: pressed || c.current ? 0.6 : 1 })}>
+            <Text style={[styles.body, { fontSize: 13.5 }]} numberOfLines={3}>{c.title}</Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 6, alignItems: "center" }}>
+              {c.current ? <Tag text="当前" color={colors.textSoft} solid /> : null}
+              {c.recommended ? <Tag text="推荐" color={colors.primary} solid /> : null}
+              {c.blacklisted ? <Tag text={`已拉黑：${c.blacklisted}`} color={colors.danger} /> : null}
+              {(c.tags ?? []).map((x) => <Tag key={x} text={x} color={colors.textSoft} />)}
+              <Text style={styles.faint}>{[bytes(c.size), `做种 ${c.seeders}`, c.score !== null ? `${c.score} 分` : "", c.source].filter(Boolean).join(" · ")}</Text>
+            </View>
+          </Pressable>
+        );
+      })}
+    </Sheet>
   );
 }
 

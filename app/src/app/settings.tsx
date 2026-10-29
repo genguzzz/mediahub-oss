@@ -192,6 +192,7 @@ export default function SettingsScreen() {
             <PillButton small variant="soft" icon="document-text-outline" label="上传日志" loading={busy === "log"} onPress={upload} style={{ flex: 1 }} />
           </View>
           <PillButton small variant="soft" icon="construct-outline" label="能力自检" onPress={() => router.push("/diagnostics")} style={{ marginTop: 10 }} />
+          <PillButton small variant="soft" icon="flag-outline" label="问题反馈记录" onPress={() => router.push("/feedback")} style={{ marginTop: 10 }} />
         </Card>
       </ScrollView>
     </Screen>

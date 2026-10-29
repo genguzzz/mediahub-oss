@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useRouter } from "expo-router";
 import { FlatList, ScrollView, Text, View } from "react-native";
 import { Card, CopyText, Chip, ChipRow, EmptyState, ErrorBox, Loading, PillButton, ProgressBar, Row, Segmented, Sheet, TAB_BAR_SPACE, Tag, confirm, styles, toast, toastError, Pull } from "@/components/ui";
 import { api, type OfflineTask, type OlTask, type OpenListTasks, type QbTorrent } from "@/lib/api";
@@ -32,6 +33,7 @@ const C115: Record<number, { text: string; color: () => string }> = {
 };
 
 function Offline() {
+  const router = useRouter();
   const q = useQuery("offline", () => api<{ tasks: OfflineTask[] }>("/v1/offline", { timeoutMs: 45_000 }), { interval: 15_000 });
   const [filter, setFilter] = useState<"all" | "active" | "done" | "failed">("active");
   const [now] = useState(() => Date.now());
@@ -69,19 +71,19 @@ function Offline() {
       renderItem={({ item: t }) => {
         const st = C115[t.status] ?? { text: String(t.status), color: () => colors.textSoft };
         return (
-          <Card onLongPress={() => del(t)}>
+          <Card onPress={t.ours ? () => router.push({ pathname: "/task/[hash]", params: { hash: t.hash } }) : undefined} onLongPress={() => del(t)}>
             <Text style={styles.title} numberOfLines={2}>{t.name}</Text>
             <View style={{ flexDirection: "row", gap: 6, marginTop: 6 }}>
               <Tag text={st.text} color={st.color()} />
               {t.ours ? <Tag text="入库任务" color={colors.primary} /> : null}
             </View>
             {t.status !== 2 ? <View style={{ marginTop: 8 }}><ProgressBar value={t.percent} color={st.color()} /></View> : null}
-            <Text style={[styles.faint, { marginTop: 6 }]}>{[pct(t.percent), bytes(t.size), t.rate ? speed(t.rate) : "", `添加于 ${ago(t.added, now)}`].filter(Boolean).join(" · ")}</Text>
+            <Text style={[styles.faint, { marginTop: 6 }]}>{[pct(t.percent), t.size ? bytes(t.size) : "大小未知", t.rate ? speed(t.rate) : "", t.status === 1 ? `${t.peers ?? 0} 个 peer` : "", `添加于 ${ago(t.added, now)}`].filter(Boolean).join(" · ")}</Text>
             {t.dir ? <Text style={[styles.faint, { marginTop: 2 }]} numberOfLines={1}>{t.dir}</Text> : null}
           </Card>
         );
       }}
-      ListFooterComponent={q.data ? <Text style={[styles.faint, { textAlign: "center", marginTop: 12 }]}>长按任务可删除</Text> : undefined}
+      ListFooterComponent={q.data ? <Text style={[styles.faint, { textAlign: "center", marginTop: 12 }]}>入库任务点开看进度和换资源；长按可删除</Text> : undefined}
     />
   );
 }

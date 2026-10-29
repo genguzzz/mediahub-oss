@@ -100,6 +100,14 @@ ${a.key}`, ok: "删除" }, run: cancel(true) });
   const taskActions = (t: Task) => {
     const active = ["downloading", "buffer", "uploaded"].includes(t.status) && !(t.status === "uploaded" && t.emby);
     const actions: SheetAction[] = [{ label: "查看详情", icon: "information-circle-outline", run: () => router.push({ pathname: "/task/[hash]", params: { hash: t.hash } }) }];
+    if (t.status === "downloading") {
+      actions.push({ label: "改用 NAS 缓冲", icon: "server-outline", note: t.stalled ? "115 离线下载不动" : "用 NAS 上的 qBittorrent 下载，下完一个文件传一个到 115",
+        run: async () => { await api(`/v1/pipeline/${t.hash}/retry`, { body: { mode: "buffer" } }); done("已改用 NAS 缓冲"); } });
+    }
+    if (t.tmdbid && (active || t.failed)) {
+      actions.push({ label: "换一个资源", icon: "swap-horizontal", note: "在任务详情里挑选",
+        run: () => router.push({ pathname: "/task/[hash]", params: { hash: t.hash, reselect: "1" } }) });
+    }
     if (active) {
       actions.push({ label: "取消任务", icon: "close-circle-outline", destructive: true,
         confirm: { title: "取消任务", message: "会删除 115 离线任务和已下到 115 的文件；缓冲中的连 qB 种子和本地文件一起删。已生成的 strm 不动。", ok: "取消任务" },
@@ -187,6 +195,7 @@ function TaskCard({ t, now, onPress, onLongPress }: { t: Task; now: number; onPr
       <Text style={[styles.faint, { marginTop: 3 }]} numberOfLines={1}>{t.name || t.dir}</Text>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 8 }}>
         <Tag text={t.stage} color={color} />
+        {t.stalled && moving ? <Tag text="下载不动" color={colors.warning} solid /> : null}
         {t.buffer ? <Tag text="NAS 缓冲" color={colors.warning} /> : null}
         {t.strm ? <Tag text={`${t.strm} 个 strm`} color={colors.textSoft} /> : null}
       </View>

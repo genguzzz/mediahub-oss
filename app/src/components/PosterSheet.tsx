@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as WebBrowser from "expo-web-browser";
 import { CastPanel } from "./CastPanel";
+import { FeedbackForm } from "./FeedbackForm";
 import { Img, MiniTag, type CardData } from "./media";
 import { Sheet, styles, tap, toast, toastError } from "./ui";
 import { embyApi, playbackPlan, type PlaybackPlan } from "@/lib/emby";
@@ -18,7 +19,7 @@ interface Tile { label: string; icon: keyof typeof Ionicons.glyphMap; run: () =>
 export function PosterSheetHost() {
   const c = usePeek();
   const [shown, setShown] = useState<CardData | null>(null);
-  const [mode, setMode] = useState<"menu" | "cast">("menu");
+  const [mode, setMode] = useState<"menu" | "cast" | "feedback">("menu");
   const [plan, setPlan] = useState<PlaybackPlan | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [scan, setScan] = useState(false);
@@ -59,6 +60,7 @@ export function PosterSheetHost() {
     });
   }
   for (const a of card.actions ?? []) tiles.push({ label: a.label, icon: a.icon ?? "ellipse-outline", run: a.run, destructive: a.destructive });
+  tiles.push({ label: "反馈问题", icon: "flag-outline", keep: true, run: () => setMode("feedback") });
   tiles.push({ label: "复制标题", icon: "copy-outline", run: async () => { await Clipboard.setStringAsync(card.title); toast("已复制标题"); } });
   tiles.push({ label: "分享", icon: "share-outline", run: () => { void Share.share({ message: card.link ? `${card.title}\n${card.link.url}` : card.title }); } });
   if (card.link) {
@@ -98,9 +100,13 @@ export function PosterSheetHost() {
           </View>
         </View>
       </View>
-      {card.overview ? <Text style={{ fontSize: 13, lineHeight: 19, color: colors.textSoft, marginTop: 14 }} numberOfLines={mode === "cast" ? 2 : 6}>{card.overview}</Text> : null}
+      {card.overview ? <Text style={{ fontSize: 13, lineHeight: 19, color: colors.textSoft, marginTop: 14 }} numberOfLines={mode === "menu" ? 6 : 2}>{card.overview}</Text> : null}
 
-      {mode === "cast" ? (
+      {mode === "feedback" ? (
+        <View style={{ marginTop: 14 }}>
+          <FeedbackForm item={{ embyId: card.embyId, title: card.title, subtitle: card.subtitle, key: card.key }} onDone={close} onCancel={() => setMode("menu")} />
+        </View>
+      ) : mode === "cast" ? (
         <View style={{ marginTop: 14 }}>
           <Pressable onPress={() => setMode("menu")} style={{ flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 8 }}>
             <Ionicons name="chevron-back" size={16} color={colors.primary} />
