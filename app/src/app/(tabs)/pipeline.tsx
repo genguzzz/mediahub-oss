@@ -12,7 +12,7 @@ import { useSettings } from "@/lib/settings";
 import { colors } from "@/lib/theme";
 
 type Filter = "active" | "all" | "failed";
-type Kind = "all" | "media" | "av";
+type Kind = "all" | "media" | "av" | "hentai";
 const ms = (t: number | string | null | undefined) => (typeof t === "number" ? (t > 1e12 ? t : t * 1000) : t ? Date.parse(t.includes("T") || t.includes("Z") ? t : t.replace(" ", "T") + "+08:00") || 0 : 0);
 
 export default function PipelineTab() {
@@ -36,10 +36,12 @@ export default function PipelineTab() {
   const rows = useMemo(() => {
     const tasks = q.data?.tasks ?? [];
     const pick = (t: Task) =>
-      filter === "all" ? true : filter === "failed" ? t.failed : ["downloading", "buffer", "uploaded"].includes(t.status) || (t.status === "done" && !t.emby);
+      filter === "all" ? true : filter === "failed" ? t.failed : ["downloading", "buffer", "uploaded", "scraping"].includes(t.status) || (t.status === "done" && !t.emby);
     const adult = (q.data?.adult ?? []).filter((a) => (filter === "all" ? true : filter === "failed" ? a.failed : !a.done || Date.now() - ms(a.at) < 6 * 3600_000));
     const out: (Task | AdultRow)[] = [];
-    if (kind !== "av") out.push(...tasks.filter(pick));
+    // 影视 / AV / 里番 are tasks of the same pipeline; adult ones only with 成人内容 on
+    const cat = (t: Task) => t.category ?? "media";
+    out.push(...tasks.filter(pick).filter((t) => (cat(t) === "media" ? kind !== "av" && kind !== "hentai" : showAdult && (kind === "all" || kind === cat(t)))));
     if (showAdult && kind !== "media") out.push(...adult);
     const at = (x: Task | AdultRow) => ms(x.kind === "media" ? x.added : x.at);
     return out.sort((a, b) => at(b) - at(a));
@@ -49,7 +51,7 @@ export default function PipelineTab() {
   const counts = useMemo(() => {
     const t = q.data?.tasks ?? [];
     return {
-      active: t.filter((x) => ["downloading", "buffer", "uploaded"].includes(x.status) || (x.status === "done" && !x.emby)).length,
+      active: t.filter((x) => ["downloading", "buffer", "uploaded", "scraping"].includes(x.status) || (x.status === "done" && !x.emby)).length,
       failed: t.filter((x) => x.failed).length,
     };
   }, [q.data]);
@@ -104,7 +106,7 @@ ${a.key}`, ok: "删除" }, run: cancel(true) });
       actions.push({ label: "改用 NAS 缓冲", icon: "server-outline", note: t.stalled ? "115 离线下载不动" : "用 NAS 上的 qBittorrent 下载，下完一个文件传一个到 115",
         run: async () => { await api(`/v1/pipeline/${t.hash}/retry`, { body: { mode: "buffer" } }); done("已改用 NAS 缓冲"); } });
     }
-    if (t.tmdbid && (active || t.failed)) {
+    if ((t.tmdbid || (t.category && t.category !== "media")) && (active || t.failed)) {
       actions.push({ label: "换一个资源", icon: "swap-horizontal", note: "在任务详情里挑选",
         run: () => router.push({ pathname: "/task/[hash]", params: { hash: t.hash, reselect: "1" } }) });
     }
@@ -145,6 +147,7 @@ ${a.key}`, ok: "删除" }, run: cancel(true) });
           <>
             <Chip label="影视" icon="film-outline" active={kind === "media"} onPress={() => setKind(kind === "media" ? "all" : "media")} />
             <Chip label="AV" icon="flame-outline" active={kind === "av"} onPress={() => setKind(kind === "av" ? "all" : "av")} />
+            <Chip label="里番" icon="sparkles-outline" active={kind === "hentai"} onPress={() => setKind(kind === "hentai" ? "all" : "hentai")} />
           </>
         ) : null}
         {filter === "all" && ended.length ? <Chip label="清除已结束" icon="trash-outline" onPress={clearEnded} /> : null}
@@ -189,7 +192,7 @@ function TaskCard({ t, now, onPress, onLongPress }: { t: Task; now: number; onPr
     <Card onPress={onPress} onLongPress={() => { tap(); onLongPress(); }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Text style={[styles.title, { flex: 1 }]} numberOfLines={1}>{t.title}{t.type === "tv" && t.season ? ` · 第 ${t.season} 季` : ""}</Text>
-        <Tag text="影视" color={colors.primary} />
+        <Tag text={t.category === "av" ? "AV" : t.category === "hentai" ? "里番" : "影视"} color={t.category && t.category !== "media" ? colors.warning : colors.primary} />
         <Text style={styles.faint}>{ago(t.added, now)}</Text>
       </View>
       <Text style={[styles.faint, { marginTop: 3 }]} numberOfLines={1}>{t.name || t.dir}</Text>

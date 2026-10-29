@@ -10,6 +10,11 @@ import { ago, bytes, clock, dur, eta, pct, speed } from "@/lib/format";
 import { useQuery } from "@/lib/query";
 import { colors } from "@/lib/theme";
 
+// 影视 / AV / 里番 share the steps; only the ingest and scrape steps differ.
+const STEP_HINT_ADULT: Record<string, Record<string, string>> = {
+  av: { strm: "把 115 上的视频写成 <番号>.strm 放进 MDC 收件箱", scrape: "MDC 刮削（封面、演员、NFO），再把 115 原片整理到 AV/<演员>/<番号>/", finish: "已整理进 AV 库" },
+  hentai: { strm: "按 Bangumi 中文名目录生成 strm（<名> [bangumiid=N]/Season 1）", scrape: "Emby 的 Bangumi 插件刮削，确认有 Bangumi ID 和海报", finish: "已入里番库" },
+};
 const STEP_HINT: Record<string, string> = {
   submit: "磁力已交给插件，按 TMDb 识别结果算好 115 目录",
   download: "115 离线下载；提交失败、6 小时 0% 或任务丢失时改用 NAS qBittorrent 缓冲，下完一个文件传一个到 115",
@@ -32,7 +37,8 @@ export default function TaskScreen() {
   const moving = !!t && (t.status === "downloading" || t.status === "buffer");
   // Download detail: 115 state or the NAS buffer's per-file progress; polled while moving.
   const files = useQuery(hash && t ? `task:files:${hash}` : null, () => api<TaskFiles>(`/v1/pipeline/${hash}/files`, { timeoutMs: 45_000 }), { interval: moving ? 15_000 : undefined, staleMs: 10_000 });
-  const canReselect = !!t?.tmdbid && (moving || t?.failed || ["cancelled", "no-video", "dead", "too-big"].includes(t?.status ?? ""));
+  const adultTask = !!t?.category && t.category !== "media";
+  const canReselect = (!!t?.tmdbid || adultTask) && (moving || t?.failed || ["cancelled", "no-video", "dead", "too-big", "scrape-failed"].includes(t?.status ?? ""));
   // Event log: refetched with the task while something is still running.
   const ev = useQuery(hash ? `task:ev:${hash}` : null, () => api<{ events: TaskEvent[] }>(`/v1/pipeline/${hash}/events`), { interval: running ? 10_000 : undefined, staleMs: 5_000 });
   const events = ev.data?.events ?? [];
@@ -123,6 +129,7 @@ export default function TaskScreen() {
                 open={open === s.key}
                 events={events.filter((e) => e.group === s.key)}
                 onPress={() => { tap(); setOpen(open === s.key ? null : s.key); }}
+                hint={(t.category ? STEP_HINT_ADULT[t.category]?.[s.key] : undefined) ?? STEP_HINT[s.key]}
               />
             ))}
           </Card>
@@ -331,7 +338,7 @@ function EventLine({ e, now, showStep }: { e: TaskEvent; now: number; showStep?:
   );
 }
 
-function StepRow({ s, last, now, open, events, onPress }: { s: Step; last: boolean; now: number; open: boolean; events: TaskEvent[]; onPress: () => void }) {
+function StepRow({ s, last, now, open, events, onPress, hint }: { s: Step; last: boolean; now: number; open: boolean; events: TaskEvent[]; onPress: () => void; hint: string }) {
   const color = { done: colors.success, active: colors.primary, pending: colors.textFaint, error: colors.danger, skipped: colors.textFaint }[s.state];
   const icon = { done: "checkmark-circle", active: "ellipse", pending: "ellipse-outline", error: "close-circle", skipped: "remove-circle-outline" }[s.state] as keyof typeof Ionicons.glyphMap;
   const span = s.start ? (s.end ?? (s.state === "active" ? now / 1000 : null)) : null;
@@ -359,10 +366,10 @@ function StepRow({ s, last, now, open, events, onPress }: { s: Step; last: boole
           </View>
           {time ? <Text style={{ fontSize: 12, color: colors.textFaint, marginTop: 2, fontVariant: ["tabular-nums"] }}>{time}{s.events ? ` · ${s.events} 条日志` : ""}</Text> : null}
           {!open ? (
-            <Text style={[styles.faint, { marginTop: 2, lineHeight: 17 }]} numberOfLines={2}>{s.last || STEP_HINT[s.key]}</Text>
+            <Text style={[styles.faint, { marginTop: 2, lineHeight: 17 }]} numberOfLines={2}>{s.last || hint}</Text>
           ) : (
             <Animated.View entering={FadeIn.duration(180)} exiting={FadeOut.duration(120)} style={{ marginTop: 6, padding: 10, borderRadius: 10, backgroundColor: colors.cardMuted }}>
-              <Text style={[styles.faint, { marginBottom: 4 }]}>{STEP_HINT[s.key]}</Text>
+              <Text style={[styles.faint, { marginBottom: 4 }]}>{hint}</Text>
               {events.length ? events.map((e, i) => <EventLine key={i} e={e} now={now} />) : <Text style={styles.faint}>这一步没有日志</Text>}
             </Animated.View>
           )}

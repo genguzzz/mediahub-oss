@@ -224,6 +224,111 @@ class Adult:
                     break
             return False, err
 
+    def submit(self, kind: str, remote_dir: str, link: str, title: str, **meta: Any) -> Tuple[bool, str]:
+        """AV / 里番 也进流水线任务表（和影视同一套：115 离线、卡住提示、NAS 缓冲、换资源、黑名单、事件日志），
+        115 下完后由 Pipeline 调回 finish()。"""
+        ok, h, err = self.p.submit(link, remote_dir, title, meta=dict(meta, kind=kind))
+        return ok, err
+
+    def finish(self, kind: str, t: dict, scope: Optional[str], h: str) -> List[str]:
+        """流水线回调：本任务在 115 上的文件已就绪。AV → 写进 MDC 收件箱；里番 → 按 Bangumi 目录生成 strm。
+        返回生成的 strm（OpenList 路径）；空 = 还没看到视频（Pipeline 会再等几轮，最后判 no-video）。"""
+        d = t["dir"]
+        files: List[tuple] = []
+        if scope:
+            hit = self.ol.get(f"{d}/{scope}")
+            if not hit:
+                alt = re.sub(r'[\\/:*?"<>|]', "_", scope)
+                hit = self.ol.get(f"{d}/{alt}") if alt != scope else None
+                scope = alt if hit else scope
+            if hit:
+                files = list(self.ol.walk(f"{d}/{scope}")) if hit.get("is_dir") else [(f"{d}/{scope}", hit)]
+        vids = [(r, it) for r, it in files if r.lower().endswith(VIDEO) and not rejected(r)]
+        if not vids:
+            return []
+        biggest = max(it.get("size", 0) for _, it in vids)
+        floor = min(MIN_AV if kind == "av" else MIN_HENTAI, 0.5 * biggest)
+        vids = sorted([v for v in vids if v[1].get("size", 0) >= floor], key=lambda v: -v[1].get("size", 0))
+        meta = t.get("meta") or {}
+        if kind == "av":
+            return self._finish_av(vids[0][0], meta, h)
+        return self._finish_hentai(vids, meta, t)
+
+    def _finish_av(self, remote: str, meta: dict, h: str) -> List[str]:
+        base = remote.rsplit("/", 1)[1].rsplit(".", 1)[0]
+        code = meta.get("code") or av_code(base)
+        name = (code + ("-C" if CN_SUB.search(base) else "") if code else re.sub(r"^.*@", "", base)) + ".strm"
+        with self._state_lock:
+            av = self.get_data("av") or {}
+            st = av.setdefault("stubbed", {})
+            if remote not in st:
+                if any(v.get("name") == name for v in st.values()):
+                    name = f"{name[:-5]}-{len(st)}.strm"
+                self.p._write_strm(f"{self.av_dl}/{name}", remote)
+                st[remote] = {"name": name, "code": code, "at": now(), "status": "new", "hash": h}
+                av.setdefault("submitted", {}).pop(code or "", None)
+                self.save_data("av", av)
+                self.log(f"AV 115 完成 → {name}")
+            else:
+                st[remote]["hash"] = h
+                self.save_data("av", av)
+                name = st[remote]["name"]
+        return [f"{self.av_dl}/{name}"]
+
+    def _finish_hentai(self, vids: List[tuple], meta: dict, t: dict) -> List[str]:
+        series = meta.get("series") or meta.get("title") or ""
+        with self._state_lock:
+            h = self._h()
+            downloaded = h.setdefault("downloaded", {})
+            key = next((k for k in downloaded if norm(k) == norm(series)), series)
+            entry = self.new_entry(downloaded, key, series)
+            lib = self.ensure_lib(entry, series)
+            season = int(entry.get("season") or 1)
+            have = self.existing_eps(lib)
+            title = re.sub(r"\s*\[bangumiid=\d+\]$", "", lib).rsplit(" (", 1)[0]
+            made: List[str] = []
+            for remote, _ in vids:
+                ep = file_ep(remote.rsplit("/", 1)[1]) or (int(meta["ep"]) if meta.get("ep") and len(vids) == 1 else None)
+                if ep is None and len(vids) == 1:
+                    ep = 1
+                if ep is None or ep in have:
+                    continue
+                sdir = f"{self.h_lib}/{lib}/Season {season}"
+                self.ol.mkdir(sdir)
+                stub = f"{sdir}/{title} S{season:02d}E{ep:02d}.strm"
+                self.p._write_strm(stub, remote)
+                have.add(ep)
+                made.append(stub)
+                entry.setdefault("episodes", {}).setdefault(str(ep), {"hash": "", "title": (t.get("name") or "")[:120], "added": now()})
+                self.log(f"里番 strm {lib} S{season:02d}E{ep:02d}")
+            entry["scanned"] = now()
+            cur = self._h()
+            cur.setdefault("downloaded", {})[self._key_of(downloaded, entry)] = entry
+            self._h_save(cur)
+        if made:
+            t.setdefault("meta", {})["lib"] = lib
+            try:
+                self.emby.updated([f"{self.emby_root}/里番/{lib}"])
+            except Exception:  # noqa: BLE001
+                pass
+            self.notify("🔞 里番入库", f"{lib}：{len(made)} 集，等待 Bangumi 刮削")
+        return made
+
+    def hentai_emby_check(self, t: dict) -> None:
+        """里番任务的「刮削」一步：Emby 里这部的条目有 Bangumi ID 和海报就算完成；3 小时没有就放弃自动确认。"""
+        lib = (t.get("meta") or {}).get("lib")
+        it = None
+        if lib:
+            items = (self.emby.get("/Items", ParentId=self.hentai_lib_id(), Recursive="true", IncludeItemTypes="Series",
+                                   Fields="Path,ProviderIds") or {}).get("Items") or []
+            it = next((i for i in items if (i.get("Path") or "").rstrip("/").endswith(f"/里番/{lib}")), None)
+        if it and (it.get("ProviderIds") or {}).get("Bangumi") and (it.get("ImageTags") or {}).get("Primary"):
+            t["emby"] = now()
+            self.p.mark(t, "emby")
+        elif now() - (t.get("done") or now()) > 3 * 3600:
+            t["emby"] = -now()
+            self.notify("⚠️ 里番 " + (lib or t["dir"].rsplit("/", 2)[-2]), "入库 3 小时 Emby 还没按 Bangumi 刮削：在 App 里反馈或用 mpctl hentai fix")
+
     def sukebei(self, q: str = "", cat: str = CAT_ANIME) -> List[dict]:
         """sukebei RSS（直连，全局串行 + 429 退避）。返回 [{title, hash, size, seeders, cat}]。"""
         url = f"{SUKEBEI}&c={cat}" + (f"&q={urllib.parse.quote(q)}" if q else "")
@@ -312,7 +417,7 @@ class Adult:
             if dry_run:
                 out.append(dict(r, ok=True, dry_run=True))
                 continue
-            ok, err = self.offline(self.remote_dl, link)
+            ok, err = self.submit("av", self.remote_dl, link, r.get("title") or code or raw[:80], title=code or "AV", code=code)
             out.append(dict(r, ok=ok, **({"error": err} if err else {})))
             if ok:
                 with self._state_lock:
@@ -330,7 +435,8 @@ class Adult:
             return
         for cat in ("115av", "av"):
             for t in self.p.qb.get("/api/v2/torrents/info", {"category": cat}) or []:
-                ok, err = self.offline(self.remote_dl, t.get("magnet_uri") or magnet(t["hash"]))
+                ok, err = self.submit("av", self.remote_dl, t.get("magnet_uri") or magnet(t["hash"]), t.get("name") or "",
+                                      title=av_code(t.get("name") or "") or "AV", code=av_code(t.get("name") or ""))
                 if ok:
                     self.p.qb.post("/api/v2/torrents/delete", {"hashes": t["hash"], "deleteFiles": "true"})
                     self.log(f"qB {cat} → 115：{t.get('name', '')[:60]}")
@@ -360,9 +466,14 @@ class Adult:
         new: List[str] = []
         try:
             # 1. 115 下载目录里新完成的视频 -> AV/download/<番号>.strm
+            # 流水线任务自己的文件由 finish() 接手（还在下载/缓冲的也别抢）；这里只兜底流水线外落进来的文件
+            owned = {t.get("name") for t in (self.p.load() or {}).values()
+                     if (t.get("meta") or {}).get("kind") == "av" and t.get("name")}
             if self.ol.get(self.remote_dl):
                 for remote, it in self.ol.walk(self.remote_dl):
                     if remote in st or not remote.lower().endswith(VIDEO) or it.get("size", 0) < MIN_AV:
+                        continue
+                    if remote[len(self.remote_dl) + 1:].split("/", 1)[0] in owned:
                         continue
                     base = remote.rsplit("/", 1)[1].rsplit(".", 1)[0]
                     code = av_code(base)
@@ -384,6 +495,7 @@ class Adult:
                 for v in st.values():
                     if v["name"] in todo and v["name"] not in inbox:
                         v.update(status="missing", err="收件箱里没有这个 strm（可能已整理、改名或被删）")
+                        self._task_update(v.get("hash"), "scrape-failed", "MDC 收件箱里没有这个 strm")
                         self.log(f"AV {v['name']} 不在收件箱，标为 missing")
                         changed = True
                 todo = sorted({n for n in todo if n in inbox})
@@ -415,14 +527,16 @@ class Adult:
                         try:
                             self._organise(remote, v, t)
                             st.pop(remote)
-                            av.setdefault("done", []).append({"code": v.get("code"), "target": t["target_path"], "at": now()})
+                            av.setdefault("done", []).append({"code": v.get("code"), "target": t["target_path"], "at": now(), "hash": v.get("hash")})
                             av["done"] = av["done"][-200:]
+                            self._task_update(v.get("hash"), "done", f"MDC 刮削完成，已整理到 {t['target_path'].split('/library/', 1)[-1]}")
                         except ClientError as e:
                             v["err"] = f"整理失败：{e}"[:200]
                             self.log(f"AV 整理失败 {v['name']}：{e}")
                         changed = True
                     elif t.get("status") == -1 and v.get("err") != t.get("error_message"):
                         v.update(status="failed", err=t.get("error_message"))
+                        self._task_update(v.get("hash"), "scrape-failed", f"MDC 刮削失败：{t.get('error_message')}")
                         self.notify("⚠️ AV 刮削失败", f"{v['name']}：{t.get('error_message')}（改名后 /av/retry，或在 MDC 网页手动处理）")
                         changed = True
         finally:
@@ -433,6 +547,19 @@ class Adult:
                     cur["stubbed"], cur["done"] = st, av.get("done") or cur.get("done") or []
                     self._prune_submitted(cur, new_remotes=[r for r, v in st.items() if v["name"] in new])
                     self.save_data("av", cur)
+
+    def _task_update(self, h: Optional[str], status: str, msg: str) -> None:
+        """AV 的 MDC 结果写回流水线任务（App 入库面板看到的是同一个任务）。"""
+        if not h:
+            return
+
+        def fn(t: dict) -> None:
+            t["status"] = status
+            if status == "done":
+                t["emby"] = now()
+                self.p.mark(t, "emby")
+        self.p.mutate(h, fn)
+        self.p.event(h, "emby", msg, "info" if status == "done" else "error")
 
     def _prune_submitted(self, av: dict, new_remotes: Optional[List[str]] = None) -> None:
         """submitted 只表示「115 离线中」：已生成 strm / 已入库的去掉；磁力提交的按 115 任务名对上新文件再去掉；超过 14 天的也去掉。"""
@@ -733,7 +860,8 @@ class Adult:
             lib = self.ensure_lib(entry, series)
             if str(ep) in entry["episodes"] or ep in self.existing_eps(lib):
                 continue
-            ok, err = self.offline(f"{self.remote_h}/{entry['folder']}/Season {entry['season']}", magnet(r["hash"]))
+            ok, err = self.submit("hentai", f"{self.remote_h}/{entry['folder']}/Season {entry['season']}", magnet(r["hash"]), r["title"],
+                                  title=lib, series=key, ep=ep)
             self.log(f"里番 RSS {lib} E{ep:02d} [{r['seeders']}S {r['size'] / 1e6:.0f}MB] {'OK' if ok else 'FAIL ' + err}")
             if ok:
                 entry["episodes"][str(ep)] = {"hash": r["hash"], "title": r["title"][:120], "added": now()}
@@ -806,7 +934,7 @@ class Adult:
             for ep, ihash, rtitle, size, seeders in results:
                 if ihash in seen or str(ep) in entry["episodes"] or (ep > 0 and ep in have):
                     continue
-                ok, err = self.offline(remote_dir, magnet(ihash))
+                ok, err = self.submit("hentai", remote_dir, magnet(ihash), rtitle, title=lib, series=key, ep=ep if ep > 0 else None)
                 msg = f"{lib} {'E%02d' % ep if ep > 0 else '合集'} [{seeders}S {size / 1e6:.0f}MB] {'OK' if ok else 'FAIL ' + err}"
                 self.log("里番搜索 " + msg)
                 report.append(msg)
@@ -936,7 +1064,8 @@ class Adult:
             key = self._key_of(downloaded, entry)
             lib = self.ensure_lib(entry, series)
             ep = ep or file_ep(title) or rep or 1
-            ok, err = self.offline(f"{self.remote_h}/{entry['folder']}/Season {entry['season']}", link)
+            ok, err = self.submit("hentai", f"{self.remote_h}/{entry['folder']}/Season {entry['season']}", link, title,
+                                  title=lib, series=key, ep=ep)
             if ok:
                 entry["episodes"][str(ep)] = {"hash": (re.search(r"btih:([0-9a-fA-F]{40})", link) or [None, ""])[1].lower(),
                                               "title": title[:120], "added": now()}

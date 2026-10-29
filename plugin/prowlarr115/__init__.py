@@ -40,7 +40,7 @@ from app.sdk.network import RequestUtils
 from fastapi import Body
 
 from . import batch as batch_mod
-from .adult import AV_REJECT, CAT_ANIME, CAT_REAL, CODE_ONLY, JUNK_RX, Adult, rejected
+from .adult import AV_REJECT, CAT_ANIME, CAT_REAL, CODE_ONLY, JUNK_RX, Adult, av_code, rejected
 from .adult import magnet as adult_magnet
 from .clients import ClientError, Emby
 from .hub import Hub
@@ -334,7 +334,7 @@ class Prowlarr115(_PluginBase):
     plugin_desc = ("未认证也能用：多关键词资源源 + 下载直接 115 离线（失败转 NAS 缓冲）+ strm 入 Emby + 刮削确认通知 + 批量入库 API；"
                    "AV（番号 → 115 → MDC 刮削）和里番（追更目录 + sukebei RSS → 115 → Bangumi）也在这里。")
     plugin_icon = "https://raw.githubusercontent.com/Prowlarr/Prowlarr/develop/Logo/256.png"
-    plugin_version = "2.21.1"
+    plugin_version = "2.22.0"
     plugin_label = "资源搜索,下载器"
     plugin_author = "mediahub"
     author_url = ""
@@ -416,6 +416,7 @@ class Prowlarr115(_PluginBase):
         self._adult = None
         if self._pipe and config.get("adult", True) not in (False, "false", 0):
             self._adult = Adult(self._pipe, self._conf, self.get_data, self.save_data, self._post, self._log)
+            self._pipe.adult = self._adult
             inbox = {k: str(config.get(k) or "").strip() for k in ("av_inbox", "hentai_inbox")}
             if any(inbox.values()):     # 设置页里填的待入库清单：清空字段后在后台处理
                 self.update_config(dict(config, av_inbox="", hentai_inbox=""))
@@ -1366,7 +1367,9 @@ class Prowlarr115(_PluginBase):
         if self._adult and target in (f"{self._root}/下载", f"{self._root}/里番"):
             h = self._btih(content)
             if target.endswith("/下载"):
-                ok, err = self._adult.offline(target, content)
+                hint = self._adult_hints.get(h) or {}
+                code = av_code(hint.get("title") or "")
+                ok, err = self._adult.submit("av", target, content, hint.get("title") or "", title=code or "AV", code=code)
             else:
                 r = self._adult.hentai_submit(content, (self._adult_hints.get(h) or {}).get("title") or "")
                 ok, err = r["ok"], r.get("error", "")

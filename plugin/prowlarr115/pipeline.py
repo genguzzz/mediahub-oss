@@ -86,7 +86,9 @@ def sub_lang(name: str) -> str:
 def label(d: str) -> str:
     """'/115/Emby/动漫/无职转生 (2021)/Season 2' -> '无职转生 (2021) 第2季'"""
     parts = d.split("/")
-    name = re.sub(r"\s*\[tmdbid=\d+\]$", "", parts[4] if len(parts) > 4 else d)
+    if len(parts) == 4 and parts[3] == "下载":
+        return "AV"
+    name = re.sub(r"\s*\[(tmdbid|bangumiid)=\d+\]$", "", parts[4] if len(parts) > 4 else d)
     m = re.search(r"/Season (\d+)$", d)
     if m:
         return f"{name} 第{m.group(1)}季"
@@ -106,6 +108,9 @@ def _version_label(remote: str) -> str:
 PUBLIC_TRACKERS = ("http://nyaa.tracker.wf:7777/announce", "udp://tracker.opentrackr.org:1337/announce",
                    "udp://open.stealth.si:80/announce", "udp://tracker.torrent.eu.org:451/announce",
                    "udp://exodus.desync.com:6969/announce")
+
+
+ADULT_KINDS = ("av", "hentai")
 
 
 def with_trackers(url: str) -> str:
@@ -132,6 +137,9 @@ class Pipeline:
         self.tvdb_map: Optional[Callable[[Any], dict]] = None    # 插件注入：tmdbid -> {(TMDb季,集): (TVDB季,集)}
         self.on_fail: Optional[Callable[[str, dict, str], None]] = None   # 插件注入：资源不可用时拉黑 + 回滚订阅
         self.on_ok: Optional[Callable[[str], None]] = None
+        # 插件注入 Adult：AV / 里番任务和影视共用提交、115 离线、卡住、NAS 缓冲、换资源、黑名单，
+        # 只有「115 下完以后」不同：AV 写进 MDC 收件箱交给 MDC 刮削整理，里番按 Bangumi 目录生成 strm
+        self.adult: Any = None
         self.root = "/" + conf["root"].strip("/")
         self.lib_ol = "/" + conf["lib_ol_root"].strip("/")
         self.ol = OpenList(conf["openlist_url"], conf["openlist_user"], conf["openlist_pass"], conf["openlist_public"])
@@ -232,7 +240,8 @@ class Pipeline:
         d = (d or "").rstrip("/")
         parts = d.split("/")
         base = len(self.root.split("/"))
-        if ".." in parts or not d.startswith(self.root + "/") or len(parts) < base + 2 or parts[base] not in LIBS + ("待识别",):
+        if ".." in parts or not d.startswith(self.root + "/") or parts[base:base + 1] == [] \
+                or parts[base] not in LIBS + ("待识别", "里番", "下载") or (len(parts) < base + 2 and parts[base] != "下载"):
             raise ValueError(f"目录不在允许范围：{d}")
         return d
 
@@ -694,8 +703,14 @@ class Pipeline:
             # 药屋少女 S3（偏移 48）把同目录 S1/S2 的 48 集重编成 E49-96，还顶掉了真正的 S3E01/02（2026-10-13）
             ups = {n.split("/", 1)[0] for n in ((t.get("buffer") or {}).get("uploaded") or {})}
             scope = ups.pop() if t.get("buffer") and len(ups) == 1 else t.get("name")
+            kind = (t.get("meta") or {}).get("kind")
             with self._dir_lock(t["dir"]):
-                made = self.make_strms(t["dir"], t.get("meta"), scope)
+                if kind in ADULT_KINDS and self.adult:
+                    self._tl.replaced, self._tl.zero, self._tl.linked, self._tl.kept, self._tl.nvid = 0, [], 0, 0, 0
+                    made = self.adult.finish(kind, t, scope, h)
+                    self._tl.nvid = len(made)
+                else:
+                    made = self.make_strms(t["dir"], t.get("meta"), scope)
         except Exception as e:  # noqa: BLE001
             n = int(t.get("strm_errors") or 0) + 1
             t["strm_errors"] = n
@@ -714,6 +729,9 @@ class Pipeline:
             t["empty_rounds"] = int(t.get("empty_rounds") or 0) + 1   # 115 刚完成时目录可能还列不出文件：下一轮再看
             return
         t["status"] = "done" if (made or linked) else "superseded" if kept else "no-video"
+        kind = (t.get("meta") or {}).get("kind")
+        if kind == "av" and made:
+            t["status"] = "scraping"             # MDC 刮削 + 整理由 Adult.av_run 推进，完成后改 done
         if t["status"] == "no-video" and self.on_fail:
             self.failed(h, t, "no-video", "没有可入库的视频")
         elif t["status"] == "done" and self.on_ok:
@@ -724,6 +742,10 @@ class Pipeline:
             if not linked and not kept and not t.get("warned"):
                 t["warned"] = now()
                 self.notify("⚠️ " + label(t["dir"]), f"{how}完成，但没认出可入库的视频（集数解析失败？）")
+            return
+        if kind in ADULT_KINDS:
+            t["strm"] = [p[len(self.lib_ol) + 1:] for p in made]
+            self.event(h, "strm", ("已写入 MDC 收件箱：" if kind == "av" else "已生成 strm：") + "、".join(x.rsplit("/", 1)[-1] for x in made)[:200])
             return
         try:
             roots = sorted({p.rsplit("/Season ", 1)[0] if "/Season " in p else p.rsplit("/", 1)[0] for p in made})
@@ -820,7 +842,10 @@ class Pipeline:
             if do_emby and t.get("status") == "done" and not t.get("emby"):
                 with self.ctx(h, "emby"):
                     try:
-                        self.emby_check(t)
+                        if (t.get("meta") or {}).get("kind") == "hentai" and self.adult:
+                            self.adult.hentai_emby_check(t)
+                        else:
+                            self.emby_check(t)
                     except Exception as e:  # noqa: BLE001
                         self.log(f"Emby 检查出错: {e}")
                     if (t.get("emby") or 0) > 0:

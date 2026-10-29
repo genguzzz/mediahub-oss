@@ -241,6 +241,7 @@ export interface Task {
   autoBufferAt?: number | null; // when the plugin switches to the NAS buffer by itself
   episodes?: number[];          // episodes this release was picked for (subscription numbering)
   subId?: number | null;
+  category?: "media" | "av" | "hentai"; // which pipeline: 影视 (TMDb) / AV (MDC) / 里番 (Bangumi)
 }
 
 export interface TaskFiles {

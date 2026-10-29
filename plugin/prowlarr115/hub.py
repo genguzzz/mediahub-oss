@@ -514,11 +514,13 @@ class Hub:
         """任务 -> (阶段文字, 五步进度, 是否失败)。步骤：提交 → 115 离线/NAS 缓冲 → 生成 strm → Emby 刮削 → 完成。"""
         st = t.get("status") or ""
         emby = t.get("emby") or 0
+        kind = (t.get("meta") or {}).get("kind") or "media"
         via = "NAS 缓冲" if t.get("buffer") else "115 离线"
         keys = ["submit", "download", "strm", "scrape", "finish"]
-        labels = [("提交"), via, "生成 strm", "Emby 刮削", "完成"]
-        pos = {"downloading": 1, "buffer": 1, "uploaded": 2, "done": 5 if emby > 0 else 3}.get(st)
-        err = {"too-big": 1, "dead": 1, "no-video": 2, "strm-failed": 2, "needs-id": 2}.get(st)
+        # 三类资源同一套步骤，只有入库/刮削两步不同：影视 TMDb、里番 Emby 的 Bangumi 插件、AV 交给 MDC 刮削整理
+        labels = ["提交", via, *{"av": ("写入 MDC 收件箱", "MDC 刮削整理"), "hentai": ("生成 strm", "Bangumi 刮削")}.get(kind, ("生成 strm", "Emby 刮削")), "完成"]
+        pos = {"downloading": 1, "buffer": 1, "uploaded": 2, "scraping": 3, "done": 5 if emby > 0 else 3}.get(st)
+        err = {"too-big": 1, "dead": 1, "no-video": 2, "strm-failed": 2, "needs-id": 2, "scrape-failed": 3}.get(st)
         if st == "done" and emby < 0:
             err = 3
         steps = []
@@ -534,10 +536,12 @@ class Hub:
             st_at, en_at = times[i]
             steps.append({"key": k, "label": labels[i], "state": state, "start": st_at, "end": en_at if state != "active" else None})
         stage = {"downloading": f"{via}下载中", "buffer": "NAS 缓冲下载，逐个上传 115", "uploaded": "等待生成 strm",
+                 "scraping": "MDC 刮削中", "scrape-failed": "MDC 刮削失败",
                  "strm-failed": "生成 strm 连续失败，已停止重试", "needs-id": "没有 TMDb 条目，请选择作品后入库", "too-big": "种子太大，已放弃", "dead": "死种",
                  "no-video": "没认出可入库的视频", "superseded": "库里已有其他版本", "cancelled": "已取消"}.get(st, st)
         if st == "done":
-            stage = "已入库" if emby > 0 else "Emby 未能刮削，需手动识别" if emby < 0 else "已生成 strm，等待 Emby 刮削"
+            stage = "已入库" if emby > 0 else "Emby 未能刮削，需手动识别" if emby < 0 else \
+                ("已生成 strm，等待 Bangumi 刮削" if kind == "hentai" else "已生成 strm，等待 Emby 刮削")
             if t.get("identity_warn"):
                 stage = f"可能认错：{t['identity_warn']}"
         return stage, steps, err is not None
@@ -545,7 +549,7 @@ class Hub:
     def pipeline(self, limit: int = 60, live: bool = True) -> Dict[str, Any]:
         tasks = self.p._load_tasks()
         items = sorted(tasks.items(), key=lambda kv: -kv[1].get("added", 0))
-        active_st = ("downloading", "buffer", "uploaded")
+        active_st = ("downloading", "buffer", "uploaded", "scraping")
         keep = [kv for kv in items if kv[1].get("status") in active_st or (kv[1].get("status") == "done" and not kv[1].get("emby"))]
         keep += [kv for kv in items[:int(limit)] if kv not in keep]
         c115: Dict[str, dict] = {}
@@ -580,7 +584,8 @@ class Hub:
                    "episodes": meta.get("episodes") or [], "subId": meta.get("sub_id"),
                    "title": meta.get("title") or (t.get("dir") or "").split("/")[-2 if "/Season " in (t.get("dir") or "") else -1],
                    "year": meta.get("year"), "tmdbid": meta.get("tmdbid"), "season": meta.get("merged_season") or meta.get("season"),
-                   "type": "movie" if meta.get("type") == "电影" or "/电影/" in (t.get("dir") or "") else "tv"}
+                   "type": "movie" if meta.get("type") == "电影" or "/电影/" in (t.get("dir") or "") else "tv",
+                   "category": meta.get("kind") or "media"}
             info = c115.get(h)
             if info:
                 row.update(percent=info.get("percentDone"), size=info.get("size"), rate=info.get("rateDownload"),
@@ -627,7 +632,8 @@ class Hub:
             return []
         av = a.get_data("av") or {}
         rows = []
-        sub = av.get("submitted") or {}
+        mine = set(self.p._load_tasks() or {})   # 已进流水线的 AV 任务按普通任务显示，这里只列旧记录
+        sub = {k: v for k, v in (av.get("submitted") or {}).items() if btih(v.get("link") or "") not in mine}
         if sub and not c115:
             try:
                 c115 = self._c115()
@@ -648,6 +654,8 @@ class Hub:
                          "error": "任务已不在 115，也没有文件落到下载目录：移除这条记录后重新入库" if gone else None,
                          "steps": self._av_steps(v.get("at"), pos, failed)})
         for remote, v in (av.get("stubbed") or {}).items():
+            if v.get("hash") in mine:
+                continue
             st = v.get("status") or ""
             stage = {"scraping": "MDC 刮削中", "failed": "MDC 刮削失败", "missing": "strm 丢失", "new": "等待提交 MDC"}.get(st, st or "等待 MDC")
             bad = st in ("failed", "missing")
@@ -657,6 +665,8 @@ class Hub:
                          "error": v.get("err") or ("提交 MDC 超过 30 分钟还没有结果，点「重新刮削」" if slow else None), "step": "scrape",
                          "steps": self._av_steps(v.get("at"), 3, bad or slow)})
         for v in sorted((av.get("done") or [])[-15:], key=lambda x: -x.get("at", 0)):
+            if v.get("hash") in mine:
+                continue
             rows.append({"kind": "av", "key": f"done:{v.get('code')}:{v.get('at')}", "code": v.get("code"), "stage": "已入库", "at": v.get("at"),
                          "name": v.get("target", "").rsplit("/", 1)[-1], "done": True, "failed": False, "step": "done",
                          "steps": self._av_steps(v.get("at"), 5)})
@@ -845,6 +855,22 @@ class Hub:
         if not t:
             return {"ok": False, "error": "任务不存在"}
         meta = t.get("meta") or {}
+        bl = self.p._blacklist()
+        if meta.get("kind") in ("av", "hentai"):
+            # AV 按番号、里番按系列名在 sukebei 重新搜；同一集优先（里番）
+            q = meta.get("code") if meta.get("kind") == "av" else (meta.get("series") or meta.get("title"))
+            if not q:
+                return {"ok": False, "error": "这个任务没有番号/系列名，没法重新搜索"}
+            t0 = time.time()
+            items, err = self._raw(q, ["sukebei-av" if meta["kind"] == "av" else "sukebei-anime"], "movie" if meta["kind"] == "av" else "tv")
+            ep = meta.get("ep")
+            for it in items:
+                it["current"], it["blacklisted"] = it["id"] == h, (bl.get(it["id"]) or {}).get("reason")
+                it["score"], it["recommended"] = None, False
+                it["tags"] = [x for x in (it.get("res"),) if x]
+            items.sort(key=lambda it: (bool(ep) and ep not in (it.get("episodes") or [ep]), -it["seeders"]))
+            return {"ok": True, "task": {"hash": h, "title": meta.get("title"), "episodes": [ep] if ep else [], "name": t.get("name")},
+                    "elapsed": round(time.time() - t0, 1), "error": err, "results": items[:40]}
         if not meta.get("tmdbid"):
             return {"ok": False, "error": "这个任务没有 TMDb 作品信息，请用发现页搜索后提交"}
         kind = "movie" if meta.get("type") == "电影" else "tv"
@@ -855,7 +881,6 @@ class Hub:
         eps = self._task_eps(t) if kind == "tv" else []
         off = int(meta.get("ep_offset") or 0)
         want = set(eps) | {e + off for e in eps}
-        bl = self.p._blacklist()
         rows = []
         for it in res["results"]:
             if kind == "tv" and want and it["episodes"] and not (want & set(it["episodes"])):
