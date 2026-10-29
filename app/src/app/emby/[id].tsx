@@ -13,7 +13,7 @@ import { api } from "@/lib/api";
 import { backdropOf, embyApi, embyImage, landscapeOf, posterOf, runtime, seconds, techBadges, warmPlayback, type Item } from "@/lib/emby";
 import { deleteFromLibrary } from "@/lib/libraryDelete";
 import { openPeek } from "@/lib/peek";
-import { load, useQuery } from "@/lib/query";
+import { invalidate, load, useQuery } from "@/lib/query";
 import { colors } from "@/lib/theme";
 import { track } from "@/lib/track";
 
@@ -22,6 +22,14 @@ export default function EmbyItemScreen() {
   const router = useRouter();
   const key = `emby:item:${id}`;
   const q = useQuery(key, () => embyApi.item(id), { staleMs: 15_000 });
+  const gone = !!q.error && /\b404\b/.test(q.error);
+  useEffect(() => {
+    if (gone) {
+      invalidate("emby:resume");
+      invalidate("emby:latest:");
+      invalidate("emby:lib:");
+    }
+  }, [gone]);
   const it = q.data;
   const isSeries = it?.Type === "Series";
   const isFolder = it && ["BoxSet", "Folder", "CollectionFolder", "Season"].includes(it.Type);
@@ -113,7 +121,11 @@ export default function EmbyItemScreen() {
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <ScrollView contentContainerStyle={{ paddingBottom: 60 }} refreshControl={<Pull onRefresh={refreshAll} />}>
         <HeroBackdrop source={backdrop} />
-        {q.error ? <ErrorBox text={q.error} onRetry={q.refresh} /> : null}
+        {q.error ? (
+          /\b404\b/.test(q.error)
+            ? <ErrorBox text="这个条目已不在媒体库：可能刚重新识别或改了目录。返回后列表会重新加载。" />
+            : <ErrorBox text={q.error} onRetry={q.refresh} />
+        ) : null}
         {!it && q.loading ? <Loading /> : null}
         {it ? (
           <View>
