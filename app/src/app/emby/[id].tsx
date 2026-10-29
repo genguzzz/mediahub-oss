@@ -2,12 +2,15 @@ import { useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { Image } from "expo-image";
+import * as WebBrowser from "expo-web-browser";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ExternalLinks, ExtrasRow, MediaInfo, MetaChips, PeopleRow, SimilarRow } from "@/components/embyDetail";
 import { itemCard } from "@/components/embyCards";
 import { Img, MiniTag, PosterTile, Row } from "@/components/media";
 import { Chip, CopyText, ChipRow, ErrorBox, IconButton, Loading, PillButton, confirm, styles, tap, toast, toastError, Pull } from "@/components/ui";
 import { api } from "@/lib/api";
-import { backdropOf, embyApi, landscapeOf, posterOf, runtime, seconds, techBadges, warmPlayback, type Item } from "@/lib/emby";
+import { backdropOf, embyApi, embyImage, landscapeOf, posterOf, runtime, seconds, techBadges, warmPlayback, type Item } from "@/lib/emby";
 import { deleteFromLibrary } from "@/lib/libraryDelete";
 import { load, useQuery } from "@/lib/query";
 import { colors, radius } from "@/lib/theme";
@@ -30,6 +33,11 @@ export default function EmbyItemScreen() {
   const children = useQuery(isFolder ? `emby:children:${id}` : null, () => embyApi.items({ parentId: id, limit: 100, sort: "year", types: "Movie,Series,Episode,Video" }), { staleMs: 60_000 });
   const nextUp = useQuery(isSeries ? `emby:nextup:${id}` : null, () => embyApi.nextUp(1, id), { staleMs: 15_000 });
   const [busy, setBusy] = useState<string | null>(null);
+  const [clock, setClock] = useState(() => Date.now());   // for "结束于", refreshed each minute
+  useEffect(() => {
+    const t = setInterval(() => setClock(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
 
   const refreshAll = () => {
     void q.refresh();
@@ -81,6 +89,27 @@ export default function EmbyItemScreen() {
   const backdrop = it ? backdropOf(it) ?? landscapeOf(it, 1280) : undefined;
   const heroH = Math.round(width * 0.62);
   const tmdb = it?.ProviderIds?.Tmdb;
+  // When a movie / episode would end if started now (or resumed), like Infuse and Emby's web client.
+  const total = seconds(it?.RunTimeTicks);
+  const left = total ? total - (it && !isSeries ? seconds(it.UserData?.PlaybackPositionTicks) : 0) : 0;
+  const endsAt = left > 60 && it && !isSeries && !isFolder ? new Date(clock + left * 1000).toTimeString().slice(0, 5) : "";
+  const logo = it?.ImageTags?.Logo ? embyImage(it.Id, "Logo", { tag: it.ImageTags.Logo, w: 600 }) : undefined;
+  const hasTrailer = !!(it?.LocalTrailerCount || it?.RemoteTrailers?.length);
+  const playTrailer = async () => {
+    if (!it) return;
+    track("trailer_tap", { local: !!it.LocalTrailerCount });
+    try {
+      if (it.LocalTrailerCount) {
+        const t = await embyApi.localTrailers(it.Id);
+        if (t[0]) return router.push({ pathname: "/player", params: { id: t[0].Id, resume: "0" } });
+      }
+      const url = it.RemoteTrailers?.[0]?.Url;
+      if (url) await WebBrowser.openBrowserAsync(url);
+    } catch (e) {
+      toastError("未能打开预告片", e);
+    }
+  };
+  const people = it?.People ?? [];
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -102,15 +131,22 @@ export default function EmbyItemScreen() {
                 <Img source={posterOf(it, 400)} style={{ width: 104, height: 156 }} />
               </View>
               <View style={{ flex: 1, paddingBottom: 4 }}>
-                <CopyText style={{ fontSize: 24, fontWeight: "800", color: colors.text, lineHeight: 29 }} numberOfLines={3}>{(it.Type === "Episode" ? it.SeriesName : it.Name) ?? ""}</CopyText>
+                {logo ? <Image source={logo} style={{ width: "100%", height: 56, marginBottom: 6 }} contentFit="contain" contentPosition="left" transition={180} /> : null}
+                <CopyText style={logo ? { fontSize: 15, fontWeight: "700", color: colors.textSoft } : { fontSize: 24, fontWeight: "800", color: colors.text, lineHeight: 29 }} numberOfLines={3}>{(it.Type === "Episode" ? it.SeriesName : it.Name) ?? ""}</CopyText>
+                {it.Taglines?.[0] ? <Text style={{ fontSize: 13, fontStyle: "italic", color: colors.textSoft, marginTop: 3 }} numberOfLines={2}>{it.Taglines[0]}</Text> : null}
                 {it.Type === "Episode" ? <Text style={[styles.body, { marginTop: 2 }]}>S{it.ParentIndexNumber}E{it.IndexNumber} · {it.Name}</Text> : null}
                 <Text style={[styles.faint, { marginTop: 6, fontSize: 13 }]}>
-                  {[it.ProductionYear, runtime(it.RunTimeTicks), it.OfficialRating, isSeries ? (it.Status === "Ended" ? "已完结" : it.Status === "Continuing" ? "连载中" : "") : ""].filter(Boolean).join(" · ")}
+                  {[it.ProductionYear, runtime(it.RunTimeTicks), it.OfficialRating, isSeries ? (it.Status === "Ended" ? "已完结" : it.Status === "Continuing" ? "连载中" : "") : "", endsAt ? `结束于 ${endsAt}` : ""].filter(Boolean).join(" · ")}
                 </Text>
-                {it.CommunityRating ? (
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginTop: 6 }}>
-                    <Ionicons name="star" size={13} color="#F5C451" />
-                    <Text style={{ color: colors.text, fontWeight: "800" }}>{it.CommunityRating.toFixed(1)}</Text>
+                {it.CommunityRating || it.CriticRating ? (
+                  <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 6 }}>
+                    {it.CommunityRating ? (
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+                        <Ionicons name="star" size={13} color="#F5C451" />
+                        <Text style={{ color: colors.text, fontWeight: "800" }}>{it.CommunityRating.toFixed(1)}</Text>
+                      </View>
+                    ) : null}
+                    {it.CriticRating ? <Text style={{ color: colors.text, fontWeight: "700" }}>{it.CriticRating >= 60 ? "🍅" : "🤢"} {it.CriticRating}%</Text> : null}
                   </View>
                 ) : null}
               </View>
@@ -118,7 +154,6 @@ export default function EmbyItemScreen() {
 
             <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap", marginTop: 14 }}>
               {techBadges(it).map((b) => <MiniTag key={b} text={b} color={/Dolby|HDR|Atmos|4K/.test(b) ? colors.primary : undefined} />)}
-              {(it.Genres ?? []).slice(0, 4).map((g) => <MiniTag key={g} text={g} />)}
             </View>
 
             {!isFolder ? (
@@ -127,13 +162,24 @@ export default function EmbyItemScreen() {
                 {pos && target ? <IconCircle name="refresh" label="从头播放" onPress={() => play(target, true)} /> : null}
                 <IconCircle name={it.UserData?.Played ? "checkmark-circle" : "checkmark-circle-outline"} label="已看" active={!!it.UserData?.Played} busy={busy === "played"} onPress={() => void toggle("played")} />
                 <IconCircle name={it.UserData?.IsFavorite ? "heart" : "heart-outline"} label="收藏" active={!!it.UserData?.IsFavorite} busy={busy === "fav"} onPress={() => void toggle("fav")} />
+                {hasTrailer ? <IconCircle name="film-outline" label="预告片" onPress={() => void playTrailer()} /> : null}
               </View>
             ) : null}
 
             {it.Overview ? <CopyText label="简介" style={[styles.body, { marginTop: 16 }]} numberOfLines={8}>{it.Overview}</CopyText> : null}
-            {it.People?.length ? <Text style={[styles.faint, { marginTop: 10 }]} numberOfLines={2}>主演：{it.People.filter((p) => p.Type === "Actor").slice(0, 6).map((p) => p.Name).join("、")}</Text> : null}
+            {it.Type === "Episode" && it.SeriesId ? (
+              <Pressable onPress={() => { tap(); router.push({ pathname: "/emby/[id]", params: { id: it.SeriesId! } }); }} style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 12 }}>
+                <Ionicons name="albums-outline" size={15} color={colors.primary} />
+                <Text style={{ color: colors.primary, fontSize: 14, fontWeight: "600" }}>查看整部剧 · {it.SeriesName}{it.SeasonName ? ` · ${it.SeasonName}` : ""}</Text>
+              </Pressable>
+            ) : null}
+            <MetaChips item={it} />
+            <ExternalLinks item={it} />
+            {!isSeries && !isFolder ? <MediaInfo item={it} /> : null}
           </View>
         ) : null}
+
+        {people.length ? <PeopleRow people={people} /> : null}
 
         {isSeries && seasons.data?.Items.length ? (
           <>
@@ -148,6 +194,9 @@ export default function EmbyItemScreen() {
             </View>
           </>
         ) : null}
+
+        {it ? <ExtrasRow item={it} onPlay={(x) => play(x, true)} /> : null}
+        {it && (it.Type === "Movie" || isSeries || it.Type === "Episode") ? <SimilarRow id={it.Type === "Episode" && it.SeriesId ? it.SeriesId : it.Id} /> : null}
 
         {isFolder && children.data?.Items.length ? (
           <Row title="内容">

@@ -2,17 +2,25 @@ name: iOS IPA
 
 # Builds an unsigned IPA on a GitHub-hosted Mac. Signing happens on the phone (全能签).
 #   push to main        → build only (artifact), to catch breakage early
-#   push tag vX.Y.Z      → build + GitHub Release with the IPA
-#   manual run           → build only
-# Publishing to a self-hosted 全能签 source happens outside GitHub: scripts/publish.sh pulls the
-# release IPA and hands it to your source publisher, so no publish token lives in GitHub.
-# Cut a release with: ./scripts/release.sh 0.2.0 "更新说明"
+#   push tag vX.Y.Z      → build + GitHub Release
+#   manual run           → build only (optionally with an explicit build number)
+# Instance build: with the APP_BUNDLE_ID / APP_SERVER / APP_EMBY_SERVER / IPA_PASSPHRASE secrets set
+# (./scripts/instance.sh ci), the IPA carries your values and is uploaded only as an encrypted
+# artifact; the Release gets the notes, never the binary. Without them it is the public example
+# build (com.example.mediahub) and the IPA is attached to the Release.
+# Publishing to a self-hosted 全能签 source happens outside GitHub: scripts/publish.sh fetches the
+# IPA and hands it to your source publisher, so no publish token lives in GitHub.
+# Cut a release with: ./scripts/release.sh 0.2.0 "更新说明" [--publish]
 on:
   push:
     branches: [main]
     tags: ["v*.*.*"]
     paths: ["app/**", ".github/workflows/ios.yml"]
   workflow_dispatch:
+    inputs:
+      build_number:
+        description: "CFBundleVersion (empty = BUILD_NUMBER_BASE + run number)"
+        required: false
 
 concurrency:
   group: ios-${{ github.ref }}
@@ -32,12 +40,32 @@ jobs:
       run:
         working-directory: app
     env:
-      BUILD_NUMBER: ${{ github.run_number }}
       IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      APP_BUNDLE_ID: ${{ secrets.APP_BUNDLE_ID }}
+      APP_SERVER: ${{ secrets.APP_SERVER }}
+      APP_EMBY_SERVER: ${{ secrets.APP_EMBY_SERVER }}
+      IPA_PASSPHRASE: ${{ secrets.IPA_PASSPHRASE }}
+      INSTANCE: ${{ secrets.IPA_PASSPHRASE != '' }}
     steps:
+      - name: Mask instance values
+        if: env.INSTANCE == 'true'
+        working-directory: .
+        env:
+          MASK_TERMS: ${{ secrets.MASK_TERMS }}
+        run: |
+          for v in "$APP_BUNDLE_ID" "$APP_SERVER" "$APP_EMBY_SERVER"; do
+            [ -n "$v" ] || continue
+            echo "::add-mask::$v"
+            h=$(printf '%s' "$v" | sed -E 's#^https?://##; s#[:/].*$##'); [ -n "$h" ] && echo "::add-mask::$h"
+          done
+          for t in $MASK_TERMS; do echo "::add-mask::$t"; done
+
       - uses: actions/checkout@v4
 
       - name: Resolve version
+        env:
+          INPUT_BUILD: ${{ inputs.build_number }}
+          BASE: ${{ vars.BUILD_NUMBER_BASE }}
         run: |
           PKG=$(node -p "require('./package.json').version")
           if [ "$IS_TAG" = "true" ]; then
@@ -50,9 +78,11 @@ jobs:
           else
             NOTES=$(git log -1 --format=%s)
           fi
+          BUILD_NUMBER=${INPUT_BUILD:-$(( ${BASE:-0} + GITHUB_RUN_NUMBER ))}
           echo "VERSION=$PKG" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$BUILD_NUMBER" >> "$GITHUB_ENV"
           { echo "NOTES<<__EOF__"; echo "$NOTES"; echo "__EOF__"; } >> "$GITHUB_ENV"
-          echo "Building $PKG ($BUILD_NUMBER)"
+          echo "Building $PKG ($BUILD_NUMBER), instance build: $INSTANCE"
 
       - uses: actions/setup-node@v4
         with:
@@ -91,31 +121,61 @@ jobs:
           APP=$(ls -d "$RUNNER_TEMP"/app.xcarchive/Products/Applications/*.app | head -1)
           mkdir -p "$RUNNER_TEMP/ipa/Payload" && cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
           PL="$APP/Info.plist"
-          echo "BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$PL")" >> "$GITHUB_ENV"
-          echo "APP_NAME=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$PL")" >> "$GITHUB_ENV"
-          echo "MIN_IOS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$PL")" >> "$GITHUB_ENV"
-          PLIST_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PL")
-          test "$PLIST_VERSION" = "$VERSION" || { echo "::error::Info.plist version $PLIST_VERSION != $VERSION"; exit 1; }
-          IPA="$RUNNER_TEMP/MediaHub-$VERSION.ipa"
+          P() { /usr/libexec/PlistBuddy -c "Print :$1" "$PL"; }
+          echo "BUNDLE_ID=$(P CFBundleIdentifier)" >> "$GITHUB_ENV"
+          echo "APP_NAME=$(P CFBundleDisplayName)" >> "$GITHUB_ENV"
+          echo "MIN_IOS=$(P MinimumOSVersion)" >> "$GITHUB_ENV"
+          test "$(P CFBundleShortVersionString)" = "$VERSION" || { echo "::error::Info.plist version $(P CFBundleShortVersionString) != $VERSION"; exit 1; }
+          test "$(P CFBundleVersion)" = "$BUILD_NUMBER" || { echo "::error::Info.plist build $(P CFBundleVersion) != $BUILD_NUMBER"; exit 1; }
+          if [ -n "$APP_BUNDLE_ID" ]; then
+            test "$(P CFBundleIdentifier)" = "$APP_BUNDLE_ID" || { echo "::error::bundle id does not match the APP_BUNDLE_ID secret"; exit 1; }
+          fi
+          IPA="$RUNNER_TEMP/out/MediaHub-$VERSION.ipa"
+          mkdir -p "$RUNNER_TEMP/out"
           (cd "$RUNNER_TEMP/ipa" && zip -qry "$IPA" Payload)
+          printf "BUNDLE_ID=%s\nAPP_NAME=%s\nMIN_IOS=%s\nBUILD=%s\n" "$(P CFBundleIdentifier)" "$(P CFBundleDisplayName)" "$(P MinimumOSVersion)" "$BUILD_NUMBER" > "$RUNNER_TEMP/out/ipa.env"
           echo "IPA=$IPA" >> "$GITHUB_ENV"
-          ls -la "$IPA"
+          echo "MediaHub-$VERSION.ipa $(du -h "$IPA" | cut -f1), build $BUILD_NUMBER, min iOS $(P MinimumOSVersion)"
+
+      # Instance build: only an encrypted tarball (IPA + ipa.env) leaves the runner.
+      - name: Encrypt IPA
+        if: env.INSTANCE == 'true'
+        run: |
+          tar cf - -C "$RUNNER_TEMP/out" . | openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -pass env:IPA_PASSPHRASE -out "$RUNNER_TEMP/MediaHub-$VERSION-$BUILD_NUMBER.tar.enc"
 
       - uses: actions/upload-artifact@v4
+        if: env.INSTANCE == 'true'
         with:
-          name: MediaHub-${{ env.VERSION }}-${{ github.run_number }}
+          name: ipa-encrypted-${{ github.run_number }}
+          path: ${{ runner.temp }}/MediaHub-${{ env.VERSION }}-${{ env.BUILD_NUMBER }}.tar.enc
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        if: env.INSTANCE != 'true'
+        with:
+          name: MediaHub-${{ env.VERSION }}-${{ env.BUILD_NUMBER }}
           path: ${{ env.IPA }}
+
+      - name: Encrypt build log
+        if: failure() && env.INSTANCE == 'true'
+        run: |
+          [ -f "$RUNNER_TEMP/xcodebuild.log" ] && openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt \
+            -pass env:IPA_PASSPHRASE -in "$RUNNER_TEMP/xcodebuild.log" -out "$RUNNER_TEMP/xcodebuild.log.enc" || true
 
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
           name: xcodebuild-log-${{ github.run_number }}
-          path: ${{ runner.temp }}/xcodebuild.log
+          path: ${{ env.INSTANCE == 'true' && format('{0}/xcodebuild.log.enc', runner.temp) || format('{0}/xcodebuild.log', runner.temp) }}
 
       - name: GitHub Release
         if: env.IS_TAG == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          printf "BUNDLE_ID=%s\nAPP_NAME=%s\nMIN_IOS=%s\nBUILD=%s\n" "$BUNDLE_ID" "$APP_NAME" "$MIN_IOS" "$BUILD_NUMBER" > "$RUNNER_TEMP/ipa.env"
-          gh release create "$GITHUB_REF_NAME" "$IPA" "$RUNNER_TEMP/ipa.env" --title "影库 $VERSION" --notes "$NOTES" --verify-tag
+          if [ "$INSTANCE" = "true" ]; then
+            gh release create "$GITHUB_REF_NAME" --title "影库 $VERSION" --notes "$NOTES" --verify-tag
+          else
+            gh release create "$GITHUB_REF_NAME" "$IPA" "$RUNNER_TEMP/out/ipa.env" --title "影库 $VERSION" --notes "$NOTES" --verify-tag
+          fi

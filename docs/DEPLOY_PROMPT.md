@@ -53,24 +53,36 @@
 4. 用一部电影做端到端测试：MP 搜索 → 选资源 → 115 离线 → 插件生成 strm → Emby 刮削出海报 → 播放。日志看 `docker logs moviepilot | grep Prowlarr115`。
 5. 目录规范（插件依赖）：电影 `名 (年) [tmdbid=N]/…`；剧集 `名 (年) [tmdbid=N]/Season N/名 SxxEyy.ext`。不要手动改成别的命名。
 
-### 4. 后端（server/）
+### 4. 实例配置（先做，后面都用它）
 
-1. 复制 `server/.env.example` 为服务器上的 `.env`，填 `MP_API_KEY`（MP 设置里的 API 令牌）、`EMBY_*`、`UPDATES_BASE`；`APP_TOKEN`、`ADMIN_TOKEN` 用 `openssl rand -hex 24` 生成。
-2. 改 `server/deploy/nginx-media.conf`（域名、证书），然后 `DEPLOY_HOST=user@host ./server/deploy/deploy.sh`；也可以按你的习惯用 docker 或 pm2 跑 `node src/server.ts`（Node 22 的 type stripping，无需编译）。
+1. 本机（用来部署和发布的那台）运行 `./scripts/instance.sh init`：生成 `~/.config/mediahub/{instance.env,secrets.env,private-patterns.txt}`，并启用提交前的泄露检查。**不要改仓库里的占位值**，所有个人值（bundle id、后端/Emby 地址、服务器 ssh、软件源）都填进 `instance.env`；令牌优先用 `*_CMD` 在服务器上读取，不拷到本机。
+2. 把你的域名、主机名、用户名、IP 等写进 `private-patterns.txt`（每行一个正则）。
+3. 本部署特有的运维信息（哪台机器跑什么、代理、缓存、证书位置）写到 `~/.config/mediahub/NOTES.md`（不含密钥）；之后的 AI 代理会读它。
+4. `./scripts/instance.sh check` 确认无缺项。整个 `~/.config/mediahub` 建议放进私有仓库或密码管理器备份。
+
+### 5. 后端（server/）
+
+1. 服务器上的 `/opt/mediahub/.env` 由首次部署从 `server/.env.example` 生成（`APP_TOKEN`、`ADMIN_TOKEN` 自动生成），再填 `MP_API_KEY`（MP 设置里的 API 令牌）、`EMBY_*`、`UPDATES_BASE`、`DATA_DIR` 等。
+2. 需要改 nginx（域名、证书、监听）或 systemd（额外 `EnvironmentFile`）时，把 `server/deploy/nginx-media.conf`、`mediahub.service` 复制到 `~/.config/mediahub/deploy/` 再改；`deploy.sh` 优先用这里的文件。`instance.env` 填 `DEPLOY_HOST`，然后 `./server/deploy/deploy.sh --dry-run` 看差异，`./server/deploy/deploy.sh` 部署；也可以按你的习惯用 docker 或 pm2 跑 `node src/server.ts`（Node 22 的 type stripping，无需编译）。
 3. `curl https://你的域名/health` 返回 ok。
-4. 在线源（可选）：JavDB 需要合适出口（`INDEX_PROXY`），Jable 需要 FlareSolverr。不需要成人内容就别配，App 设置里也有总开关。
+4. 在线源（可选）：JavDB 需要合适出口（`INDEX_PROXY`），Jable 需要 FlareSolverr（`FLARESOLVERR_URL`）。不需要成人内容就别配，App 设置里也有总开关。
 
-### 5. iOS App（app/）
+### 6. iOS App（app/）
 
-1. 全局替换占位：`app/app.config.ts` 里的 `media.example.com`（OTA 地址）和 bundle id `com.example.mediahub`（改成你自己的）；`app/src/lib/settings.ts` 的 `DEFAULT_SERVER`；`app/src/app/settings.tsx` 里的 Emby 占位地址。
-2. 编译：推到你自己的 GitHub 仓库，`.github/workflows/ios.yml` 在 GitHub Mac 上产出**未签名 IPA**（需要带 Xcode 27 的 `xcode-27` runner，约 17 分钟；若 runner 不可用，按 AetherEngine 当前要求改 runner 标签）。`./scripts/release.sh X.Y.Z "说明"` 打 tag 触发。
-3. 签名与分发由你决定，按你的条件选一种，**先问我用哪种**：自己的 Apple 开发者账号（AltStore/SideStore/Sideloadly）、企业/共享证书配合第三方签名工具的自建软件源，等。若自建软件源，`scripts/publish.sh` 通过 `SOURCE_PUBLISH_URL` 把 IPA 交给你的发布服务（需自行实现，接收 ipa/icon/version/notes 等表单字段并更新源 JSON）。
-4. 只改 JS 的更新走 OTA：`MEDIAHUB_SERVER=https://你的域名 MEDIAHUB_ADMIN_TOKEN=… ./scripts/ota.sh "说明"`。涉及原生依赖或 `app.config.ts` 变更必须重新出 IPA 并提升 `RUNTIME_VERSION`。
-5. App 首次打开：设置里填后端地址、`APP_TOKEN`、Emby 地址与账号。
+1. 在 `instance.env` 填 `APP_BUNDLE_ID`、`APP_SERVER`、`APP_EMBY_SERVER`、`GH_REPO`（你 fork 的仓库）、`BUILD_NUMBER_BASE`，然后 `./scripts/instance.sh ci` 写入 GitHub Secrets/Variables。代码里的占位值不用改。
+2. 编译：`.github/workflows/ios.yml` 在 GitHub Mac 上产出**未签名 IPA**（需要带 Xcode 27 的 `xcode-27` runner，约 15–25 分钟，公开仓库免费；若 runner 不可用，按 AetherEngine 当前要求改 runner 标签）。`./scripts/release.sh X.Y.Z "说明"` 打 tag 触发。设置了上面的 Secrets 时，IPA 只以**加密 artifact** 上传（二进制里有你的域名，公开仓库不能放明文），Release 只有说明。
+3. 签名与分发由你决定，按你的条件选一种，**先问我用哪种**：自己的 Apple 开发者账号（AltStore/SideStore/Sideloadly）、企业/共享证书配合第三方签名工具的自建软件源，等。若自建软件源，`scripts/publish.sh X.Y.Z` 下载并解密 IPA，再交给你的发布服务（需自行实现，接收 ipa/icon/bundleId/version/build/name/minIos/notes 表单字段并更新源 JSON）：发布服务可从本机直连时填 `PUBLISH_URL` + `secrets.env` 的 `PUBLISH_TOKEN`；只在服务器本地监听时填 `PUBLISH_SSH_HOST` + `PUBLISH_TOKEN_CMD`，令牌留在服务器上。`release.sh … --publish` 会在后台等编译完成后自动发布。
+4. 只改 JS 的更新走 OTA：`./scripts/ota.sh "说明"`（地址和令牌来自实例配置）。涉及原生依赖或 `app.config.ts` 变更必须重新出 IPA 并提升 `RUNTIME_VERSION`。
+5. App 首次打开：后端地址与 Emby 地址已是你的默认值，填 `APP_TOKEN` 与 Emby 账号即可。
 
-### 6. 收尾
+### 7. 之后的更新
 
-- 列出最终拓扑（谁在哪台机器、端口、域名），以及每个服务的启动/日志/重启命令，写到 `DEPLOYMENT_NOTES.md`（不含密钥）。
+- 跟进上游：`git pull upstream main` → `./scripts/instance.sh check`（新增设置会显示缺项）→ 按改动类型部署后端 / `ota.sh` / `release.sh`。因为个人值都不在仓库里，拉取不会冲突。
+- 自己的改动：通用的做成设置项并提交上游；只属于你这套部署的，放实例配置或 `deploy/` 覆盖文件，不改仓库文件。
+
+### 8. 收尾
+
+- 列出最终拓扑（谁在哪台机器、端口、域名），以及每个服务的启动/日志/重启命令，写到 `~/.config/mediahub/NOTES.md`（不含密钥）。
 - 给出我还需要手动完成的事项清单（例如 DNS、证书续期、115 Cookie 过期后的更新方式、新增媒体库后要把它加进各 Emby 账号的可见库）。
 - 如果 Emby 里有成人库，提醒我用独立账号和库权限隔离（只靠首页排除不彻底）。
 

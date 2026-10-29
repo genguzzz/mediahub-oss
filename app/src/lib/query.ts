@@ -1,7 +1,7 @@
 // Tiny data cache: one entry per key, shared by every screen that asks for it, so going back
 // to a list shows the last data at once while it refreshes. Screens poll only while focused.
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import { AppState } from "react-native";
+import { AppState, Platform } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { File, Paths } from "expo-file-system";
 
@@ -20,11 +20,12 @@ const EMPTY: Entry<unknown> = { loading: false, at: 0, seq: 0 };
 // Entries with data are mirrored to one JSON file so a cold start without network still shows the
 // last lists/details (each entry keeps its fetch time, so it is refreshed as soon as the network is back).
 const STORE_MAX = 6_000_000;
-const store = new File(Paths.document, "query-cache.json");
+// expo-file-system has no web implementation (constructing a File throws there): memory only on web.
+const store = Platform.OS === "web" ? null : new File(Paths.document, "query-cache.json");
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 try {
-  if (store.exists) {
+  if (store?.exists) {
     const saved = JSON.parse(store.textSync()) as Record<string, { data: unknown; at: number }>;
     for (const [k, v] of Object.entries(saved)) if (v && v.data !== undefined) entries.set(k, { data: v.data, loading: false, at: v.at || 0, seq: 0 });
   }
@@ -44,6 +45,7 @@ function save() {
       size += j.length;
       out[k] = { data: e.data, at: e.at };
     }
+    if (!store) return;
     if (!store.exists) store.create({ intermediates: true });
     store.write(JSON.stringify(out));
   } catch {

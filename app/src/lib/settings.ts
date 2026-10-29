@@ -3,6 +3,7 @@ import { useSyncExternalStore } from "react";
 import { Platform } from "react-native";
 import * as SecureStore from "expo-secure-store";
 import type { StyleId } from "./theme";
+import { DEFAULT_SERVER } from "./instance";
 import { logger } from "./log";
 
 const log = logger("settings");
@@ -31,7 +32,7 @@ export interface EmbyAccount {
   deviceId: string;
 }
 
-export const DEFAULT_SERVER = "https://media.example.com";
+export { DEFAULT_SERVER };
 
 // The web build (used for previews) has no keychain; it keeps settings in localStorage.
 const store = Platform.OS === "web"

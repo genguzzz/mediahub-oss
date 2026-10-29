@@ -1,0 +1,4 @@
+#!/bin/sh
+# Enabled by `./scripts/instance.sh init` (git config core.hooksPath .githooks).
+# Blocks commits that contain this instance's private values (hosts, ids, names).
+exec "$(git rev-parse --show-toplevel)/scripts/instance.sh" scan --staged

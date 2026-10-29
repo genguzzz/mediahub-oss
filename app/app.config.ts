@@ -4,7 +4,14 @@ import pkg from "./package.json";
 
 // The release version comes from package.json (bumped by scripts/release.sh);
 // CI sets BUILD_NUMBER (GitHub run number) as the build number.
-const build = process.env.BUILD_NUMBER ?? "0";
+const build = process.env.BUILD_NUMBER || "0";
+
+// Per-instance values (your bundle id and hosts). Never edit them here: set them in your
+// instance config (scripts/instance.sh, ~/.config/mediahub/instance.env) locally and as
+// GitHub Actions secrets for CI. Empty = the example placeholders below.
+const bundleId = process.env.APP_BUNDLE_ID || "com.example.mediahub";
+const server = (process.env.APP_SERVER || "https://media.example.com").replace(/\/+$/, "");
+const embyServer = (process.env.APP_EMBY_SERVER || "https://emby.example.com:8920").replace(/\/+$/, "");
 
 // OTA updates only reach binaries with the same runtime version. Bump this whenever
 // native code changes (new/upgraded native module, plugin, permission, Expo SDK),
@@ -23,7 +30,7 @@ const config: ExpoConfig = {
   version: pkg.version,
   runtimeVersion: RUNTIME_VERSION,
   updates: {
-    url: "https://media.example.com/updates/manifest",
+    url: `${server}/updates/manifest`,
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
@@ -33,7 +40,7 @@ const config: ExpoConfig = {
   userInterfaceStyle: "automatic",
   backgroundColor: "#0F0E1C",
   ios: {
-    bundleIdentifier: "com.example.mediahub",
+    bundleIdentifier: bundleId,
     buildNumber: build,
     supportsTablet: false,
     infoPlist: {
@@ -44,8 +51,11 @@ const config: ExpoConfig = {
       UIBackgroundModes: ["audio", "fetch", "processing"],
     },
   },
-  android: { package: "com.example.mediahub", versionCode: Number(build) || 1 },
+  android: { package: bundleId, versionCode: Number(build) || 1 },
   web: { favicon: "./assets/favicon.png" },
+  // Read by src/lib/instance.ts. OTA bundles carry this config too, so scripts/ota.sh must run
+  // with the same instance config as the IPA build.
+  extra: { server, embyServer },
   plugins: [
     "expo-router",
     "expo-updates",

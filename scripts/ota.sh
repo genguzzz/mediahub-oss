@@ -7,6 +7,11 @@
 # ./scripts/release.sh; this script refuses when it sees such changes since the last tag (FORCE=1 overrides).
 set -e
 cd "$(dirname "$0")/.."
+# Instance config (instance.env.example): APP_* render app.config.ts exactly like the IPA build did,
+# so the bundle points at the same server; the admin token comes from secrets.env or the server.
+. scripts/lib/instance.sh
+instance_load
+instance_require APP_SERVER
 MESSAGE="${1:-$(git log -1 --format=%s)}"
 
 LAST_TAG=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
@@ -38,9 +43,12 @@ npx expo config --json --type public > dist-ota/expoConfig.json 2>/dev/null
 TGZ=$(mktemp /tmp/mediahub-ota.XXXXXX.tgz)
 tar czf "$TGZ" -C dist-ota .
 
-SERVER="${MEDIAHUB_SERVER:?set MEDIAHUB_SERVER, e.g. https://media.example.com}"
-TOKEN="${MEDIAHUB_ADMIN_TOKEN:?set MEDIAHUB_ADMIN_TOKEN (ADMIN_TOKEN from the server .env)}"
-curl -sS --fail-with-body -X POST "$SERVER/admin/updates" \
+TOKEN="${MEDIAHUB_ADMIN_TOKEN:-}"
+if [ -z "$TOKEN" ]; then
+  instance_require DEPLOY_HOST ADMIN_TOKEN_CMD
+  TOKEN=$(ssh "$DEPLOY_HOST" "$ADMIN_TOKEN_CMD")
+fi
+curl -sS --fail-with-body -X POST "${APP_SERVER%/}/admin/updates" \
   -H "Authorization: Bearer $TOKEN" \
   -F "bundle=@$TGZ" -F "runtimeVersion=$RV" -F "commit=$COMMIT" -F "message=$MESSAGE"
 echo

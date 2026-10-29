@@ -77,9 +77,24 @@ export interface Item {
   MediaStreams?: MediaStream[];
   DateCreated?: string;
   Path?: string;
-  People?: { Name: string; Role?: string; Type: string; Id: string; PrimaryImageTag?: string }[];
-  Studios?: { Name: string }[];
+  People?: Person[];
+  Studios?: { Name: string; Id?: string | number }[];
+  // Detail-page metadata (requested by embyApi.item).
+  Taglines?: string[];
+  Tags?: string[];
+  CriticRating?: number;
+  RemoteTrailers?: { Url: string; Name?: string }[];
+  LocalTrailerCount?: number;
+  SpecialFeatureCount?: number;
+  ExternalUrls?: { Name: string; Url: string }[];
+  ProductionLocations?: string[];
+  EndDate?: string;
+  AirDays?: string[];
+  AirTime?: string;
+  Chapters?: { Name?: string; StartPositionTicks: number }[];
 }
+
+export interface Person { Name: string; Role?: string; Type: string; Id: string; PrimaryImageTag?: string }
 
 export interface ItemsResult { Items: Item[]; TotalRecordCount: number }
 
@@ -190,6 +205,8 @@ export async function emby<T>(path: string | (() => string), opts: { method?: st
 }
 
 const uid = () => account().userId;
+// Extra fields only the detail page needs.
+const DETAIL_FIELDS = "People,Studios,MediaSources,Path,Taglines,Tags,CriticRating,RemoteTrailers,ExternalUrls,ProductionLocations,EndDate,AirDays,AirTime,Chapters,PremiereDate";
 const FIELDS = "PrimaryImageAspectRatio,Overview,Genres,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,ChildCount,RecursiveItemCount,DateCreated,Status,ProviderIds";
 
 function qs(params: Record<string, string | number | boolean | undefined | null>) {
@@ -208,7 +225,21 @@ export const embyApi = {
       SortBy: { added: "DateCreated,SortName", name: "SortName", year: "ProductionYear,SortName", rating: "CommunityRating,SortName" }[p.sort ?? "added"],
       SortOrder: p.sort === "name" ? "Ascending" : "Descending",
     })}`),
-  item: (id: string) => emby<Item>(() => `/Users/${uid()}/Items/${id}?${qs({ Fields: `${FIELDS},People,Studios,MediaSources,Path` })}`),
+  item: (id: string) => emby<Item>(() => `/Users/${uid()}/Items/${id}?${qs({ Fields: `${FIELDS},${DETAIL_FIELDS}` })}`),
+  // "More like this", extras and trailers for the detail page.
+  similar: (id: string, limit = 16) => emby<ItemsResult>(() => `/Items/${id}/Similar?${qs({ UserId: uid(), Limit: limit, Fields: FIELDS })}`),
+  specialFeatures: (id: string) => emby<Item[]>(() => `/Users/${uid()}/Items/${id}/SpecialFeatures?${qs({ Fields: FIELDS })}`),
+  localTrailers: (id: string) => emby<Item[]>(() => `/Users/${uid()}/Items/${id}/LocalTrailers`),
+  // A person (actor, director…): bio fields come back on the item itself.
+  person: (id: string) => emby<Item>(() => `/Users/${uid()}/Items/${id}?${qs({ Fields: "Overview,PremiereDate,EndDate,ProductionLocations,ExternalUrls,ProviderIds" })}`),
+  // Library items filtered by person / genre / studio / tag / year (the targets of detail-page links).
+  filtered: (p: { personId?: string; genre?: string; studioId?: string; tag?: string; year?: string; types?: string; sort?: "year" | "name" | "rating" | "added"; start?: number; limit?: number }) =>
+    emby<ItemsResult>(() => `/Users/${uid()}/Items?${qs({
+      Recursive: true, IncludeItemTypes: p.types ?? "Movie,Series", Fields: FIELDS, StartIndex: p.start ?? 0, Limit: p.limit ?? 60,
+      PersonIds: p.personId, Genres: p.genre, StudioIds: p.studioId, Tags: p.tag, Years: p.year,
+      SortBy: { year: "PremiereDate,ProductionYear,SortName", name: "SortName", rating: "CommunityRating,SortName", added: "DateCreated,SortName" }[p.sort ?? "year"],
+      SortOrder: p.sort === "name" ? "Ascending" : "Descending",
+    })}`),
   seasons: (seriesId: string) => emby<ItemsResult>(() => `/Shows/${seriesId}/Seasons?${qs({ UserId: uid(), Fields: FIELDS })}`),
   episodes: (seriesId: string, seasonId?: string) => emby<ItemsResult>(() => `/Shows/${seriesId}/Episodes?${qs({ UserId: uid(), SeasonId: seasonId, Fields: `${FIELDS},MediaSources` })}`),
   setPlayed: (id: string, played: boolean) => emby(() => `/Users/${uid()}/PlayedItems/${id}`, { method: played ? "POST" : "DELETE", body: played ? {} : undefined }),

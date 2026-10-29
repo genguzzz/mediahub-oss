@@ -2,3 +2,10 @@ node_modules/
 .DS_Store
 __pycache__/
 .env
+
+# Build outputs and anything instance-specific (instance config lives in ~/.config/mediahub)
+*.ipa
+*.tar.enc
+app/dist-ota/
+instance.env
+secrets.env

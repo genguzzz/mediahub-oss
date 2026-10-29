@@ -9,6 +9,7 @@ import { embyApi, login, logout } from "@/lib/emby";
 import { collectLogs } from "@/lib/log";
 import { ensureNotifyPermission } from "@/lib/notify";
 import { invalidate } from "@/lib/query";
+import { DEFAULT_EMBY_SERVER } from "@/lib/instance";
 import { DEFAULT_SERVER, setSettings, useSettings } from "@/lib/settings";
 import { STYLES, colors, radius, scheme, type StyleId } from "@/lib/theme";
 import { track } from "@/lib/track";
@@ -19,7 +20,7 @@ export default function SettingsScreen() {
   const s = useSettings((x) => x);
   const [srv, setSrv] = useState(s.server);
   const [tok, setTok] = useState(s.token);
-  const [embySrv, setEmbySrv] = useState(s.emby.server || "https://emby.example.com:8920");
+  const [embySrv, setEmbySrv] = useState(s.emby.server || DEFAULT_EMBY_SERVER);
   const [embyUser, setEmbyUser] = useState(s.emby.username);
   const [embyPass, setEmbyPass] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
@@ -138,7 +139,7 @@ export default function SettingsScreen() {
         <SectionTitle title="Emby（直连播放）" />
         <Card style={{ gap: 10 }}>
           {s.emby.token ? <Text style={styles.body}>已登录：{s.emby.username} · {s.emby.server}</Text> : <Text style={styles.body}>未登录。连接服务器后会自动用服务器上配置的账号登录。</Text>}
-          <TextInput value={embySrv} onChangeText={setEmbySrv} placeholder="https://emby.example.com:8920" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} keyboardType="url" style={input} />
+          <TextInput value={embySrv} onChangeText={setEmbySrv} placeholder={DEFAULT_EMBY_SERVER} placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} keyboardType="url" style={input} />
           <TextInput value={embyUser} onChangeText={setEmbyUser} placeholder="用户名（留空用服务器上保存的）" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} style={input} />
           <TextInput value={embyPass} onChangeText={setEmbyPass} placeholder="密码（留空用服务器上保存的）" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} secureTextEntry style={input} />
           <View style={{ flexDirection: "row", gap: 10 }}>
