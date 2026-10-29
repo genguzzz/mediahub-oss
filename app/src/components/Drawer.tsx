@@ -1,17 +1,19 @@
 // Left drawer with everything that isn't a tab: libraries, subscriptions, history, settings.
 // Opens from the menu button in TabHeader or a swipe from the left edge of a tab screen.
 import { useEffect, useState, type ReactNode } from "react";
-import { Animated, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, Animated, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter, type Href } from "expo-router";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { appVersion } from "@/lib/api";
 import { useQuery } from "@/lib/query";
+import { checkAndFetch, restartToApply } from "@/lib/updates";
 import { embyApi } from "@/lib/emby";
 import { useSettings } from "@/lib/settings";
 import { colors } from "@/lib/theme";
 import { closeDrawer, openDrawer, useDrawerOpen } from "./drawerState";
-import { tap } from "./ui";
+import { tap, toast, toastError } from "./ui";
 
 const ADULT = new Set(["AV", "里番"]);
 const LIB_ICON: Record<string, keyof typeof Ionicons.glyphMap> = { movies: "film-outline", tvshows: "tv-outline", homevideos: "videocam-outline", music: "musical-notes-outline" };
@@ -45,7 +47,7 @@ export function DrawerHost() {
         <Pressable style={{ flex: 1 }} onPress={closeDrawer} />
       </Animated.View>
       <Animated.View style={{ position: "absolute", top: 0, bottom: 0, left: 0, width: panel, backgroundColor: colors.sheet, borderRightWidth: 1, borderColor: colors.border, transform: [{ translateX: x }] }}>
-        <ScrollView contentContainerStyle={{ paddingTop: insets.top + 18, paddingBottom: insets.bottom + 24, paddingHorizontal: 14 }}>
+        <ScrollView contentContainerStyle={{ paddingTop: insets.top + 18, paddingBottom: 16, paddingHorizontal: 14 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 8, marginBottom: 18 }}>
             <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: colors.primary, alignItems: "center", justifyContent: "center" }}>
               <Ionicons name="play" size={22} color={colors.onPrimary} style={{ marginLeft: 3 }} />
@@ -73,7 +75,40 @@ export function DrawerHost() {
             <Item icon="settings-outline" label="设置" onPress={() => go("/settings")} />
           </Section>
         </ScrollView>
+        <UpdateFooter bottom={insets.bottom} />
       </Animated.View>
+    </View>
+  );
+}
+
+// Bottom of the drawer: running version and a small 检查更新 (same check as Settings; a downloaded update offers restart).
+function UpdateFooter({ bottom }: { bottom: number }) {
+  const [state, setState] = useState<"idle" | "busy" | "ready">("idle");
+  const press = async () => {
+    tap();
+    if (state === "ready") return void restartToApply();
+    setState("busy");
+    try {
+      if (await checkAndFetch("drawer")) {
+        setState("ready");
+        toast("新版本已下载", undefined, { label: "立即重启", onPress: () => void restartToApply() });
+      } else {
+        setState("idle");
+        toast("已是最新版本");
+      }
+    } catch (e) {
+      setState("idle");
+      toastError("未能检查更新", e);
+    }
+  };
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 22, paddingTop: 10, paddingBottom: bottom + 12, borderTopWidth: 1, borderColor: colors.border }}>
+      <Text style={{ flex: 1, fontSize: 11.5, color: colors.textFaint }} numberOfLines={1}>{appVersion}</Text>
+      <Pressable onPress={() => void press()} disabled={state === "busy"} hitSlop={8}
+        style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, height: 28, borderRadius: 14, backgroundColor: state === "ready" ? colors.primary : colors.cardMuted, opacity: pressed ? 0.7 : 1 })}>
+        {state === "busy" ? <ActivityIndicator size="small" color={colors.textSoft} /> : <Ionicons name={state === "ready" ? "refresh" : "cloud-download-outline"} size={14} color={state === "ready" ? colors.onPrimary : colors.textSoft} />}
+        <Text style={{ fontSize: 12, fontWeight: "700", color: state === "ready" ? colors.onPrimary : colors.textSoft }}>{state === "ready" ? "重启更新" : "检查更新"}</Text>
+      </Pressable>
     </View>
   );
 }

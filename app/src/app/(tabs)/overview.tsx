@@ -6,7 +6,7 @@ import { PosterTile, Row } from "@/components/media";
 import { useOpenMedia } from "@/components/mediaCards";
 import { ErrorBox, Loading, ProgressBar, Pull, TAB_BAR_SPACE, TabHeader, styles, tap } from "@/components/ui";
 import { LibraryGrid, StorageCard } from "@/components/SystemCards";
-import { api, img, pipelineQuery, statsQuery, type EmbyActivity, type HistoryItem, type Overview } from "@/lib/api";
+import { api, img, pipelineQuery, statsQuery, type EmbyActivity, type Health, type HistoryItem, type Overview } from "@/lib/api";
 import { useSettings } from "@/lib/settings";
 import { ago, pct, speed } from "@/lib/format";
 import { useQuery } from "@/lib/query";
@@ -22,6 +22,8 @@ export default function OverviewTab() {
   const emby = useQuery("emby:activity", () => api<EmbyActivity>("/v1/emby/activity"), { interval: 30_000 });
   const hist = useQuery("history:1", () => api<{ items: HistoryItem[] }>("/v1/history?page=1"), { staleMs: 60_000 });
   const stats = useQuery("stats", () => statsQuery(), { interval: 120_000, staleMs: 60_000 });
+  const health = useQuery("health", () => api<Health>("/v1/health"), { staleMs: 300_000 });
+  const issues = (health.data?.ok ? health.data.checks : []).filter((c) => c.count && c.severity !== "info");
   const showAdult = useSettings((s) => s.showAdult);
   const libs = (stats.data?.libraries ?? []).filter((l) => showAdult || !l.adult);
   const [now] = useState(() => Date.now());
@@ -34,7 +36,7 @@ export default function OverviewTab() {
       <TabHeader title="概览" />
       <ScrollView
         contentContainerStyle={{ paddingBottom: TAB_BAR_SPACE }}
-        refreshControl={<Pull onRefresh={() => Promise.all([ov.refresh(), pipe.refresh(), emby.refresh(), hist.refresh(), stats.refresh()])} />}
+        refreshControl={<Pull onRefresh={() => Promise.all([ov.refresh(), pipe.refresh(), emby.refresh(), hist.refresh(), stats.refresh(), health.refresh()])} />}
       >
         <View style={{ paddingHorizontal: 16 }}>
           {ov.error ? <ErrorBox text={ov.error} onRetry={ov.refresh} /> : null}
@@ -52,6 +54,21 @@ export default function OverviewTab() {
             <Stat icon="film" tint={colors.textSoft} label="AV 刮削" value={p?.av} href="/pipeline" small />
           </View>
         </View>
+
+        {issues.length ? (
+          <View style={{ paddingHorizontal: 16, marginTop: 24 }}>
+            <Header title="需要处理" onMore={() => router.push("/health")} />
+            <Pressable onPress={() => { tap(); router.push("/health"); }} style={({ pressed }) => ({ backgroundColor: colors.card, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.warning + "66", padding: 14, gap: 8, opacity: pressed ? 0.85 : 1, ...shadow() })}>
+              {issues.map((c) => (
+                <View key={c.key} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <Ionicons name={c.severity === "error" ? "alert-circle" : "warning"} size={16} color={c.severity === "error" ? colors.danger : colors.warning} />
+                  <Text style={[styles.body, { flex: 1 }]}>{c.title}</Text>
+                  <Text style={{ fontWeight: "800", color: colors.text }}>{c.count}</Text>
+                </View>
+              ))}
+            </Pressable>
+          </View>
+        ) : null}
 
         <View style={{ paddingHorizontal: 16, marginTop: 24 }}>
           <Header title="存储" onMore={() => router.push("/stats")} />

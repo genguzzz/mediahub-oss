@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
-import { Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Image } from "expo-image";
 import * as WebBrowser from "expo-web-browser";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ExternalLinks, ExtrasRow, MediaInfo, MetaChips, PeopleRow, SimilarRow } from "@/components/embyDetail";
+import { HeroBack, HeroBackdrop, HeroHeader } from "@/components/DetailHero";
 import { itemCard } from "@/components/embyCards";
 import { Img, MiniTag, PosterTile, Row } from "@/components/media";
 import { Chip, CopyText, ChipRow, ErrorBox, IconButton, Loading, PillButton, confirm, styles, tap, toast, toastError, Pull } from "@/components/ui";
@@ -14,14 +14,12 @@ import { backdropOf, embyApi, embyImage, landscapeOf, posterOf, runtime, seconds
 import { deleteFromLibrary } from "@/lib/libraryDelete";
 import { openPeek } from "@/lib/peek";
 import { load, useQuery } from "@/lib/query";
-import { colors, radius } from "@/lib/theme";
+import { colors } from "@/lib/theme";
 import { track } from "@/lib/track";
 
 export default function EmbyItemScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
   const key = `emby:item:${id}`;
   const q = useQuery(key, () => embyApi.item(id), { staleMs: 15_000 });
   const it = q.data;
@@ -88,7 +86,6 @@ export default function EmbyItemScreen() {
   const pos = seconds(target?.UserData?.PlaybackPositionTicks);
   const playLabel = !target ? "播放" : isSeries ? `${pos ? "继续" : "播放"} S${target.ParentIndexNumber ?? 1}E${target.IndexNumber ?? 1}` : pos ? `继续播放 ${Math.floor(pos / 60)} 分` : "播放";
   const backdrop = it ? backdropOf(it) ?? landscapeOf(it, 1280) : undefined;
-  const heroH = Math.round(width * 0.62);
   const tmdb = it?.ProviderIds?.Tmdb;
   // When a movie / episode would end if started now (or resumed), like Infuse and Emby's web client.
   const total = seconds(it?.RunTimeTicks);
@@ -115,23 +112,12 @@ export default function EmbyItemScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <ScrollView contentContainerStyle={{ paddingBottom: 60 }} refreshControl={<Pull onRefresh={refreshAll} />}>
-        <View style={{ height: heroH }}>
-          <Img source={backdrop} style={{ position: "absolute", top: 0, left: 0, right: 0, height: heroH }} icon="image-outline" />
-          {/* Fade the hero into the page background. */}
-          {Array.from({ length: 16 }, (_, i) => (
-            <View key={i} style={{ position: "absolute", left: 0, right: 0, top: heroH * (0.45 + i * 0.035), height: heroH * 0.035 + 1, backgroundColor: `${colors.fade}${((i + 1) / 16) ** 1.6})` }} />
-          ))}
-          <View style={{ position: "absolute", left: 0, right: 0, top: heroH * 0.99, height: heroH * 0.02, backgroundColor: colors.bg }} />
-        </View>
+        <HeroBackdrop source={backdrop} />
         {q.error ? <ErrorBox text={q.error} onRetry={q.refresh} /> : null}
         {!it && q.loading ? <Loading /> : null}
         {it ? (
-          <View style={{ paddingHorizontal: 18, marginTop: -heroH * 0.32 }}>
-            <View style={{ flexDirection: "row", gap: 14, alignItems: "flex-end" }}>
-              <View style={{ borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
-                <Img source={posterOf(it, 400)} style={{ width: 104, height: 156 }} />
-              </View>
-              <View style={{ flex: 1, paddingBottom: 4 }}>
+          <View>
+            <HeroHeader poster={posterOf(it, 400)}>
                 {logo ? <Image source={logo} style={{ width: "100%", height: 56, marginBottom: 6 }} contentFit="contain" contentPosition="left" transition={180} /> : null}
                 <CopyText style={logo ? { fontSize: 15, fontWeight: "700", color: colors.textSoft } : { fontSize: 24, fontWeight: "800", color: colors.text, lineHeight: 29 }} numberOfLines={3}>{(it.Type === "Episode" ? it.SeriesName : it.Name) ?? ""}</CopyText>
                 {it.Taglines?.[0] ? <Text style={{ fontSize: 13, fontStyle: "italic", color: colors.textSoft, marginTop: 3 }} numberOfLines={2}>{it.Taglines[0]}</Text> : null}
@@ -150,9 +136,8 @@ export default function EmbyItemScreen() {
                     {it.CriticRating ? <Text style={{ color: colors.text, fontWeight: "700" }}>{it.CriticRating >= 60 ? "🍅" : "🤢"} {it.CriticRating}%</Text> : null}
                   </View>
                 ) : null}
-              </View>
-            </View>
-
+            </HeroHeader>
+            <View style={{ paddingHorizontal: 18 }}>
             <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap", marginTop: 14 }}>
               {techBadges(it).map((b) => <MiniTag key={b} text={b} color={/Dolby|HDR|Atmos|4K/.test(b) ? colors.primary : undefined} />)}
             </View>
@@ -177,6 +162,7 @@ export default function EmbyItemScreen() {
             <MetaChips item={it} />
             <ExternalLinks item={it} />
             {!isSeries && !isFolder ? <MediaInfo item={it} /> : null}
+            </View>
           </View>
         ) : null}
 
@@ -223,11 +209,7 @@ export default function EmbyItemScreen() {
           </View>
         ) : null}
       </ScrollView>
-      <View style={{ position: "absolute", top: insets.top + 6, left: 12 }}>
-        <Pressable hitSlop={10} accessibilityLabel="返回" onPress={() => { tap(); router.back(); }} style={{ width: 38, height: 38, borderRadius: 19, backgroundColor: "rgba(0,0,0,0.45)", alignItems: "center", justifyContent: "center" }}>
-          <Ionicons name="chevron-back" size={22} color="#fff" />
-        </Pressable>
-      </View>
+      <HeroBack />
     </View>
   );
 }

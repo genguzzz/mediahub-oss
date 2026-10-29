@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { Image } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Card, CopyText, SourceLink, ErrorBox, Loading, PillButton, Poster, ProgressBar, Screen, SectionTitle, Tag, TopBar, confirm, styles, toast, toastError, Pull } from "@/components/ui";
+import { HeroBack, HeroBackdrop, HeroHeader } from "@/components/DetailHero";
+import { Card, CopyText, SourceLink, ErrorBox, Loading, PillButton, ProgressBar, SectionTitle, Tag, TopBar, confirm, styles, toast, toastError, Pull } from "@/components/ui";
 import { api, img, type MediaDetail } from "@/lib/api";
 import { ranges } from "@/lib/format";
 import { load, useQuery } from "@/lib/query";
@@ -76,17 +76,16 @@ export default function MediaScreen() {
     }, true);
 
   return (
-    <Screen>
-      <TopBar title={m?.title ?? ""} />
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      {!m ? <TopBar title="" /> : null}
       {error ? <ErrorBox text={error} onRetry={refresh} /> : null}
       {!m && loading ? <Loading /> : null}
       {m ? (
         <ScrollView contentContainerStyle={{ paddingBottom: 60 }} refreshControl={<Pull onRefresh={refresh} />}>
-          {m.backdrop ? <Image source={img(m.backdrop)} style={{ height: 180, marginHorizontal: 16, borderRadius: 14 }} contentFit="cover" /> : null}
-          <View style={{ flexDirection: "row", gap: 14, padding: 16 }}>
-            <Poster source={img(m.poster)} width={96} />
-            <View style={{ flex: 1, gap: 6 }}>
-              <CopyText style={styles.h2}>{m.title}</CopyText>
+          <HeroBackdrop source={img(m.backdrop ?? m.poster)} />
+          <HeroHeader poster={img(m.poster)}>
+            <View style={{ gap: 6 }}>
+              <CopyText style={{ fontSize: 24, fontWeight: "800", color: colors.text, lineHeight: 29 }} numberOfLines={3}>{m.title}</CopyText>
               {m.originalTitle && m.originalTitle !== m.title ? <CopyText style={styles.faint}>{m.originalTitle}</CopyText> : null}
               <Text style={styles.faint}>{[m.date, m.country.join("/"), m.status === "Ended" ? "已完结" : m.status === "Returning Series" ? "连载中" : m.status].filter(Boolean).join(" · ")}</Text>
               <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
@@ -95,8 +94,8 @@ export default function MediaScreen() {
                 {m.genres.slice(0, 3).map((g) => <Tag key={g} text={g} color={colors.primary} />)}
               </View>
             </View>
-          </View>
-          <View style={{ paddingHorizontal: 16 }}>
+          </HeroHeader>
+          <View style={{ paddingHorizontal: 16, marginTop: 16 }}>
             <CopyText label="简介" style={styles.body} numberOfLines={6}>{m.overview || "没有简介"}</CopyText>
             <SourceLink name="TMDb" url={`https://www.themoviedb.org/${m.type === "movie" ? "movie" : "tv"}/${id}`} style={{ marginTop: 14 }} />
 
@@ -121,12 +120,12 @@ export default function MediaScreen() {
 
             {m.type === "movie" ? (
               <View style={{ flexDirection: "row", gap: 10, marginTop: 18 }}>
-                <PillButton icon="flash-outline" label="自动入库" loading={busy === "auto:m"} onPress={() => void autoIngest()} style={{ flex: 1 }} />
-                <PillButton variant="soft" icon="search" label="搜索资源" onPress={() => search()} style={{ flex: 1 }} />
+                <PillButton small icon="search" label="搜索资源" onPress={() => search()} style={{ flex: 1 }} />
+                <PillButton small variant="soft" icon="flash-outline" label="自动入库" loading={busy === "auto:m"} onPress={() => void autoIngest()} style={{ flex: 1 }} />
                 {data.subscriptions.length ? (
-                  <PillButton variant="soft" label="已订阅" icon="checkmark" onPress={() => unsubscribe(data.subscriptions[0].id)} />
+                  <PillButton small variant="soft" label="已订阅" icon="checkmark" onPress={() => unsubscribe(data.subscriptions[0].id)} style={{ flex: 1 }} />
                 ) : (
-                  <PillButton variant="soft" label="订阅" icon="bookmark-outline" loading={busy === "sub:m"} onPress={() => subscribe()} />
+                  <PillButton small variant="soft" label="订阅" icon="bookmark-outline" loading={busy === "sub:m"} onPress={() => subscribe()} style={{ flex: 1 }} />
                 )}
               </View>
             ) : (
@@ -144,8 +143,8 @@ export default function MediaScreen() {
                       {have !== null && s.episodes ? <View style={{ marginTop: 8 }}><ProgressBar value={(have / s.episodes) * 100} color={have >= s.episodes ? colors.success : colors.primary} /></View> : null}
                       {sub ? <Text style={[styles.faint, { marginTop: 6 }]}>已订阅{sub.lack !== null ? `，还缺 ${sub.lack} 集` : ""}{sub.state === "S" ? "（暂停）" : ""}</Text> : null}
                       <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
-                        <PillButton small icon="flash-outline" label="自动入库" loading={busy === `auto:${s.season}`} onPress={() => void autoIngest(s.season)} />
-                        <PillButton small variant="soft" icon="search" label="搜索资源" onPress={() => search(s.season)} />
+                        <PillButton small icon="search" label="搜索资源" onPress={() => search(s.season)} />
+                        <PillButton small variant="soft" icon="flash-outline" label="自动入库" loading={busy === `auto:${s.season}`} onPress={() => void autoIngest(s.season)} />
                         {s.season > 0 ? (
                           sub ? (
                             <PillButton small variant="soft" icon="checkmark" label="已订阅" onPress={() => unsubscribe(sub.id)} />
@@ -163,6 +162,7 @@ export default function MediaScreen() {
           </View>
         </ScrollView>
       ) : null}
-    </Screen>
+      <HeroBack />
+    </View>
   );
 }

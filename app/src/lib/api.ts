@@ -289,6 +289,10 @@ export interface Stats {
 }
 export const statsQuery = (refresh = false) => api<Stats>(`/v1/stats${refresh ? "?refresh=1" : ""}`, { timeoutMs: refresh ? 150_000 : 30_000 });
 
+export interface HealthItem { id: string; title: string; detail: string; task?: string; emby?: string; action?: string }
+export interface HealthCheck { key: string; title: string; severity: "error" | "warn" | "info"; count: number; hint: string; items: HealthItem[] }
+export interface Health { ok: boolean; at: number; total: number; errors: string[]; checks: HealthCheck[]; error?: string }
+
 export interface OfflineTask { hash: string; name: string; size: number; percent: number; status: number; rate: number; peers: number; added: number; updated: number; dir: string | null; ours: boolean }
 
 export interface QbTorrent {
