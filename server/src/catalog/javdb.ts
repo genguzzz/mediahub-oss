@@ -68,8 +68,9 @@ async function item(id: string): Promise<CatalogDetail | null> {
   const magnets = (html.match(/class="magnet-name"/g) ?? []).length;
   const title = decode(/<strong class="current-title">([^<]*)<\/strong>/.exec(html)?.[1] ?? "").trim();
   const cover = /<img class="video-cover"[^>]*src="([^"]+)"/.exec(html)?.[1];
+  const previews = [...html.matchAll(/<a class="tile-item" href="([^"]+)"[^>]*>\s*<img src="([^"]+)"/g)].map((m) => ({ full: img(decode(m[1]))!, thumb: img(decode(m[2]))! }));
   return {
-    id, code, title: title || code || id,
+    id, code, title: title || code || id, previews,
     poster: img(cover), posterCrop: "right", landscape: img(cover),
     rating: score ? Math.round(Number(score[1]) * 20) / 10 : null, votes: score ? Number(score[2]) : undefined,
     date: val("日期") || null, tags, people,
@@ -87,6 +88,7 @@ async function item(id: string): Promise<CatalogDetail | null> {
     ].filter((f) => f.value),
     episodes: [],
     keyword: code ?? title,
+    sourceUrl: `${BASE}/v/${encodeURIComponent(id)}`,
   };
 }
 

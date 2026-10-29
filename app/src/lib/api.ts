@@ -240,7 +240,7 @@ export interface Task {
 }
 
 // key: identifier for /v1/av/cancel; step: offline (115) | scrape (strm written, MDC) | done.
-export interface AdultRow { kind: "av"; key?: string; step?: "offline" | "scrape" | "done"; strm?: string; code: string; stage: string; at: number; hash?: string; percent?: number | null; name: string; failed: boolean; done?: boolean; error?: string }
+export interface AdultRow { kind: "av"; key?: string; step?: "offline" | "scrape" | "done"; strm?: string; code: string; stage: string; at: number; hash?: string; percent?: number | null; name: string; failed: boolean; done?: boolean; error?: string; steps?: Step[] }
 
 export interface Pipeline { ok: boolean; tasks: Task[]; adult: AdultRow[]; ts: number }
 

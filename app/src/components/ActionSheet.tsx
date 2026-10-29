@@ -4,7 +4,7 @@
 import { useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { Sheet, confirm as ask, styles, tap, toastError } from "./ui";
+import { CopyText, Sheet, confirm as ask, styles, tap, toastError } from "./ui";
 import { colors, radius } from "@/lib/theme";
 
 export interface SheetAction {
@@ -31,7 +31,7 @@ export function ActionSheet({ visible, onClose, title, message, actions }: { vis
   };
   return (
     <Sheet visible={visible} onClose={onClose} title={title}>
-      {message ? <Text style={[styles.faint, { marginBottom: 12, lineHeight: 18 }]} selectable>{message}</Text> : null}
+      {message ? <CopyText style={[styles.faint, { marginBottom: 12, lineHeight: 18 }]}>{message}</CopyText> : null}
       <View style={{ gap: 8 }}>
         {actions.map((a) => {
           const color = a.destructive ? colors.danger : colors.text;

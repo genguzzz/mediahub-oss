@@ -55,6 +55,7 @@ export interface NativeCaps {
   module: number; pip: boolean; airplay: boolean; addSubtitle: boolean; brightness: boolean; volume: boolean; nowPlaying: boolean;
   hdr: boolean; hdr10: boolean; dolbyVision: boolean; hlg: boolean; engine: string;
   prewarm?: boolean; startupEvents?: boolean; // runtime 4+
+  ssdp?: boolean;                             // runtime 5+
 }
 
 interface NativeModule {
@@ -63,6 +64,7 @@ interface NativeModule {
   setBrightness?(v: number): Promise<void>;
   getVolume?(): Promise<number>;
   setVolume?(v: number): Promise<void>;
+  ssdpScan?(timeoutMs: number): Promise<{ location: string; ip: string }[]>;
   prewarm?(uri: string, headers: Record<string, string>): Promise<{ bytes: number; declined: string }>;
   addListener?(event: "onPiPRestore", fn: (e: { itemId: string; position: number }) => void): EventSubscription;
   addListener?(event: "onEngineLog", fn: (e: { line: string }) => void): EventSubscription;
@@ -86,6 +88,8 @@ export const device = {
   setVolume: (v: number) => mod?.setVolume?.(v) ?? Promise.resolve(),
   // Runtime 4: fetch a source's first 8 MB ahead of playback; null on older binaries.
   prewarm: (uri: string, headers: Record<string, string> = {}) => mod?.prewarm?.(uri, headers).catch(() => null) ?? Promise.resolve(null),
+  // Runtime 5: DLNA renderers on the Wi-Fi; null on older binaries.
+  ssdpScan: (timeoutMs = 3500) => mod?.ssdpScan?.(timeoutMs).catch(() => null) ?? Promise.resolve(null),
   onPiPRestore: (fn: (e: { itemId: string; position: number }) => void) => mod?.addListener?.("onPiPRestore", fn) ?? null,
   // Runtime 4: AetherEngine startup/network diagnostics (open timings, first data, stalls…), URLs cut to host.
   onEngineLog: (fn: (e: { line: string }) => void) => mod?.addListener?.("onEngineLog", fn) ?? null,

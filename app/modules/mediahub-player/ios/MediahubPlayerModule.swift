@@ -97,7 +97,8 @@ public class MediahubPlayerModule: Module {
     AsyncFunction("capabilities") { () -> [String: Any] in
       let d = MainActor.assumeIsolated { AetherEngine.displayCapabilities }
       return [
-        "module": 4,
+        "module": 5,
+        "ssdp": true,
         "prewarm": true,
         "startupEvents": true,
         "engineLog": true,
@@ -121,6 +122,11 @@ public class MediahubPlayerModule: Module {
       guard let url = URL(string: uri) else { return ["bytes": 0, "declined": "bad url"] }
       let r = await AetherEngine.prewarm(url: url, httpHeaders: headers)
       return ["bytes": r.retainedBytes, "declined": r.declined ?? ""]
+    }
+
+    // Runtime 5: find DLNA renderers (TVs) on the Wi-Fi for casting.
+    AsyncFunction("ssdpScan") { (timeoutMs: Int) async -> [[String: String]] in
+      await Task.detached { Ssdp.scan(timeoutMs: timeoutMs) }.value
     }
 
     AsyncFunction("getBrightness") { () -> Double in

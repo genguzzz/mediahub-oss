@@ -14,7 +14,7 @@ const build = process.env.BUILD_NUMBER ?? "0";
 //    recognition) + player: PiP, background audio, Now Playing, AirPlay, add-subtitle, brightness/volume.
 // 2: AetherEngine player (modules/mediahub-player + plugins/with-aether-engine), iOS 18 floor,
 //    screen orientation. 1: first build (router, image, secure-store, notifications, background task).
-export const RUNTIME_VERSION = "4";
+export const RUNTIME_VERSION = "5";
 
 const config: ExpoConfig = {
   name: "影库",
@@ -38,6 +38,7 @@ const config: ExpoConfig = {
     supportsTablet: false,
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
+      NSLocalNetworkUsageDescription: "用于发现并连接局域网内的电视，把正在播放的影片投屏过去。",
       CFBundleDisplayName: "影库",
       // Keep audio going when the screen locks or the app leaves the foreground mid-film.
       UIBackgroundModes: ["audio", "fetch", "processing"],

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { Image } from "expo-image";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Card, ErrorBox, Loading, PillButton, Poster, ProgressBar, Screen, SectionTitle, Tag, TopBar, confirm, styles, toast, toastError, Pull } from "@/components/ui";
+import { Card, CopyText, SourceLink, ErrorBox, Loading, PillButton, Poster, ProgressBar, Screen, SectionTitle, Tag, TopBar, confirm, styles, toast, toastError, Pull } from "@/components/ui";
 import { api, img, type MediaDetail } from "@/lib/api";
 import { ranges } from "@/lib/format";
 import { load, useQuery } from "@/lib/query";
@@ -57,8 +57,8 @@ export default function MediaScreen() {
           <View style={{ flexDirection: "row", gap: 14, padding: 16 }}>
             <Poster source={img(m.poster)} width={96} />
             <View style={{ flex: 1, gap: 6 }}>
-              <Text style={styles.h2}>{m.title}</Text>
-              {m.originalTitle && m.originalTitle !== m.title ? <Text style={styles.faint}>{m.originalTitle}</Text> : null}
+              <CopyText style={styles.h2}>{m.title}</CopyText>
+              {m.originalTitle && m.originalTitle !== m.title ? <CopyText style={styles.faint}>{m.originalTitle}</CopyText> : null}
               <Text style={styles.faint}>{[m.date, m.country.join("/"), m.status === "Ended" ? "已完结" : m.status === "Returning Series" ? "连载中" : m.status].filter(Boolean).join(" · ")}</Text>
               <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
                 <Tag text={m.type === "movie" ? "电影" : `剧集 · ${m.seasons ?? "?"} 季 ${m.episodes ?? "?"} 集`} color={colors.textSoft} />
@@ -68,7 +68,8 @@ export default function MediaScreen() {
             </View>
           </View>
           <View style={{ paddingHorizontal: 16 }}>
-            <Text style={styles.body} numberOfLines={6}>{m.overview || "没有简介"}</Text>
+            <CopyText label="简介" style={styles.body} numberOfLines={6}>{m.overview || "没有简介"}</CopyText>
+            <SourceLink name="TMDb" url={`https://www.themoviedb.org/${m.type === "movie" ? "movie" : "tv"}/${id}`} style={{ marginTop: 14 }} />
 
             <SectionTitle title="Emby 媒体库" />
             <Card>
@@ -78,7 +79,7 @@ export default function MediaScreen() {
                     <Tag text={`已入库 · ${lib.lib}`} color={colors.success} />
                     {lib.numbering === "tvdb" ? <Tag text="TVDB 分季" color={colors.textSoft} /> : null}
                   </View>
-                  <Text style={[styles.faint, { marginTop: 8 }]} selectable>{lib.path}</Text>
+                  <CopyText style={[styles.faint, { marginTop: 8 }]}>{lib.path}</CopyText>
                   {Object.entries(lib.seasons ?? {}).map(([s, eps]) => (
                     <Text key={s} style={[styles.body, { marginTop: 4 }]}>{s === "0" ? "特别篇" : `第 ${s} 季`}：{eps.length} 集（{ranges(eps)}）</Text>
                   ))}

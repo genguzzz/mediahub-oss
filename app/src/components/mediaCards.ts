@@ -36,6 +36,7 @@ export function mediaCard(m: MediaBrief, open: () => void): CardData {
     poster: img(m.poster),
     rating: m.vote || undefined,
     badge: m.library ? { text: `已入库 · ${m.library.lib}`, color: colors.success } : undefined,
+    link: m.tmdbid ? { name: "TMDb 页面", url: `https://www.themoviedb.org/${m.type === "movie" ? "movie" : "tv"}/${m.tmdbid}` } : undefined,
     onPress: open,
   };
 }

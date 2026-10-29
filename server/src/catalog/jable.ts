@@ -25,7 +25,7 @@ function card(h: string): CatalogItem | null {
   const nums = sub.split(/<svg/).slice(1).map((part) => num(text(`<svg${part}`)));
   return {
     id: slug, code: (m?.[1] ?? slug.replace(/-c$/, "")).toUpperCase(), title: m ? full.slice(m[0].length) : full,
-    poster: img(/data-src="([^"]+)"/.exec(h)?.[1]),
+    poster: img(/data-src="([^"]+)"/.exec(h)?.[1]), posterAspect: 16 / 9,
     rating: null, views: nums[0] || undefined, votes: nums[1] || undefined,
     date: null, subtitle: /<span class="label">([^<]+)<\/span>/.exec(h)?.[1],
     tags: slug.endsWith("-c") ? ["中文字幕"] : [],
@@ -102,11 +102,11 @@ export const jable: CatalogProvider = {
     const v = await video(id);
     if (!v) return null;
     return {
-      id, code: v.code, title: v.title, poster: img(v.cover), posterCrop: "right", landscape: img(v.cover),
+      id, code: v.code, title: v.title, poster: img(v.cover), posterAspect: 16 / 9, landscape: img(v.cover),
       rating: null, views: v.views || undefined, date: null, tags: v.tags, people: v.people,
       overview: avIntro(v.title, { people: v.people.map((x) => x.name), tags: v.tags.filter((t) => t !== "中国語字幕") }),
       facts: [{ label: "番号", value: v.code }, { label: "播放", value: v.views ? v.views.toLocaleString("en-US") : "" }, { label: "字幕", value: id.endsWith("-c") ? "中文字幕" : "" }].filter((f) => f.value),
-      episodes: [], keyword: v.code, refs: { jable: id },
+      episodes: [], keyword: v.code, refs: { jable: id }, sourceUrl: `${BASE}/videos/${encodeURIComponent(id)}/`,
     };
   },
   async tags() {

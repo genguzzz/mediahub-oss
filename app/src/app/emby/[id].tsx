@@ -5,7 +5,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { itemCard } from "@/components/embyCards";
 import { Img, MiniTag, PosterTile, Row } from "@/components/media";
-import { Chip, ChipRow, ErrorBox, IconButton, Loading, PillButton, confirm, styles, tap, toast, toastError, Pull } from "@/components/ui";
+import { Chip, CopyText, ChipRow, ErrorBox, IconButton, Loading, PillButton, confirm, styles, tap, toast, toastError, Pull } from "@/components/ui";
 import { api } from "@/lib/api";
 import { backdropOf, embyApi, landscapeOf, posterOf, runtime, seconds, techBadges, warmPlayback, type Item } from "@/lib/emby";
 import { deleteFromLibrary } from "@/lib/libraryDelete";
@@ -102,7 +102,7 @@ export default function EmbyItemScreen() {
                 <Img source={posterOf(it, 400)} style={{ width: 104, height: 156 }} />
               </View>
               <View style={{ flex: 1, paddingBottom: 4 }}>
-                <Text style={{ fontSize: 24, fontWeight: "800", color: colors.text, lineHeight: 29 }} numberOfLines={3}>{it.Type === "Episode" ? it.SeriesName : it.Name}</Text>
+                <CopyText style={{ fontSize: 24, fontWeight: "800", color: colors.text, lineHeight: 29 }} numberOfLines={3}>{(it.Type === "Episode" ? it.SeriesName : it.Name) ?? ""}</CopyText>
                 {it.Type === "Episode" ? <Text style={[styles.body, { marginTop: 2 }]}>S{it.ParentIndexNumber}E{it.IndexNumber} · {it.Name}</Text> : null}
                 <Text style={[styles.faint, { marginTop: 6, fontSize: 13 }]}>
                   {[it.ProductionYear, runtime(it.RunTimeTicks), it.OfficialRating, isSeries ? (it.Status === "Ended" ? "已完结" : it.Status === "Continuing" ? "连载中" : "") : ""].filter(Boolean).join(" · ")}
@@ -130,7 +130,7 @@ export default function EmbyItemScreen() {
               </View>
             ) : null}
 
-            {it.Overview ? <Text style={[styles.body, { marginTop: 16 }]} numberOfLines={8}>{it.Overview}</Text> : null}
+            {it.Overview ? <CopyText label="简介" style={[styles.body, { marginTop: 16 }]} numberOfLines={8}>{it.Overview}</CopyText> : null}
             {it.People?.length ? <Text style={[styles.faint, { marginTop: 10 }]} numberOfLines={2}>主演：{it.People.filter((p) => p.Type === "Actor").slice(0, 6).map((p) => p.Name).join("、")}</Text> : null}
           </View>
         ) : null}
@@ -169,7 +169,7 @@ export default function EmbyItemScreen() {
               <PillButton small variant="soft" icon="remove-circle-outline" label="从媒体库删除" onPress={() => void deleteFromLibrary({ id: it.Id, name: it.Name }, false, () => router.back())} style={{ flex: 1 }} />
               <PillButton small variant="soft" icon="trash-outline" label="连 115 原文件删" onPress={() => void deleteFromLibrary({ id: it.Id, name: it.Name }, true, () => router.back())} style={{ flex: 1 }} />
             </View>
-            {it.Path ? <Text selectable style={[styles.faint, { marginTop: 4 }]}>{it.Path}</Text> : null}
+            {it.Path ? <CopyText style={[styles.faint, { marginTop: 4 }]}>{it.Path}</CopyText> : null}
           </View>
         ) : null}
       </ScrollView>

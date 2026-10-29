@@ -1,10 +1,12 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
-import { ActivityIndicator, Alert, Animated, Modal, Pressable, RefreshControl, ScrollView, Text, View, type RefreshControlProps, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
+import { ActivityIndicator, Alert, Animated, Modal, Pressable, RefreshControl, ScrollView, Text, View, type RefreshControlProps, type TextProps, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
+import * as Clipboard from "expo-clipboard";
+import * as WebBrowser from "expo-web-browser";
 import { colors, radius, shadow } from "@/lib/theme";
 import type { Step } from "@/lib/api";
 import { openDrawer } from "./drawerState";
@@ -234,11 +236,40 @@ export function Loading({ text }: { text?: string }) {
   );
 }
 
-export function Row({ label, value, onPress, selectable }: { label: string; value?: string | number | null; onPress?: () => void; selectable?: boolean }) {
+// Text that copies itself on long press (iOS shows no selection UI for plain Text otherwise).
+export function CopyText({ copy, label, children, ...rest }: TextProps & { copy?: string; label?: string; children?: ReactNode }) {
+  const text = copy ?? (typeof children === "string" || typeof children === "number" ? String(children) : "");
+  return (
+    <Text {...rest} onLongPress={text ? () => { void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium); void Clipboard.setStringAsync(text); toast(`已复制${label ?? ""}`, text.length > 80 ? `${text.slice(0, 80)}…` : text); } : undefined}>
+      {children}
+    </Text>
+  );
+}
+
+// "Data source" row: opens the work's page at the index/metadata source in an in-app browser (H5); long press copies the URL.
+export function SourceLink({ name, url, style }: { name: string; url: string; style?: StyleProp<ViewStyle> }) {
+  const host = url.replace(/^https?:\/\//, "").split("/")[0];
+  return (
+    <Pressable
+      onPress={() => { tap(); void WebBrowser.openBrowserAsync(url, { presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET, controlsColor: colors.primary }); }}
+      onLongPress={() => { void Clipboard.setStringAsync(url); toast("已复制来源链接", url); }}
+      style={({ pressed }) => [{ flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 12, paddingHorizontal: 14, borderRadius: radius.md, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, opacity: pressed ? 0.85 : 1 }, style]}
+    >
+      <Ionicons name="link-outline" size={18} color={colors.primary} />
+      <View style={{ flex: 1 }}>
+        <Text style={{ fontSize: 14, fontWeight: "700", color: colors.text }}>数据源 · {name}</Text>
+        <Text style={{ fontSize: 12, color: colors.textFaint }} numberOfLines={1}>{host}</Text>
+      </View>
+      <Ionicons name="open-outline" size={16} color={colors.textFaint} />
+    </Pressable>
+  );
+}
+
+export function Row({ label, value, onPress }: { label: string; value?: string | number | null; onPress?: () => void; selectable?: boolean }) {
   const body = (
     <View style={{ flexDirection: "row", alignItems: "flex-start", paddingVertical: 9, gap: 12 }}>
       <Text style={{ width: 84, fontSize: 13, color: colors.textFaint }}>{label}</Text>
-      <Text selectable={selectable} style={{ flex: 1, fontSize: 14, color: colors.text }}>{value === null || value === undefined || value === "" ? "—" : String(value)}</Text>
+      <CopyText label={label} style={{ flex: 1, fontSize: 14, color: colors.text }}>{value === null || value === undefined || value === "" ? "—" : String(value)}</CopyText>
       {onPress ? <Ionicons name="chevron-forward" size={16} color={colors.textFaint} /> : null}
     </View>
   );

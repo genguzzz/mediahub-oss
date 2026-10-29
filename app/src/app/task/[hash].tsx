@@ -4,7 +4,7 @@ import Animated, { FadeIn, FadeOut, LinearTransition } from "react-native-reanim
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Card, ErrorBox, Loading, PillButton, Poster, ProgressBar, Row, Screen, SectionTitle, Sheet, TopBar, confirm, styles, tap, toast, toastError } from "@/components/ui";
+import { Card, CopyText, ErrorBox, Loading, PillButton, Poster, ProgressBar, Row, Screen, SectionTitle, Sheet, TopBar, confirm, styles, tap, toast, toastError } from "@/components/ui";
 import { api, img, pipelineQuery, type MediaBrief, type Step, type TaskEvent } from "@/lib/api";
 import { ago, bytes, clock, dur, eta, pct, speed } from "@/lib/format";
 import { useQuery } from "@/lib/query";
@@ -112,8 +112,8 @@ export default function TaskScreen() {
 
           <SectionTitle title="详情" />
           <Card>
-            <Row label="种子" value={t.name} selectable />
-            <Row label="115 目录" value={t.dir} selectable />
+            <Row label="种子" value={t.name} />
+            <Row label="115 目录" value={t.dir} />
             <Row label="提交" value={`${clock(t.added, now)}（${ago(t.added, now)}）`} />
             <Row label="入库" value={t.done ? `${clock(t.done, now)}（${ago(t.done, now)}）` : ""} />
             <Row label="Emby 确认" value={t.emby && t.emby > 0 ? `${clock(t.emby, now)}（${ago(t.emby, now)}）` : t.emby && t.emby < 0 ? "3 小时内没刮削上" : "等待中"} />
@@ -202,7 +202,7 @@ function EventLine({ e, now, showStep }: { e: TaskEvent; now: number; showStep?:
     <View style={{ flexDirection: "row", gap: 8, paddingVertical: 4 }}>
       <Text style={{ fontSize: 12, color: colors.textFaint, width: showStep ? 78 : 44, fontVariant: ["tabular-nums"] }}>{clock(e.at, now)}</Text>
       {showStep ? <Text style={{ fontSize: 12, color: colors.textFaint, width: 34 }}>{STEP_NAME[e.step] ?? e.step}</Text> : null}
-      <Text selectable style={{ flex: 1, fontSize: 12.5, lineHeight: 18, color: LEVEL_COLOR[e.level] ?? colors.textSoft }}>{e.msg}</Text>
+      <CopyText style={{ flex: 1, fontSize: 12.5, lineHeight: 18, color: LEVEL_COLOR[e.level] ?? colors.textSoft }}>{e.msg}</CopyText>
     </View>
   );
 }

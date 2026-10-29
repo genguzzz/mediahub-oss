@@ -32,6 +32,9 @@ export interface CatalogDetail extends CatalogItem {
   episodes: CatalogItem[];    // other parts of the same series, this one included
   keyword: string;            // what to search resources with (番号 / Japanese title)
   aliases?: string;           // every known title, for matching against the library
+  sourceUrl?: string;         // the work's page at the index source (opened as H5 in the app)
+  sourceName?: string;
+  previews?: { thumb: string; full: string }[]; // sample screenshots
   refs?: Record<string, string>; // ids this work has at stream providers (jable slug, …)
 }
 

@@ -600,6 +600,17 @@ class Hub:
                     "msg": "（这个任务在事件日志上线前提交，只有时间点，没有详细日志）"}]
         return {"ok": True, "hash": h, "events": out, "ts": t.get("ts") or {}}
 
+    AV_STEPS = [("submit", "提交"), ("offline", "115 离线"), ("strm", "生成 strm"), ("scrape", "MDC 刮削"), ("done", "入库")]
+
+    @classmethod
+    def _av_steps(cls, at: Any, pos: int, err: bool = False) -> List[dict]:
+        """AV 五个节点：pos 是当前所在节点（5=全部完成）；err 表示卡在 pos 这一步。"""
+        out = []
+        for i, (k, label) in enumerate(cls.AV_STEPS):
+            state = "done" if i < pos else ("error" if err else "active") if i == pos else "pending"
+            out.append({"key": k, "label": label, "state": state, "start": at if i == 0 else None, "end": None})
+        return out
+
     def _adult_rows(self, c115: Dict[str, dict]) -> List[dict]:
         """AV 行：key 是 /hub/av/cancel 用的标识。115 已完成但还没生成 strm 的也显示（以前被隐藏，任务像是消失了）。"""
         a = self.p._adult
@@ -617,18 +628,29 @@ class Hub:
             h = btih(v.get("link") or "")
             info = c115.get(h) or {}
             st = info.get("status")
-            stage = {2: "115 已完成，等待生成 strm", -1: "115 离线失败"}.get(st, "115 离线下载中" if info else "115 离线排队/已结束")
+            # 115 列表只取最近几页：查不到又超过 2 小时，多半是任务被清掉或没成功（下载目录里要有文件，av_run 早就生成 strm 了）
+            gone = not info and time.time() - (v.get("at") or 0) > 7200
+            stage = {2: "115 已完成，等待生成 strm", -1: "115 离线失败"}.get(st, "115 离线下载中" if info else "115 里找不到这个任务" if gone else "115 离线排队中")
+            failed = st == -1 or gone
+            pos = 2 if st == 2 else 1
             rows.append({"kind": "av", "key": key, "code": key if not re.fullmatch(r"[0-9a-f]{40}", key) else (info.get("name") or key[:12]),
                          "stage": stage, "at": v.get("at"), "hash": h, "percent": info.get("percentDone"),
-                         "name": info.get("name") or key, "failed": st == -1, "step": "offline"})
+                         "name": info.get("name") or key, "failed": failed, "step": "offline",
+                         "error": "任务已不在 115，也没有文件落到下载目录：移除这条记录后重新入库" if gone else None,
+                         "steps": self._av_steps(v.get("at"), pos, failed)})
         for remote, v in (av.get("stubbed") or {}).items():
             st = v.get("status") or ""
             stage = {"scraping": "MDC 刮削中", "failed": "MDC 刮削失败", "missing": "strm 丢失", "new": "等待提交 MDC"}.get(st, st or "等待 MDC")
-            rows.append({"kind": "av", "key": remote, "code": v.get("code") or v.get("name"), "stage": stage, "at": v.get("at"),
-                         "name": remote.rsplit("/", 1)[-1], "strm": v.get("name"), "failed": st in ("failed", "missing"), "error": v.get("err"), "step": "scrape"})
+            bad = st in ("failed", "missing")
+            slow = st == "scraping" and time.time() - (v.get("job") or v.get("at") or 0) > 1800
+            rows.append({"kind": "av", "key": remote, "code": v.get("code") or v.get("name"), "stage": "MDC 刮削超时" if slow else stage, "at": v.get("at"),
+                         "name": remote.rsplit("/", 1)[-1], "strm": v.get("name"), "failed": bad or slow,
+                         "error": v.get("err") or ("提交 MDC 超过 30 分钟还没有结果，点「重新刮削」" if slow else None), "step": "scrape",
+                         "steps": self._av_steps(v.get("at"), 3, bad or slow)})
         for v in sorted((av.get("done") or [])[-15:], key=lambda x: -x.get("at", 0)):
             rows.append({"kind": "av", "key": f"done:{v.get('code')}:{v.get('at')}", "code": v.get("code"), "stage": "已入库", "at": v.get("at"),
-                         "name": v.get("target", "").rsplit("/", 1)[-1], "done": True, "failed": False, "step": "done"})
+                         "name": v.get("target", "").rsplit("/", 1)[-1], "done": True, "failed": False, "step": "done",
+                         "steps": self._av_steps(v.get("at"), 5)})
         return rows
 
     def av_cancel(self, payload: dict = Body(...)) -> Dict[str, Any]:

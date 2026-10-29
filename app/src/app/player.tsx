@@ -8,6 +8,7 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, { Easing, FadeIn, FadeOut, SlideInRight, SlideOutRight, useAnimatedStyle, useSharedValue, withSequence, withSpring, withTiming } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AirPlayButton, PlayerView, device, nativeCaps, playerAvailable, type ExternalSub, type NativeCaps, type Phase, type PlayerHandle, type PlayerInfo, type PlayerTrack } from "../../modules/mediahub-player";
+import { CastPanel } from "@/components/CastPanel";
 import { tap, toast, toastError } from "@/components/ui";
 import { api, appVersion } from "@/lib/api";
 import { connection, has, keepAwake, pickFile } from "@/lib/device";
@@ -31,7 +32,7 @@ const SUBS_WAIT_MS = 800;
 const STARTUP = { probeBytes: 8 * 1024 * 1024, analyzeMs: 5000, progressive: true };
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 const EASE = Easing.out(Easing.cubic);
-type Sheet = null | "audio" | "subs" | "speed" | "info";
+type Sheet = null | "audio" | "subs" | "speed" | "info" | "cast";
 interface DirSub { name: string; path: string; size?: number; match: number; lang: string; format: string }
 
 function clock(s: number) {
@@ -599,6 +600,7 @@ export default function PlayerScreen() {
                   {curAudio?.isAtmos ? <Badge text="Atmos" /> : null}
                 </View>
               </View>
+              <Btn name="tv-outline" label="投屏" onPress={() => { kick(); setSheet("cast"); }} />
               {has("airplay") ? <AirPlayButton tint="#ffffff" style={{ width: 28, height: 28 }} /> : null}
               {caps?.pip ? <Btn name={pipActive ? "contract-outline" : "browsers-outline"} label="小窗" onPress={togglePiP} /> : null}
               <Btn name="information-circle-outline" label="信息" onPress={() => { kick(); setSheet("info"); }} />
@@ -710,6 +712,15 @@ export default function PlayerScreen() {
                     {[0.8, 1, 1.2, 1.4].map((s) => <Chip key={s} text={`${Math.round(s * 100)}%`} active={subtitleScale === s} onPress={() => setSettings({ subtitleScale: s })} />)}
                   </View>
                 </>
+              ) : sheet === "cast" ? (
+                <CastPanel
+                  uri={plan?.uri ?? null}
+                  title={`${title}${subtitle ? ` ${subtitle}` : ""}`}
+                  position={posRef.current}
+                  canScan={!!caps?.ssdp}
+                  onStart={() => { setPaused(true); pausedRef.current = true; }}
+                  onStop={(at) => { if (at > 5) void ref.current?.seek(at); setPaused(false); pausedRef.current = false; }}
+                />
               ) : sheet === "speed" ? (
                 <>
                   <Heading text="倍速" />

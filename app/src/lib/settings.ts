@@ -19,6 +19,7 @@ export interface Settings {
   subtitleScale: number; // player subtitle size multiplier
   sources: string[] | null; // sources pre-selected for 按来源搜索 (null = built-in default)
   emby: EmbyAccount;
+  castTv: { name: string; location: string } | null; // last DLNA renderer used for casting
 }
 
 // Direct Emby connection (the phone talks to Emby itself; the backend only hands out the account).
@@ -40,7 +41,7 @@ const store = Platform.OS === "web"
 const randomId = () => `mh-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 
 let state: Settings = {
-  server: DEFAULT_SERVER, token: "", showAdult: false, notify: true, theme: "system", style: "cinema", layout: "grid", subtitleScale: 1, sources: null,
+  server: DEFAULT_SERVER, token: "", showAdult: false, notify: true, theme: "system", style: "cinema", layout: "grid", subtitleScale: 1, sources: null, castTv: null,
   emby: { server: "", username: "", token: "", userId: "", deviceId: randomId() },
 };
 let loaded = false;

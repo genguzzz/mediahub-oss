@@ -3,7 +3,7 @@ import { FlatList, Linking, Pressable, ScrollView, Switch, Text, TextInput, View
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { Card, Chip, ChipRow, EmptyState, ErrorBox, IconButton, Loading, PillButton, Row, Screen, Sheet, Tag, TopBar, confirm, styles, tap, toast, toastError, Pull } from "@/components/ui";
+import { Card, CopyText, Chip, ChipRow, EmptyState, ErrorBox, IconButton, Loading, PillButton, Row, Screen, Sheet, Tag, TopBar, confirm, styles, tap, toast, toastError, Pull } from "@/components/ui";
 import { BUILTIN_SOURCES, SourceMeta } from "@/components/sources";
 import { LANG_LABEL, api, type IngestResult, type MediaDetail, type Resource, type SearchName, type SearchResult, type Source } from "@/lib/api";
 import { ago, bytes, ranges } from "@/lib/format";
@@ -259,7 +259,7 @@ function ResourceSheet({ r, kind, canIngest, target, onClose, onDone, onPickWork
 
   return (
     <Sheet visible={!!r} onClose={onClose} scroll>
-      <Text selectable style={{ fontSize: 15, lineHeight: 21, fontWeight: "600", color: colors.text }}>{r.title}</Text>
+      <CopyText style={{ fontSize: 15, lineHeight: 21, fontWeight: "600", color: colors.text }}>{r.title}</CopyText>
       <View style={{ marginTop: 10 }}>
         <Row label="来源" value={`${r.source}${r.indexer && r.indexer !== r.source ? ` · ${r.indexer}` : ""}`} />
         <Row label="字幕组" value={r.group} />
@@ -270,7 +270,7 @@ function ResourceSheet({ r, kind, canIngest, target, onClose, onDone, onPickWork
         <Row label="发布" value={r.pubdate ? `${r.pubdate}（${ago(r.pubdate, now)}）` : ""} />
         <Row label="打分" value={r.excluded ? r.excluded : `${r.score} 分：${r.why.join(" ")}`} />
         {r.have ? <Row label="媒体库" value={`这些集里已有 ${r.have} 集，入库会替换成这个版本`} /> : null}
-        <Row label="hash" value={r.id} selectable />
+        <Row label="hash" value={r.id} />
       </View>
       {canIngest ? (
         <PillButton icon="cloud-download-outline" label={kind === "media" ? "入库（115 离线）" : kind === "av" ? "AV 入库" : "里番入库"} loading={busy} onPress={ingest} style={{ marginTop: 14 }} />

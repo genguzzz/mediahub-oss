@@ -84,6 +84,7 @@ export function registerCatalog(app: FastifyInstance, embyGet: EmbyGet) {
     // Emby is not an "online source": a work already in the library gets its own play button.
     const lib = (await sources(c, d, false)).items.find((x) => x.provider === "emby");
     d.episodes = await owned(c, d.episodes);
+    d.sourceName = d.sourceName ?? c.name;
     d.inLibrary = !!lib || d.inLibrary;
     return {
       item: d, kind: c.kind,

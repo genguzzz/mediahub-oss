@@ -4,6 +4,8 @@ import { type ReactNode } from "react";
 import { Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
+import type { SheetAction } from "./ActionSheet";
+import { openPeek } from "@/lib/peek";
 import { setSettings, useSettings } from "@/lib/settings";
 import { colors, radius, shadow } from "@/lib/theme";
 import { IconButton, styles, tap } from "./ui";
@@ -24,8 +26,13 @@ export interface CardData {
   played?: boolean;
   unplayed?: number;     // unwatched episodes
   tags?: string[];
+  embyId?: string;       // playable Emby item: the long-press sheet offers casting
+  link?: { name: string; url: string }; // source page, opened as H5
+  actions?: SheetAction[]; // extra long-press actions
   onPress: () => void;
 }
+
+const peek = (c: CardData) => () => { tap(); openPeek(c); };
 
 export function Img({ source, style, icon = "film-outline", iconSize = 28, right }: { source: Src; style: object; icon?: keyof typeof Ionicons.glyphMap; iconSize?: number; right?: boolean }) {
   return (
@@ -79,7 +86,7 @@ function estimate(c: CardData, w: number) {
 
 function GridCard({ c, w }: { c: CardData; w: number }) {
   return (
-    <Pressable onPress={() => { tap(); c.onPress(); }} style={({ pressed }) => ({ width: w, marginBottom: 16, opacity: pressed ? 0.85 : 1 })}>
+    <Pressable onPress={() => { tap(); c.onPress(); }} onLongPress={peek(c)} delayLongPress={350} style={({ pressed }) => ({ width: w, marginBottom: 16, opacity: pressed ? 0.85 : 1 })}>
       <View style={{ borderRadius: radius.md, overflow: "hidden", ...shadow() }}>
         <Img source={c.poster} right={c.posterRight} style={{ width: w, height: w / (c.aspect ?? 2 / 3) }} iconSize={w * 0.2} />
         <Overlays c={c} />
@@ -124,6 +131,8 @@ export function ListCard({ c }: { c: CardData }) {
   return (
     <Pressable
       onPress={() => { tap(); c.onPress(); }}
+      onLongPress={peek(c)}
+      delayLongPress={350}
       style={({ pressed }) => ({ flexDirection: "row", gap: 14, padding: 12, borderRadius: radius.lg, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, opacity: pressed ? 0.88 : 1, ...shadow() })}
     >
       <View style={{ borderRadius: radius.md, overflow: "hidden" }}>
@@ -195,7 +204,7 @@ export function Row({ title, onMore, children }: { title: string; onMore?: () =>
 
 export function PosterTile({ c, w = 118 }: { c: CardData; w?: number }) {
   return (
-    <Pressable onPress={() => { tap(); c.onPress(); }} style={({ pressed }) => ({ width: w, opacity: pressed ? 0.85 : 1 })}>
+    <Pressable onPress={() => { tap(); c.onPress(); }} onLongPress={peek(c)} delayLongPress={350} style={({ pressed }) => ({ width: w, opacity: pressed ? 0.85 : 1 })}>
       <View style={{ borderRadius: radius.md, overflow: "hidden", ...shadow() }}>
         <Img source={c.poster} right={c.posterRight} style={{ width: w, height: w / (c.aspect ?? 2 / 3) }} />
         <Overlays c={c} />
@@ -208,7 +217,7 @@ export function PosterTile({ c, w = 118 }: { c: CardData; w?: number }) {
 
 export function LandscapeTile({ c, w = 260 }: { c: CardData; w?: number }) {
   return (
-    <Pressable onPress={() => { tap(); c.onPress(); }} style={({ pressed }) => ({ width: w, opacity: pressed ? 0.85 : 1 })}>
+    <Pressable onPress={() => { tap(); c.onPress(); }} onLongPress={peek(c)} delayLongPress={350} style={({ pressed }) => ({ width: w, opacity: pressed ? 0.85 : 1 })}>
       <View style={{ borderRadius: radius.md, overflow: "hidden", ...shadow() }}>
         <Img source={c.poster} style={{ width: w, height: w * 0.5625 }} icon="tv-outline" />
         <View style={{ position: "absolute", left: 10, bottom: 12, width: 34, height: 34, borderRadius: 17, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center" }}>

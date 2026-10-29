@@ -30,6 +30,9 @@ export interface CatalogItem {
 }
 
 export interface CatalogDetail extends CatalogItem {
+  sourceUrl?: string;
+  sourceName?: string;
+  previews?: { thumb: string; full: string }[];
   overview: string;
   originalTitle?: string;
   brand?: string;

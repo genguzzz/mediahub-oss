@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { SectionList, Text, View } from "react-native";
+import { FlatList, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { ActionSheet, type SheetAction } from "@/components/ActionSheet";
 import { Card, Chip, ChipRow, EmptyState, ErrorBox, IconButton, Loading, ProgressBar, Steps, TAB_BAR_SPACE, TabHeader, Tag, confirm, styles, tap, toast, toastError, Pull } from "@/components/ui";
@@ -12,6 +12,8 @@ import { useSettings } from "@/lib/settings";
 import { colors } from "@/lib/theme";
 
 type Filter = "active" | "all" | "failed";
+type Kind = "all" | "media" | "av";
+const ms = (t: number | string | null | undefined) => (typeof t === "number" ? (t > 1e12 ? t : t * 1000) : t ? Date.parse(t.includes("T") || t.includes("Z") ? t : t.replace(" ", "T") + "+08:00") || 0 : 0);
 
 export default function PipelineTab() {
   const router = useRouter();
@@ -19,6 +21,7 @@ export default function PipelineTab() {
   const q = useQuery("pipeline", pipelineQuery, { interval: 10_000, staleMs: 5_000 });
   const emby = useQuery("emby:activity", () => api<EmbyActivity>("/v1/emby/activity"), { interval: 20_000 });
   const [filter, setFilter] = useState<Filter>("active");
+  const [kind, setKind] = useState<Kind>("all");
   const [now, setNow] = useState(() => Date.now());
   const [sheet, setSheet] = useState<{ title: string; message?: string; actions: SheetAction[] } | null>(null);
 
@@ -30,15 +33,17 @@ export default function PipelineTab() {
     return () => clearInterval(t);
   }, []);
 
-  const sections = useMemo(() => {
+  const rows = useMemo(() => {
     const tasks = q.data?.tasks ?? [];
     const pick = (t: Task) =>
       filter === "all" ? true : filter === "failed" ? t.failed : ["downloading", "buffer", "uploaded"].includes(t.status) || (t.status === "done" && !t.emby);
-    const adult = (q.data?.adult ?? []).filter((a) => (filter === "all" ? true : filter === "failed" ? a.failed : !a.done));
-    const out: { title: string; data: (Task | AdultRow)[] }[] = [{ title: "影视", data: tasks.filter(pick) }];
-    if (showAdult && adult.length) out.push({ title: "AV（115 → MDC 刮削）", data: adult });
-    return out.filter((s) => s.data.length);
-  }, [q.data, filter, showAdult]);
+    const adult = (q.data?.adult ?? []).filter((a) => (filter === "all" ? true : filter === "failed" ? a.failed : !a.done || Date.now() - ms(a.at) < 6 * 3600_000));
+    const out: (Task | AdultRow)[] = [];
+    if (kind !== "av") out.push(...tasks.filter(pick));
+    if (showAdult && kind !== "media") out.push(...adult);
+    const at = (x: Task | AdultRow) => ms(x.kind === "media" ? x.added : x.at);
+    return out.sort((a, b) => at(b) - at(a));
+  }, [q.data, filter, kind, showAdult]);
 
   const running = emby.data?.running ?? [];
   const counts = useMemo(() => {
@@ -74,7 +79,8 @@ export default function PipelineTab() {
       done(files && r.files?.length ? `已取消并删除 ${r.files.length} 项 115 文件` : r.warn ? `已移除，但${r.warn}` : "已移除");
     };
     const actions: SheetAction[] = [];
-    if (a.step === "scrape" && a.failed) actions.push({ label: "重新刮削", icon: "refresh", note: "重新交给 MDC", run: async () => { await api("/v1/av/retry", { body: a.strm ? { name: a.strm } : {} }); done("已重新提交刮削"); } });
+    if (a.step !== "done") actions.push({ label: "立即处理", icon: "play-forward-outline", note: "现在就检查 115、生成 strm、提交刮削并整理，不等 5 分钟一轮", run: async () => { await api("/v1/pipeline/run", { method: "POST", body: {} }); done("已开始处理"); } });
+    if (a.step === "scrape") actions.push({ label: "重新刮削", icon: "refresh", note: "重新交给 MDC 刮削并入库", run: async () => { await api("/v1/av/retry", { body: a.strm ? { name: a.strm } : {} }); done("已重新提交刮削"); } });
     if (a.step === "offline") {
       actions.push({ label: "取消离线任务", icon: "close-circle-outline", note: "删除 115 离线任务，已下的文件保留", run: cancel(false) });
       actions.push({ label: "取消并删除已下文件", icon: "trash-outline", destructive: true, note: "连 115 下载目录里的文件一起删",
@@ -127,12 +133,17 @@ ${a.key}`, ok: "删除" }, run: cancel(true) });
         <Chip label="进行中" count={counts.active} active={filter === "active"} onPress={() => setFilter("active")} />
         <Chip label="失败" count={counts.failed} active={filter === "failed"} onPress={() => setFilter("failed")} />
         <Chip label="全部" active={filter === "all"} onPress={() => setFilter("all")} />
+        {showAdult ? (
+          <>
+            <Chip label="影视" icon="film-outline" active={kind === "media"} onPress={() => setKind(kind === "media" ? "all" : "media")} />
+            <Chip label="AV" icon="flame-outline" active={kind === "av"} onPress={() => setKind(kind === "av" ? "all" : "av")} />
+          </>
+        ) : null}
         {filter === "all" && ended.length ? <Chip label="清除已结束" icon="trash-outline" onPress={clearEnded} /> : null}
       </ChipRow>
-      <SectionList
-        sections={sections}
+      <FlatList
+        data={rows}
         keyExtractor={(t) => ("hash" in t && t.kind === "media" ? t.hash : `av:${(t as AdultRow).key ?? `${(t as AdultRow).code}:${(t as AdultRow).stage}`}`)}
-        stickySectionHeadersEnabled={false}
         contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: TAB_BAR_SPACE }}
         refreshControl={<Pull onRefresh={() => { void q.refresh(); void emby.refresh(); }} />}
         ListHeaderComponent={
@@ -148,7 +159,6 @@ ${a.key}`, ok: "删除" }, run: cancel(true) });
             {q.loading && !q.data ? <Loading text="正在读取任务和 115 进度" /> : null}
           </>
         }
-        renderSectionHeader={({ section }) => <Text style={[styles.title, { marginTop: 12, marginBottom: 8, color: colors.textSoft }]}>{section.title}</Text>}
         ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
         ListEmptyComponent={q.data ? <EmptyState icon="checkmark-done-outline" text={filter === "failed" ? "没有失败的任务" : filter === "active" ? "没有进行中的任务。新的下载会出现在这里。" : "还没有任务"} /> : undefined}
         renderItem={({ item }) =>
@@ -171,6 +181,7 @@ function TaskCard({ t, now, onPress, onLongPress }: { t: Task; now: number; onPr
     <Card onPress={onPress} onLongPress={() => { tap(); onLongPress(); }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Text style={[styles.title, { flex: 1 }]} numberOfLines={1}>{t.title}{t.type === "tv" && t.season ? ` · 第 ${t.season} 季` : ""}</Text>
+        <Tag text="影视" color={colors.primary} />
         <Text style={styles.faint}>{ago(t.added, now)}</Text>
       </View>
       <Text style={[styles.faint, { marginTop: 3 }]} numberOfLines={1}>{t.name || t.dir}</Text>
@@ -197,12 +208,14 @@ function AdultCard({ a, now, onPress }: { a: AdultRow; now: number; onPress?: ()
     <Card onPress={onPress}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Text style={[styles.title, { flex: 1 }]}>{a.code}</Text>
+        <Tag text="AV" color={colors.warning} />
         <Text style={styles.faint}>{ago(a.at, now)}</Text>
       </View>
       <View style={{ flexDirection: "row", gap: 6, marginTop: 6 }}>
         <Tag text={a.stage} color={a.failed ? colors.danger : a.done ? colors.success : colors.primary} />
         {a.name && a.name !== a.code ? <Text style={[styles.faint, { flex: 1 }]} numberOfLines={1}>{a.name}</Text> : null}
       </View>
+      {a.steps ? <View style={{ marginTop: 10 }}><Steps steps={a.steps} /></View> : null}
       {a.percent !== undefined && a.percent !== null && !a.done ? <View style={{ marginTop: 8 }}><ProgressBar value={a.percent} /></View> : null}
       {a.error ? <Text style={[styles.faint, { marginTop: 4, color: colors.danger }]}>{a.error}</Text> : null}
     </Card>

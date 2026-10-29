@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { AppState } from "react-native";
 import { useFocusEffect } from "expo-router";
+import { File, Paths } from "expo-file-system";
 
 interface Entry<T> {
   data?: T;
@@ -16,12 +17,47 @@ const entries = new Map<string, Entry<unknown>>();
 const listeners = new Map<string, Set<() => void>>();
 const EMPTY: Entry<unknown> = { loading: false, at: 0, seq: 0 };
 
+// Entries with data are mirrored to one JSON file so a cold start without network still shows the
+// last lists/details (each entry keeps its fetch time, so it is refreshed as soon as the network is back).
+const STORE_MAX = 6_000_000;
+const store = new File(Paths.document, "query-cache.json");
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+try {
+  if (store.exists) {
+    const saved = JSON.parse(store.textSync()) as Record<string, { data: unknown; at: number }>;
+    for (const [k, v] of Object.entries(saved)) if (v && v.data !== undefined) entries.set(k, { data: v.data, loading: false, at: v.at || 0, seq: 0 });
+  }
+} catch {
+  // a corrupt cache file is just an empty cache
+}
+
+function save() {
+  saveTimer = null;
+  try {
+    const live = [...entries.entries()].filter(([k, e]) => e.data !== undefined && !k.endsWith("#more")).sort((a, b) => b[1].at - a[1].at);
+    const out: Record<string, { data: unknown; at: number }> = {};
+    let size = 0;
+    for (const [k, e] of live) {
+      const j = JSON.stringify(e.data);
+      if (size + j.length > STORE_MAX) continue;
+      size += j.length;
+      out[k] = { data: e.data, at: e.at };
+    }
+    if (!store.exists) store.create({ intermediates: true });
+    store.write(JSON.stringify(out));
+  } catch {
+    // disk full / unwritable: keep running on memory only
+  }
+}
+
 function emit(key: string) {
   listeners.get(key)?.forEach((l) => l());
 }
 
 function set(key: string, patch: Partial<Entry<unknown>>) {
   entries.set(key, { ...(entries.get(key) ?? EMPTY), ...patch });
+  if ("data" in patch && !saveTimer) saveTimer = setTimeout(save, 3000);
   emit(key);
 }
 

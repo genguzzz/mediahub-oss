@@ -202,6 +202,7 @@ export const hanime: CatalogProvider = {
       ].filter((f) => f.value),
       episodes: (bySeries.get(e.series) ?? [e]).map(card),
       keyword: e.jp || e.name,
+      sourceUrl: `https://hanime.tv/videos/hentai/${encodeURIComponent(e.slug)}`,
       aliases: e.norm,
     };
   },

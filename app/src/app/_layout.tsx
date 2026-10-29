@@ -5,6 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import * as Device from "expo-device";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { PosterSheetHost } from "@/components/PosterSheet";
 import { ToastHost, toast } from "@/components/ui";
 import { appVersion } from "@/lib/api";
 import { flush, installGlobalHandlers, logger, pruneLogs, sessionId } from "@/lib/log";
@@ -84,6 +85,7 @@ export default function RootLayout() {
             <ActivityIndicator color={colors.primary} />
           </View>
         )}
+        {loaded ? <PosterSheetHost /> : null}
         {loaded ? <ToastHost /> : null}
       </SafeAreaProvider>
     </GestureHandlerRootView>

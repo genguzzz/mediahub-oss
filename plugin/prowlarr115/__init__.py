@@ -547,16 +547,17 @@ class Prowlarr115(_PluginBase):
 
     _adult_kick_until = 0.0
 
-    def _adult_kick(self, minutes: int = 20) -> None:
-        """AV/里番提交后 minutes 分钟内每 20 秒推进一次（115 秒传 + MDC 刮削，一两分钟就能进库）。"""
+    def _adult_kick(self, minutes: int = 180) -> None:
+        """AV/里番提交后只在有活要干时主动推进：前 20 分钟每 20 秒（115 秒传 + MDC 刮削，一两分钟进库），之后每分钟，最长 minutes 分钟。"""
         busy = self._adult_kick_until > time.time()
         self._adult_kick_until = time.time() + minutes * 60
         if busy:
             return
 
         def loop():
+            t0 = time.time()
             while time.time() < self._adult_kick_until:
-                time.sleep(20)
+                time.sleep(20 if time.time() - t0 < 1200 else 60)
                 self.adult_track(quick=True)
         threading.Thread(target=loop, name="prowlarr115-adult-kick", daemon=True).start()
 
@@ -1299,6 +1300,8 @@ class Prowlarr115(_PluginBase):
     def api_run(self) -> Dict[str, Any]:
         """立即推进一次（后台执行，立即返回）。"""
         threading.Thread(target=self.track, name="prowlarr115-run", daemon=True).start()
+        if self._adult:   # AV（115 → strm → MDC → 整理）也一起推进，不用等 5 分钟一轮
+            threading.Thread(target=self.adult_track, kwargs={"quick": True}, name="prowlarr115-adult-run", daemon=True).start()
         return {"ok": True, "started": True}
 
     def api_retry(self, hash: str, mode: str = "strm") -> Dict[str, Any]:  # noqa: A002 API 参数名

@@ -255,7 +255,7 @@ class QBit:
 
 
 class Emby:
-    """Emby 查询（经 emby-relay）。"""
+    """Emby 查询。"""
 
     def __init__(self, url: str, key: str, lib_root: str = "/media/library"):
         self.url, self.key, self.lib_root = url.rstrip("/"), key, lib_root.rstrip("/")

@@ -4,8 +4,9 @@ import { Pressable, ScrollView, Text, useWindowDimensions, View } from "react-na
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { Previews } from "@/components/Previews";
 import { Img, MiniTag, PosterTile, Row } from "@/components/media";
-import { Card, Chip, ErrorBox, Loading, PillButton, Pull, Row as InfoRow, styles, tap } from "@/components/ui";
+import { Card, Chip, CopyText, SourceLink, ErrorBox, Loading, PillButton, Pull, Row as InfoRow, styles, tap } from "@/components/ui";
 import { img } from "@/lib/api";
 import { catalogApi, catalogCard, compact, usePlaySource, type StreamSource } from "@/lib/catalog";
 import { useQuery } from "@/lib/query";
@@ -54,9 +55,9 @@ export default function CatalogItemScreen() {
                 <Img source={img(it.poster)} right={it.posterCrop === "right"} style={{ width: 104, height: 104 / (it.posterAspect ?? 2 / 3) }} />
               </View>
               <View style={{ flex: 1, paddingBottom: 4 }}>
-                {it.code ? <Text selectable style={{ fontSize: 13, fontWeight: "800", color: colors.primary, letterSpacing: 0.5 }}>{it.code}</Text> : null}
-                <Text selectable style={{ fontSize: 21, fontWeight: "800", color: colors.text, lineHeight: 27 }} numberOfLines={4}>{it.title}</Text>
-                {it.originalTitle ? <Text selectable style={[styles.faint, { marginTop: 4, fontSize: 13 }]} numberOfLines={2}>{it.originalTitle}</Text> : null}
+                {it.code ? <CopyText style={{ fontSize: 13, fontWeight: "800", color: colors.primary, letterSpacing: 0.5 }}>{it.code}</CopyText> : null}
+                <CopyText style={{ fontSize: 21, fontWeight: "800", color: colors.text, lineHeight: 27 }} numberOfLines={4}>{it.title}</CopyText>
+                {it.originalTitle ? <CopyText style={[styles.faint, { marginTop: 4, fontSize: 13 }]} numberOfLines={2}>{it.originalTitle}</CopyText> : null}
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 6 }}>
                   {it.rating ? (
                     <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
@@ -104,15 +105,19 @@ export default function CatalogItemScreen() {
               </View>
             ) : null}
 
-            {it.overview ? <Text selectable style={[styles.body, { marginTop: 16 }]}>{it.overview}</Text> : null}
+            {it.overview ? <CopyText style={[styles.body, { marginTop: 16 }]}>{it.overview}</CopyText> : null}
+
+            {it.previews?.length ? <Previews items={it.previews} /> : null}
 
             {it.facts.length ? (
               <View style={{ marginTop: 16 }}>
                 {it.facts.map((f) => (
-                  <InfoRow key={f.label} label={f.label} value={f.value} selectable onPress={p === "hanime" && f.label === "厂牌" && it.brand ? () => list(it.brand!, { person: it.brand! }) : undefined} />
+                  <InfoRow key={f.label} label={f.label} value={f.value} onPress={p === "hanime" && f.label === "厂牌" && it.brand ? () => list(it.brand!, { person: it.brand! }) : undefined} />
                 ))}
               </View>
             ) : null}
+
+            {it.sourceUrl ? <SourceLink name={it.sourceName ?? p} url={it.sourceUrl} style={{ marginTop: 16 }} /> : null}
           </View>
         ) : null}
 

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { FlatList, ScrollView, Text, View } from "react-native";
-import { Card, Chip, ChipRow, EmptyState, ErrorBox, Loading, PillButton, ProgressBar, Row, Segmented, Sheet, TAB_BAR_SPACE, Tag, confirm, styles, toast, toastError, Pull } from "@/components/ui";
+import { Card, CopyText, Chip, ChipRow, EmptyState, ErrorBox, Loading, PillButton, ProgressBar, Row, Segmented, Sheet, TAB_BAR_SPACE, Tag, confirm, styles, toast, toastError, Pull } from "@/components/ui";
 import { api, type OfflineTask, type OlTask, type OpenListTasks, type QbTorrent } from "@/lib/api";
 import { ago, bytes, eta, pct, speed } from "@/lib/format";
 import { mutate, useQuery } from "@/lib/query";
@@ -157,14 +157,14 @@ function QbSheet({ t, onClose, onChanged }: { t: QbTorrent | null; onClose: () =
   };
   return (
     <Sheet visible={!!t} onClose={onClose} scroll>
-      <Text selectable style={{ fontSize: 15, fontWeight: "600", color: colors.text, lineHeight: 21 }}>{t.name}</Text>
+      <CopyText style={{ fontSize: 15, fontWeight: "600", color: colors.text, lineHeight: 21 }}>{t.name}</CopyText>
       <View style={{ marginTop: 8 }}>
         <Row label="状态" value={QB_STATE[t.state] ?? t.state} />
         <Row label="进度" value={`${pct(t.progress * 100)} / ${bytes(t.total_size || t.size)}`} />
         <Row label="分类" value={t.category} />
-        <Row label="保存到" value={t.save_path} selectable />
+        <Row label="保存到" value={t.save_path} />
         <Row label="分享率" value={t.ratio?.toFixed(2)} />
-        <Row label="hash" value={t.hash} selectable />
+        <Row label="hash" value={t.hash} />
       </View>
       <View style={{ gap: 10, marginTop: 14 }}>
         <PillButton icon={paused ? "play" : "pause"} label={paused ? "继续" : "暂停"} loading={busy === "pause" || busy === "resume"} onPress={() => run(paused ? "resume" : "pause", paused ? "已继续" : "已暂停")} />
