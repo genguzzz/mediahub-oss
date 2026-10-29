@@ -295,6 +295,27 @@ class Emby:
                 return parts[0], parts[1]
         return None
 
+    def find_by_provider(self, provider: str, pid: Any, item_type: str) -> Optional[dict]:
+        d = self.get("/Items", Recursive="true", IncludeItemTypes=item_type, AnyProviderIdEquals=f"{provider}.{pid}", Fields="Path") or {}
+        return (d.get("Items") or [None])[0]
+
+    def refresh_item(self, item_id: str) -> None:
+        """只扫这一部（新加的集、换的文件），比整库/路径扫描快：路径扫描要等 Emby 目录监控的延迟。"""
+        self.post(f"/Items/{item_id}/Refresh", Recursive="true", MetadataRefreshMode="Default", ImageRefreshMode="Default",
+                  ReplaceAllMetadata="false", ReplaceAllImages="false")
+
+    def nudge(self, paths: List[str], provider: str = "", pid: Any = None, item_type: str = "Series") -> str:
+        """新文件落地后通知 Emby：库里已有这部（按 TMDb/Bangumi ID 找到）就直接刷新那一部，否则按路径通知新目录。"""
+        it = self.find_by_provider(provider, pid, item_type) if provider and pid else None
+        if it:
+            try:
+                self.refresh_item(it["Id"])
+                return "refresh"
+            except ClientError:
+                pass
+        self.updated(paths)
+        return "updated"
+
     def updated(self, paths: List[str]) -> None:
         """通知 Emby 这些目录有新文件。"""
         RequestUtils(content_type="application/json", timeout=60).post_res(

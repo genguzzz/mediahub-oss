@@ -147,6 +147,10 @@ class Hub:
             ("/hub/emby/image", self.emby_image, "GET", "Emby 图片：id, type, w, tag"),
             ("/hub/emby/refresh", self.emby_refresh, "POST", "Emby 重新刮削条目：{id, replace}"),
             ("/hub/emby/scan", self.emby_scan, "POST", "Emby 扫描全部媒体库"),
+            ("/hub/health", self.health, "GET", "健康检查（只读扫描，后端低频调用）：里番 ID 不一致、未确认刮削、卡住/失败的任务、MDC 失败、缺海报"),
+            ("/hub/health/fix", self.health_fix, "POST", "处理一条健康检查问题：{key, id}（里番按 bangumiid 识别 / 核对刮削）"),
+            ("/hub/emby/confirm", self.emby_confirm, "POST", "立即核对所有等待刮削的任务（Emby 推送没覆盖到的，比如推送上线前入库的）"),
+            ("/hub/emby/changed", self.emby_changed, "POST", "Emby 条目变化推送（后端转发 LibraryChanged）：{ids:[..]}，立刻核对等待刮削的任务、识别新里番"),
             ("/hub/emby/activity", self.emby_activity, "GET", "Emby 正在跑的计划任务（扫描/刮削进度）和最近活动"),
             ("/hub/subs/list", self.subs_list, "GET", "视频同目录（含 Subs/ 子目录）的字幕文件：url=strm 里的 OpenList 链接或 115 路径"),
             ("/hub/subs/file", self.subs_file, "GET", "读一个字幕文件（≤20MB）：path=115 路径"),
@@ -1177,6 +1181,79 @@ class Hub:
                     ReplaceAllMetadata="true" if payload.get("replace") else "false",
                     ReplaceAllImages="true" if payload.get("replace") else "false")
         return {"ok": True}
+
+    # ---------------- 健康检查 ----------------
+    FAILED_ST = ("no-video", "dead", "too-big", "strm-failed", "scrape-failed", "needs-id")
+
+    def health(self) -> Dict[str, Any]:
+        """只报告问题、不改任何东西：由后端低频（几小时一次）调用，结果放在 App 概览，处理由人决定（health_fix）。"""
+        p = self.p._pipe
+        if not p:
+            return {"ok": False, "error": "流水线未就绪"}
+        checks: List[Dict[str, Any]] = []
+        errors: List[str] = []
+
+        def add(key: str, title: str, items: List[dict], severity: str = "warn", hint: str = "") -> None:
+            checks.append({"key": key, "title": title, "severity": severity, "count": len(items), "hint": hint, "items": items[:50]})
+
+        tasks = self.p._load_tasks() or {}
+        now_ = time.time()
+        row = lambda h, t, detail: {"id": h, "title": (t.get("meta") or {}).get("title") or (t.get("dir") or "").rsplit("/", 1)[-1],  # noqa: E731
+                                    "detail": detail, "task": h}
+        add("unconfirmed", "入库后还没刮削确认",
+            [row(h, t, "Emby 未能刮削" if (t.get("emby") or 0) < 0 else f"已等 {int((now_ - (t.get('done') or now_)) / 60)} 分钟")
+             for h, t in tasks.items() if t.get("status") == "done" and not (t.get("emby") or 0) > 0
+             and ((t.get("emby") or 0) < 0 or now_ - (t.get("done") or now_) > 1800) and (t.get("meta") or {}).get("kind") != "av"],
+            hint="点「核对」立即按 Emby 现状确认；还不行就在任务详情里重新生成 strm")
+        add("stalled", "下载不动", [row(h, t, t.get("name") or "") for h, t in tasks.items()
+                                     if t.get("status") == "downloading" and t.get("stalled")], hint="在任务详情里改用 NAS 缓冲或换资源")
+        add("failed", "失败的任务", [row(h, t, t.get("status") or "") for h, t in sorted(tasks.items(), key=lambda kv: -(kv[1].get("added") or 0))
+                                    if t.get("status") in self.FAILED_ST and now_ - (t.get("added") or 0) < 14 * 86400],
+            severity="error", hint="近 14 天；在任务详情里换资源或重试")
+        a = self.p._adult
+        if a:
+            st = (a.get_data("av") or {}).get("stubbed") or {}
+            add("mdc_failed", "AV 刮削失败", [{"id": k, "title": v.get("code") or v.get("name"), "detail": v.get("err") or ""}
+                                         for k, v in st.items() if v.get("status") in ("failed", "missing")], severity="error")
+            try:
+                items = (p.emby.get("/Items", ParentId=a.hentai_lib_id(), Recursive="true", IncludeItemTypes="Series",
+                                    Fields="Path,ProviderIds") or {}).get("Items") or []
+                bad = []
+                for it in items:
+                    m = re.search(r"\[bangumiid=(\d+)\]", it.get("Path") or "")
+                    if m and (it.get("ProviderIds") or {}).get("Bangumi") != m.group(1):
+                        bad.append({"id": it["Id"], "title": it.get("Name"), "detail": f"目录 bangumiid={m.group(1)}，Emby 是 {(it.get('ProviderIds') or {}).get('Bangumi') or '无'}",
+                                    "action": "identify"})
+                add("hentai_ids", "里番没按 Bangumi ID 识别", bad, hint="点「识别」按目录名里的 bangumiid 识别")
+            except Exception as err:  # noqa: BLE001
+                errors.append(f"里番库：{err}")
+        try:
+            miss = (p.emby.get("/Items", Recursive="true", IncludeItemTypes="Movie,Series", Fields="Path", Limit="2000") or {}).get("Items") or []
+            add("no_poster", "缺海报", [{"id": it["Id"], "title": it.get("Name"), "detail": (it.get("Path") or "").split("/library/", 1)[-1].split("/")[0],
+                                       "emby": it["Id"]} for it in miss if not (it.get("ImageTags") or {}).get("Primary")],
+                severity="info", hint="在 Emby 详情里「识别」或长按反馈")
+        except Exception as err:  # noqa: BLE001
+            errors.append(f"Emby：{err}")
+        return {"ok": True, "at": int(now_), "checks": checks, "errors": errors,
+                "total": sum(c["count"] for c in checks if c["severity"] != "info")}
+
+    def health_fix(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        key, iid = str(payload.get("key") or ""), str(payload.get("id") or "")
+        if key == "hentai_ids" and self.p._adult:
+            it = ((self.p._pipe.emby.get("/Items", Ids=iid, Fields="Path,ProviderIds") or {}).get("Items") or [None])[0]
+            return {"ok": bool(it and self.p._adult.fix_item(it))}
+        if key == "unconfirmed":
+            return {"ok": True, "confirmed": self.p._confirm_waiting(None, only=iid)}
+        return {"ok": False, "error": "这类问题没有一键处理"}
+
+    def emby_confirm(self) -> Dict[str, Any]:
+        return {"ok": True, "confirmed": self.p._confirm_waiting(None)}
+
+    def emby_changed(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        ids = [str(x) for x in (payload.get("ids") or [])][:300]
+        if ids:
+            threading.Thread(target=self.p._on_emby_items, args=(ids,), name="prowlarr115-emby-changed", daemon=True).start()
+        return {"ok": True, "queued": len(ids)}
 
     def emby_scan(self) -> Dict[str, Any]:
         p = self.p._pipe

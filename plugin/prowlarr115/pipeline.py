@@ -633,15 +633,32 @@ class Pipeline:
             return f"；{len(need)} 集没有中文字幕，自动补字幕出错：{e}"
 
     # ---------------- Emby 确认 ----------------
+    def emby_folder(self, t: dict) -> str:
+        """任务对应的 Emby 作品目录（Emby 里的路径）。"""
+        m = t.get("meta") or {}
+        if m.get("kind") == "hentai":
+            return f"{self.c.get('emby_lib_root') or '/media/library'}/里番/{m.get('lib') or ''}"
+        parts = t["dir"].split("/")
+        base = len(self.root.split("/"))
+        return self.emby_path(f"{self.lib_ol}/{parts[base]}/{parts[base + 1]}")
+
     def emby_check(self, t: dict) -> None:
         parts = t["dir"].split("/")
         base = len(self.root.split("/"))
         lib, folder = parts[base], parts[base + 1]
         want = self.emby_path(f"{self.lib_ol}/{lib}/{folder}")
         title = re.sub(r"\s*(\(\d{4}\))?\s*(\[tmdbid=\d+\])?$", "", folder)
+        # 目录名带 [tmdbid=N] 就按 ID 查（Emby 刮削后的名字常和目录名不同：「转生成为魔剑了」→「转生成为魔剑」，按名字搜会漏）
+        fid = (re.search(r"\[tmdbid=(\d+)\]", folder) or [None, None])[1]
+        q = {"AnyProviderIdEquals": f"Tmdb.{fid}"} if fid else {"SearchTerm": title}
         d = self.emby.get("/Items", Recursive="true", IncludeItemTypes="Movie" if lib == "电影" else "Series",
-                          SearchTerm=title, Fields="Path,ProviderIds,ProductionYear") or {}
+                          Fields="Path,ProviderIds,ProductionYear", **q) or {}
         items = [i for i in d.get("Items") or [] if (i.get("Path") or "").startswith(want)]
+        if not items and fid:
+            # 按 ID 没找到这个目录：可能 Emby 认成了别的作品，按名字找到它，下面会报「可能认错」
+            d = self.emby.get("/Items", Recursive="true", IncludeItemTypes="Movie" if lib == "电影" else "Series",
+                              SearchTerm=title, Fields="Path,ProviderIds,ProductionYear") or {}
+            items = [i for i in d.get("Items") or [] if (i.get("Path") or "").startswith(want)]
         it = items[0] if items else None
         if it and (it.get("ProviderIds") or {}).get("Tmdb") and (it.get("ImageTags") or {}).get("Primary"):
             extra = ""
@@ -668,10 +685,7 @@ class Pipeline:
             t["emby"] = now()
             self.notify("✅ " + label(t["dir"]),
                         f"Emby 已刮削：{it['Name']} ({it.get('ProductionYear') or ''}) TMDb {it['ProviderIds']['Tmdb']}{extra}")
-        elif now() - t.get("done", now()) > EMBY_GIVEUP:
-            t["emby"] = -now()
-            self.notify("⚠️ " + label(t["dir"]), "入库 3 小时了 Emby 还没识别/刮削（"
-                        + ("找到条目但缺 TMDb 或海报" if it else "没找到条目") + "），请在 Emby 里手动识别")
+
 
     def _persist(self, h: str, t: dict) -> None:
         """单个任务状态立即落盘（一轮要处理几十个合集时，不等整轮结束；中途重载也不会重复处理）。"""
@@ -757,7 +771,10 @@ class Pipeline:
             return
         try:
             roots = sorted({p.rsplit("/Season ", 1)[0] if "/Season " in p else p.rsplit("/", 1)[0] for p in made})
-            self.emby.updated([self.emby_path(p) for p in roots])
+            m = t.get("meta") or {}
+            how_emby = self.emby.nudge([self.emby_path(p) for p in roots], "Tmdb" if m.get("tmdbid") else "", m.get("tmdbid"),
+                                       "Movie" if m.get("type") == "电影" else "Series")
+            self.event(h, "emby", "已让 Emby 刷新这一部" if how_emby == "refresh" else "已通知 Emby 扫描新目录")
         except Exception as e:  # noqa: BLE001
             self.log(f"通知 Emby 失败: {e}")
         msg = f"{how}完成，入库 {len(made)} 个文件"
@@ -843,22 +860,13 @@ class Pipeline:
             list(pool.map(lambda h: (self._finish_traced(h, tasks[h]), self._persist(h, tasks[h])), ready))
         for h in set(pending) | set(buffered):
             self._persist(h, tasks[h])          # 进度/缓冲状态（缓冲任务的上传进度、too-big/dead 也要落盘，否则每轮重来）
-        do_emby = time.time() - getattr(self, "_emby_ts", 0) > 60      # 快速跟踪每 15 秒一轮，Emby 确认最多每分钟一次
-        if do_emby:
-            self._emby_ts = time.time()
+        # 刮削确认由 Emby 推送驱动（App 后端转发 LibraryChanged → /hub/emby/changed → 插件 _on_emby_items），
+        # 这里不轮询 Emby，只处理超时：入库 3 小时还没确认就标失败，让人在 App 里处理
         for h, t in tasks.items():
-            if do_emby and t.get("status") == "done" and not t.get("emby"):
+            if t.get("status") == "done" and not t.get("emby") and now() - (t.get("done") or now()) > EMBY_GIVEUP:
+                t["emby"] = -now()
                 with self.ctx(h, "emby"):
-                    try:
-                        if (t.get("meta") or {}).get("kind") == "hentai" and self.adult:
-                            self.adult.hentai_emby_check(t)
-                        else:
-                            self.emby_check(t)
-                    except Exception as e:  # noqa: BLE001
-                        self.log(f"Emby 检查出错: {e}")
-                    if (t.get("emby") or 0) > 0:
-                        self.mark(t, "emby")
-                    elif (t.get("emby") or 0) < 0:
-                        self.event(h, "emby", "等了 3 小时 Emby 还没识别/刮削，放弃自动确认", "error")
+                    self.event(h, "emby", "入库 3 小时 Emby 还没刮削（没收到 Emby 推送），请在 App 里重新生成 strm 并刮削", "error")
+                    self.notify("⚠️ " + label(t["dir"]), "入库 3 小时 Emby 还没刮削，请在影库 App 任务详情里处理")
                 self._persist(h, t)
         # 不整表回写：本轮开头读的是旧快照，回写会把期间 API（cancel/retry/override）的改动盖掉

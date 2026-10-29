@@ -37,8 +37,8 @@ TRACKERS = "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=http%3A%
 SUKEBEI = "https://sukebei.nyaa.si/?page=rss&f=0"
 NS = {"nyaa": "https://sukebei.nyaa.si/xmlns/nyaa"}
 CAT_ANIME, CAT_REAL = "1_1", "2_2"         # sukebei：Art - Anime / Real Life - Videos
-RSS_EVERY, SEARCH_EVERY, FIX_EVERY, BGM_RETRY = 1800, 86400, 6 * 3600, 86400
-MDC_RETRIGGER = 1800                       # 提交给 MDC 后 30 分钟还没有结果就再提交一次
+RSS_EVERY, SEARCH_EVERY, BGM_RETRY = 1800, 86400, 86400
+MDC_GRACE = 120                            # 提交 MDC 后这么久任务表里还没有这个文件的任务 = MDC 没收到，重交
 MATCH_MIN = 0.8
 _SUKEBEI_SEM = threading.BoundedSemaphore(1)
 
@@ -128,6 +128,23 @@ def parse_release(raw: str) -> Tuple[Optional[str], Optional[int]]:
     return None, None
 
 
+_KANA_KANJI = re.compile(r"[\u3040-\u30ff\u4e00-\u9fff]")
+
+
+def series_names(raw: str) -> Tuple[str, List[str]]:
+    """发布标题 -> (系列名, 其他可用来查 Bangumi 的名字)。
+    「[AmateurSubs] Kyonyuu ga … Tsuma 01-02 (English subs) [DVDRip 576p] (巨乳が2人…妻 )」
+    -> ('Kyonyuu ga … Tsuma', ['巨乳が2人…妻'])：去掉组名、规格、集数范围、字幕说明，括号里的日文名单独拿出来。"""
+    t = (raw or "").strip()
+    alts = [x.strip() for x in re.findall(r"[(（]([^()（）]{4,})[)）]", t) if _KANA_KANJI.search(x)]
+    t = re.sub(r"^\s*\[[^\]]*\]\s*", "", t)
+    t = re.sub(r"\s*[\[(（][^\])）]*[\])）]", " ", t)                       # 剩下的 [...] (...) 全去掉
+    t = re.sub(r"(?i)\b(english|eng|chinese|chs|cht)\s*subs?\b", " ", t)
+    t = re.sub(r"\s+(?:#|ep?\.?\s*)?\d{1,3}(?:\s*[-~]\s*\d{1,3})?\s*$", "", t.strip())   # 末尾的「01-02」「02」
+    t = re.sub(r"\s+", " ", t).strip(" -_")
+    return (t or (raw or "").strip()), alts
+
+
 def norm(t: str) -> str:
     t = _zhconv(unicodedata.normalize("NFKC", t or "").lower(), "zh-cn")
     t = re.sub(r"the animation|animation|\bova\b", "", t)
@@ -196,12 +213,15 @@ class Adult:
         self.bgm_token = str(conf.get("bangumi_token") or "")
         self._state_lock = threading.RLock()
         self._h_lib_id: Optional[str] = None
+        self.kick: Optional[Callable[[], None]] = None   # 插件注入：流水线快速跟踪
+        self.mdc_kick: Optional[Callable[[], None]] = None   # 插件注入：MDC 快速跟踪（收件箱里有新 strm 时）
 
     # ---------------- 公共 ----------------
     def run(self) -> None:
         """服务入口（每 5 分钟）。各段互不影响。"""
-        for name, fn in (("AV", self.av_run), ("里番 RSS", self.rss_poll), ("里番搜索", self.ingest),
-                         ("里番入库", self.scan), ("里番 Emby 纠正", self.emby_fix)):
+        # 入库（115 → strm）走流水线，Emby 识别由 Emby 推送触发（fix_item）；这里只剩没有推送可用的：
+        # MDC 刮削结果、sukebei RSS、追更目录搜索。scan / emby_fix 只作手动维护命令
+        for name, fn in (("AV", self.av_run), ("里番 RSS", self.rss_poll), ("里番搜索", self.ingest)):
             try:
                 fn()
             except Exception as e:  # noqa: BLE001
@@ -229,6 +249,8 @@ class Adult:
         115 下完后由 Pipeline 调回 finish()。"""
         meta["pick"] = {"by": by, "at": now(), "title": release[:200]}
         ok, h, err = self.p.submit(link, remote_dir, release, meta=dict(meta, kind=kind))
+        if ok and self.kick:
+            self.kick()                        # 和影视一样：提交后 15 分钟内每 15 秒推进一次流水线（115 秒传几秒就完成）
         return ok, err
 
     def finish(self, kind: str, t: dict, scope: Optional[str], h: str) -> List[str]:
@@ -236,6 +258,10 @@ class Adult:
         返回生成的 strm（OpenList 路径）；空 = 还没看到视频（Pipeline 会再等几轮，最后判 no-video）。"""
         d = t["dir"]
         files: List[tuple] = []
+        try:
+            self.ol.refresh_path(d)            # OpenList 的 115 目录有缓存：不刷新就看不到刚下完的文件，空 6 轮会被误判 no-video
+        except Exception:  # noqa: BLE001
+            pass
         if scope:
             hit = self.ol.get(f"{d}/{scope}")
             if not hit:
@@ -270,6 +296,8 @@ class Adult:
                 av.setdefault("submitted", {}).pop(code or "", None)
                 self.save_data("av", av)
                 self.log(f"AV 115 完成 → {name}")
+                if self.mdc_kick:
+                    self.mdc_kick()
             else:
                 st[remote]["hash"] = h
                 self.save_data("av", av)
@@ -308,8 +336,9 @@ class Adult:
             self._h_save(cur)
         if made:
             t.setdefault("meta", {})["lib"] = lib
+            bid = (re.search(r"\[bangumiid=(\d+)\]", lib) or [None, None])[1]
             try:
-                self.emby.updated([f"{self.emby_root}/里番/{lib}"])
+                self.emby.nudge([f"{self.emby_root}/里番/{lib}"], "Bangumi" if bid else "", bid)
             except Exception:  # noqa: BLE001
                 pass
             self.notify("🔞 里番入库", f"{lib}：{len(made)} 集，等待 Bangumi 刮削")
@@ -431,18 +460,6 @@ class Adult:
             self.log(f"AV 提交 {code or raw[:50]}：{'OK' if ok else err}")
         return out
 
-    def _qb_handoff(self) -> None:
-        """兼容：qB 分类 av / 115av 的任务转交 115 离线（media-service 的 jable 热榜入库还用它）。"""
-        if not self.p.qb:
-            return
-        for cat in ("115av", "av"):
-            for t in self.p.qb.get("/api/v2/torrents/info", {"category": cat}) or []:
-                ok, err = self.submit("av", self.remote_dl, t.get("magnet_uri") or magnet(t["hash"]), t.get("name") or "",
-                                      title=av_code(t.get("name") or "") or "AV", code=av_code(t.get("name") or ""))
-                if ok:
-                    self.p.qb.post("/api/v2/torrents/delete", {"hashes": t["hash"], "deleteFiles": "true"})
-                    self.log(f"qB {cat} → 115：{t.get('name', '')[:60]}")
-
     def _mdc(self, method: str, path: str, body: Optional[dict] = None) -> Any:
         ru = RequestUtils(content_type="application/json", timeout=60)
         res = ru.post_res(f"{self.mdc}{path}", json=body) if method == "POST" else ru.get_res(f"{self.mdc}{path}")
@@ -460,38 +477,16 @@ class Adult:
             "delete_empty_parent_after_move": False, "ts_id": str(int(time.time() * 1000)), "copy_config_from": None})
 
     def av_run(self) -> None:
-        self._qb_handoff()
+        """AV 任务 115 下完后由流水线 finish() 写进 MDC 收件箱（stubbed）；这里把它们交给 MDC，再按 MDC 任务结果整理。"""
         with self._state_lock:
             av = self.get_data("av") or {}
         st = av.setdefault("stubbed", {})
         changed = False
         new: List[str] = []
         try:
-            # 1. 115 下载目录里新完成的视频 -> AV/download/<番号>.strm
-            # 流水线任务自己的文件由 finish() 接手（还在下载/缓冲的也别抢）；这里只兜底流水线外落进来的文件
-            owned = {t.get("name") for t in (self.p.load() or {}).values()
-                     if (t.get("meta") or {}).get("kind") == "av" and t.get("name")}
-            if self.ol.get(self.remote_dl):
-                for remote, it in self.ol.walk(self.remote_dl):
-                    if remote in st or not remote.lower().endswith(VIDEO) or it.get("size", 0) < MIN_AV:
-                        continue
-                    if remote[len(self.remote_dl) + 1:].split("/", 1)[0] in owned:
-                        continue
-                    base = remote.rsplit("/", 1)[1].rsplit(".", 1)[0]
-                    code = av_code(base)
-                    name = (code + ("-C" if CN_SUB.search(base) else "") if code else re.sub(r"^.*@", "", base)) + ".strm"
-                    if any(v.get("name") == name for v in st.values()):
-                        name = f"{name[:-5]}-{len(st)}.strm"
-                    self.p._write_strm(f"{self.av_dl}/{name}", remote)
-                    st[remote] = {"name": name, "code": code, "at": now(), "status": "new"}
-                    new.append(name)
-                    changed = True
-                    self.log(f"AV 115 完成 → {name}")
-            # 2. 交给 MDC：新的（含上次没交成功的），以及提交 30 分钟还没出结果的。
+            # 2. 交给 MDC：新的（含上次没交成功的）。
             #    只交收件箱里真有的 strm：MDC 遇到一个不存在的路径会拒绝整批（JUR-748 卡死过整条 AV 流水线）。
-            todo = [v["name"] for v in st.values()
-                    if (v.get("status") == "new" and now() - v.get("job", 0) > 300)
-                    or (v.get("status") == "scraping" and now() - v.get("job", 0) > MDC_RETRIGGER)]
+            todo = [v["name"] for v in st.values() if v.get("status") == "new" and now() - v.get("job", 0) > 60]
             if todo:
                 inbox = {i["name"] for i in self.ol.list(self.av_dl, refresh=True)}
                 for v in st.values():
@@ -523,7 +518,12 @@ class Adult:
                 for remote, v in list(st.items()):
                     t = latest.get(f"/media/download/{v['name']}")
                     # 同名旧任务（以前刮过同一个文件名）不算：只认 strm 写出之后创建的任务
-                    if v.get("status") != "scraping" or not t or _ts(t.get("created_at")) < v.get("at", 0) - 120:
+                    if v.get("status") != "scraping":
+                        continue
+                    if not t or _ts(t.get("created_at")) < v.get("at", 0) - 120:
+                        if now() - v.get("job", 0) > MDC_GRACE:   # MDC 任务表里没有它 = 没收到，重交
+                            v["status"] = "new"
+                            changed = True
                         continue
                     if t.get("status") == 2 and t.get("target_path"):
                         try:
@@ -709,7 +709,25 @@ class Adult:
                             key=lambda x: (-x[0], x[1]))
             if scored and scored[0][0] >= MATCH_MIN:
                 return scored[0][2]
+            if not self.bgm_token:
+                # Emby 的 Bangumi 插件只回中文名，日文原名比不上：再用 Bangumi 公开的旧搜索接口（不用 token，含 R18 条目）
+                try:
+                    pub = self._bgm_public(t)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"里番 Bangumi 公开搜索出错 {t[:30]}：{e}")
+                    pub = []
+                scored = sorted(((score(t, [c["name"], c["name_cn"]]), i, c) for i, c in enumerate(pub)), key=lambda x: (-x[0], x[1]))
+                if scored and scored[0][0] >= MATCH_MIN:
+                    return scored[0][2]
         return None
+
+    def _bgm_public(self, keyword: str) -> List[dict]:
+        url = f"https://api.bgm.tv/search/subject/{urllib.parse.quote(keyword)}?type=2&responseGroup=small&max_results=10"
+        res = RequestUtils(headers={"User-Agent": "mediahub-prowlarr115/1.0"}, timeout=20).get_res(url)
+        if res is None or res.status_code != 200:
+            return []
+        return [{"id": int(x["id"]), "name": x.get("name") or "", "name_cn": x.get("name_cn") or ""}
+                for x in (res.json() or {}).get("list") or [] if x.get("id")]
 
     def _bgm_api(self, keyword: str) -> List[dict]:
         res = RequestUtils(headers={"Authorization": "Bearer " + self.bgm_token, "User-Agent": "prowlarr115"},
@@ -953,7 +971,7 @@ class Adult:
         return report
 
     def scan(self, force: bool = False) -> int:
-        """115 上完成的里番 -> strm（最近 2 天有提交的系列每轮扫；其余没齐的每天扫一次；force=全部扫）。"""
+        """手动维护：扫 115 上的里番目录补缺的 strm（流水线外落进来的旧文件）。新入库由流水线 finish() 生成 strm。"""
         with self._state_lock:
             h = self._h()
             if self.dedupe(h.setdefault("downloaded", {})):
@@ -1013,28 +1031,26 @@ class Adult:
         return made
 
     def emby_fix(self, force: bool = False) -> int:
-        """目录名带 [bangumiid=N] 但 Emby 首次扫库按名字认错的，按 ID 重新识别（= 网页「识别」）。"""
-        with self._state_lock:
-            h = self._h()
-            if not force and now() - h.get("last_fix", 0) < FIX_EVERY:
-                return 0
-            h["last_fix"] = now()
-            self._h_save(h)
-        n = 0
+        """手动维护：里番库里所有目录名带 [bangumiid=N] 但 Emby 没认成这个 ID 的，按 ID 重新识别（= 网页「识别」）。
+        平时由 Emby 推送逐个触发 fix_item，不定时跑。"""
         items = (self.emby.get("/Items", ParentId=self.hentai_lib_id(), Recursive="true", IncludeItemTypes="Series",
                                Fields="Path,ProviderIds") or {}).get("Items") or []
-        for s in items:
-            m = re.search(r"\[bangumiid=(\d+)\]", s.get("Path", ""))
-            if not m or (s.get("ProviderIds") or {}).get("Bangumi") == m.group(1):
-                continue
-            res = self.emby.post("/Items/RemoteSearch/Series", {"SearchInfo": {"ProviderIds": {"Bangumi": m.group(1)}},
-                                                                "ItemId": s["Id"], "SearchProviderName": "Bangumi"}) or []
-            hit = [r for r in res if (r.get("ProviderIds") or {}).get("Bangumi") == m.group(1)]
-            if hit:
-                self.emby.post(f"/Items/RemoteSearch/Apply/{s['Id']}", hit[0], ReplaceAllImages="true")
-                self.log(f"里番 Emby 重新识别 {m.group(1)} {hit[0].get('Name')} <- {s.get('Name')}")
-                n += 1
-        return n
+        return sum(1 for s in items if self.fix_item(s))
+
+    def fix_item(self, s: dict) -> bool:
+        """一个里番剧集条目：目录名写了 [bangumiid=N] 而 Emby 没认成这个 ID，就按 ID 识别（= 网页「识别」）。
+        Emby 推送新条目时立刻调用；emby_fix 是全库手动版。"""
+        m = re.search(r"\[bangumiid=(\d+)\]", s.get("Path", ""))
+        if not m or (s.get("ProviderIds") or {}).get("Bangumi") == m.group(1):
+            return False
+        res = self.emby.post("/Items/RemoteSearch/Series", {"SearchInfo": {"ProviderIds": {"Bangumi": m.group(1)}},
+                                                            "ItemId": s["Id"], "SearchProviderName": "Bangumi"}) or []
+        hit = [r for r in res if (r.get("ProviderIds") or {}).get("Bangumi") == m.group(1)]
+        if not hit:
+            return False
+        self.emby.post(f"/Items/RemoteSearch/Apply/{s['Id']}", hit[0], ReplaceAllImages="true")
+        self.log(f"里番 Emby 识别 {m.group(1)} {hit[0].get('Name')} <- {s.get('Name')}")
+        return True
 
     def catalog_add(self, titles: List[str]) -> List[str]:
         """加进追更目录（日文原名最好；也可以中文名）。返回新加的。"""
@@ -1052,19 +1068,43 @@ class Adult:
             self.save_data("hentai_catalog", cat)
         return added
 
+    def relib(self, series: str, names: List[str]) -> dict:
+        """系列重新识别 Bangumi（库目录名错了 / 当时没认出来）：用给的名字（日文原名最好）再查，查到就把 strm 目录迁过去。"""
+        with self._state_lock:
+            h = self._h()
+            downloaded = h.setdefault("downloaded", {})
+            key = next((k for k in downloaded if norm(k) == norm(series) or k == series), None)
+            if key is None:
+                return {"ok": False, "error": "没有这个系列"}
+            entry = downloaded[key]
+            old = entry.get("lib") or entry["folder"]
+            entry.pop("bgm", None)
+            entry.pop("bgm_tried", None)
+            new = self.ensure_lib(entry, *[n for n in names if n], series_names(key)[0])
+            cur = self._h()
+            cur.setdefault("downloaded", {})[key] = entry
+            self._h_save(cur)
+        if new != old:
+            try:
+                self.emby.updated([f"{self.emby_root}/里番/{new}", f"{self.emby_root}/里番/{old}"])
+            except Exception:  # noqa: BLE001
+                pass
+        return {"ok": bool(entry.get("bgm")), "old": old, "lib": new, "bgm": entry.get("bgm")}
+
     def hentai_submit(self, link: str, title: str, ep: Optional[int] = None) -> dict:
         """指定资源（MP 搜索结果或手挑的磁力）按系列入库。title 是发布标题或系列名。"""
         series, rep = parse_release(title)
-        series = split_vol(series or title)[0]
+        clean, alts = series_names(title)
+        series = split_vol(clean if not series or series.startswith("[") or len(series) > len(clean) else series)[0]
         if not series or rejected(title):
             return {"ok": False, "error": "认不出系列名或被排除"}
         with self._state_lock:
             h = self._h()
             downloaded = h.setdefault("downloaded", {})
             key = next((k for k in downloaded if norm(k) == norm(series)), series)
-            entry = self.new_entry(downloaded, key, series)
+            entry = self.new_entry(downloaded, key, series, *alts)
             key = self._key_of(downloaded, entry)
-            lib = self.ensure_lib(entry, series)
+            lib = self.ensure_lib(entry, *alts, series)
             ep = ep or file_ep(title) or rep or 1
             ok, err = self.submit("hentai", f"{self.remote_h}/{entry['folder']}/Season {entry['season']}", link, title,
                                   title=lib, series=key, ep=ep)

@@ -334,7 +334,7 @@ class Prowlarr115(_PluginBase):
     plugin_desc = ("未认证也能用：多关键词资源源 + 下载直接 115 离线（失败转 NAS 缓冲）+ strm 入 Emby + 刮削确认通知 + 批量入库 API；"
                    "AV（番号 → 115 → MDC 刮削）和里番（追更目录 + sukebei RSS → 115 → Bangumi）也在这里。")
     plugin_icon = "https://raw.githubusercontent.com/Prowlarr/Prowlarr/develop/Logo/256.png"
-    plugin_version = "2.24.0"
+    plugin_version = "2.27.1"
     plugin_label = "资源搜索,下载器"
     plugin_author = "mediahub"
     author_url = ""
@@ -418,6 +418,9 @@ class Prowlarr115(_PluginBase):
         if self._pipe and config.get("adult", True) not in (False, "false", 0):
             self._adult = Adult(self._pipe, self._conf, self.get_data, self.save_data, self._post, self._log)
             self._pipe.adult = self._adult
+            self._adult.kick = self._kick
+            self._adult.mdc_kick = self._adult_kick
+
             inbox = {k: str(config.get(k) or "").strip() for k in ("av_inbox", "hentai_inbox")}
             if any(inbox.values()):     # 设置页里填的待入库清单：清空字段后在后台处理
                 self.update_config(dict(config, av_inbox="", hentai_inbox=""))
@@ -477,6 +480,56 @@ class Prowlarr115(_PluginBase):
             for k in sorted(bl, key=lambda k: bl[k].get("at", 0))[:len(bl) - 3000]:
                 bl.pop(k, None)
         self.save_data("blacklist", bl)
+
+    def _on_emby_items(self, ids: List[str]) -> None:
+        """Emby 推送（App 后端用 Emby 用户会话监听 /embywebsocket 的 LibraryChanged，转发到 /hub/emby/changed；
+        API key 的连接收不到这类事件，Webhooks 又要 Premiere）：这些条目新增/更新了。里番缺 Bangumi ID 的当场识别；等待确认的任务当场核对（不用等下一轮轮询）。"""
+        p = self._pipe
+        if not p or not ids:
+            return
+        items = (p.emby.get("/Items", Ids=",".join(ids), Fields="Path,ProviderIds,ImageTags") or {}).get("Items") or []
+        paths = [it.get("Path") or "" for it in items]
+        self._log(f"Emby 推送：{len(ids)} 个条目变化（{', '.join(sorted({(x.split('/library/', 1)[-1].split('/')[0] or '?') for x in paths}))[:60]}）")
+        if self._adult:
+            for it in items:
+                if it.get("Type") == "Series" and "/里番/" in (it.get("Path") or ""):
+                    try:
+                        self._adult.fix_item(it)
+                    except Exception as err:  # noqa: BLE001
+                        self._log(f"里番即时识别出错：{err}")
+        self._confirm_waiting(paths)
+
+    def _confirm_waiting(self, paths: Optional[List[str]] = None, only: str = "") -> int:
+        """核对等待刮削的任务（paths=None：全部核对，手动用）。返回确认了几个。"""
+        p = self._pipe
+        n = 0
+        waiting = {h: t for h, t in (self._load_tasks() or {}).items()
+                   if t.get("status") == "done" and not (t.get("emby") or 0) > 0 and (t.get("meta") or {}).get("kind") != "av"}
+        for h, t in waiting.items():
+            if only and h != only:
+                continue
+            try:
+                folder = p.emby_folder(t)
+            except Exception:  # noqa: BLE001
+                continue
+            if paths is not None and not any(x.startswith(folder) for x in paths):
+                continue
+            t2 = dict(t)
+            with p.ctx(h, "emby"):
+                if (t2.get("meta") or {}).get("kind") == "hentai" and self._adult:
+                    self._adult.hentai_emby_check(t2)
+                else:
+                    p.emby_check(t2)
+            if (t2.get("emby") or 0) > 0:
+                def apply(cur: dict, t2=t2) -> None:
+                    cur["emby"] = t2["emby"]
+                    if t2.get("identity_warn"):
+                        cur["identity_warn"] = t2["identity_warn"]
+                    p.mark(cur, "emby")
+                p.mutate(h, apply)
+                p.event(h, "emby", f"Emby 已刮削（提交后 {int(t2['emby'] - (t.get('added') or t2['emby']))} 秒）")
+                n += 1
+        return n
 
     def _blacklist_drop(self, h: str) -> None:
         bl = self._blacklist()
@@ -550,6 +603,44 @@ class Prowlarr115(_PluginBase):
         except Exception as err:  # noqa: BLE001
             logger.warning(f"【Prowlarr115】记录已结束订阅失败：{err}")
 
+    # ---------------- 订阅身份（跨来源去重） ----------------
+    _sub_ids: Dict[str, tuple] = {}
+
+    def _sub_identity(self, sub: Any) -> Tuple[Optional[int], Optional[int], int]:
+        """订阅对应的 (TMDb id, TMDb 季, 集数偏移)。偏移区分 TMDb 合并季里的不同篇章（药屋少女 S1 = Bangumi 三季）。TMDb 来源直接取；Bangumi 来源（自动订阅助手）按 TMDb 对应条目和播出日期换算，
+        和入库目录用同一套映射（_plan），所以同一部作品不管从哪个来源订阅都得到同一个身份。缓存 6 小时。"""
+        src, mid, season = getattr(sub, "media_source", None) or "themoviedb", str(getattr(sub, "media_id", "") or ""), getattr(sub, "season", None)
+        if src == "themoviedb" or getattr(sub, "tmdbid", None):
+            return int(getattr(sub, "tmdbid", None) or mid or 0) or None, season, max(0, int(getattr(sub, "start_episode", None) or 1) - 1)
+        key = f"{src}:{mid}:{season}"
+        hit = self._sub_ids.get(key)
+        if hit and time.time() - hit[0] < 6 * 3600:
+            return hit[1]
+        out: Tuple[Optional[int], Optional[int], int] = (None, season, 0)
+        try:
+            from app.chain.media import MediaChain
+            from app.schemas.types import MediaSource
+            ms = {"bangumi": MediaSource.Bangumi, "douban": MediaSource.Douban}.get(src)
+            media = MediaChain().recognize_media(mtype=MediaType.TV, media_source=ms, media_id=mid) if ms else None
+            if media is not None:
+                tw = self._tmdb_twin(media, force=True)
+                _, info = self._plan(media, [season] if season else [], season, "")
+                out = (info.get("tmdbid") or (tw.tmdb_id if tw is not None else None),
+                       info.get("merged_season") or info.get("season") or season, int(info.get("ep_offset") or 0))
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"【Prowlarr115】订阅 {getattr(sub, 'name', '')} 换算 TMDb 失败：{err}")
+        self._sub_ids[key] = (time.time(), out)
+        return out
+
+    def api_sub_identity(self) -> Dict[str, Any]:
+        """全部订阅的 TMDb 身份：App 详情页据此判断「已订阅」（自动订阅助手的订阅是 Bangumi 来源）。"""
+        from app.db.oper.subscribe import SubscribeOper
+        items = []
+        for sub in SubscribeOper().list() or []:
+            tid, season, off = self._sub_identity(sub)
+            items.append({"id": sub.id, "tmdbid": tid, "season": season, "offset": off, "source": getattr(sub, "media_source", None)})
+        return {"ok": True, "items": items}
+
     # ---------------- 订阅守卫 ----------------
     GUARD_USERS = ("自动订阅助手",)
     BLOCKED_TITLES = ("暗芝居",)  # 用户不要的作品：自动订阅助手加了就删（配置 subscribe_block 可追加，逗号分隔）
@@ -574,9 +665,21 @@ class Prowlarr115(_PluginBase):
         subs = [oper.get(int(sid))] if sid else oper.list()
         n = 0
         for sub in subs:
-            if not sub or getattr(sub, "username", "") not in self.GUARD_USERS:
+            if not sub:
                 continue
             name = getattr(sub, "name", "") or ""
+            if sid and getattr(sub, "type", "") == MediaType.TV.value:
+                ident = self._sub_identity(sub)
+                dup = next((o for o in oper.list() or [] if o.id != sub.id and getattr(o, "type", "") == sub.type
+                            and ident[0] and self._sub_identity(o) == ident), None)
+                if dup is not None:
+                    # 同一部同一季已经有订阅（另一个来源：自动订阅助手是 Bangumi，App/网页是 TMDb）：留旧的，删新加的
+                    oper.delete(sub.id)
+                    n += 1
+                    self._post("🔁 重复订阅已删除", f"{name} S{sub.season}：已有订阅 #{dup.id}（{dup.media_source or 'TMDb'} 来源），新加的 #{sub.id} 已删除")
+                    continue
+            if getattr(sub, "username", "") not in self.GUARD_USERS:
+                continue
             if self._ended_key(sub) in ended:
                 # 已结束（完成或被删）的订阅被自动订阅助手重新加回来：删掉，不发通知（10-11~10-27 每天循环过）
                 oper.delete(sub.id)
@@ -614,10 +717,6 @@ class Prowlarr115(_PluginBase):
                 logger.info("【Prowlarr115】上一轮跟踪还没结束，跳过本轮")
                 return
             with self._lock:
-                try:
-                    self._guard_subscribe()
-                except Exception as err:  # noqa: BLE001
-                    logger.warning(f"【Prowlarr115】订阅守卫出错：{err}")
                 self._pipe.run()
 
     def get_service(self) -> List[Dict[str, Any]]:
@@ -642,7 +741,7 @@ class Prowlarr115(_PluginBase):
             except OSError:
                 return
             if quick:
-                for fn in (self._adult.av_run, self._adult.scan):
+                for fn in (self._adult.av_run,):
                     try:
                         fn()
                     except Exception as err:  # noqa: BLE001
@@ -652,18 +751,24 @@ class Prowlarr115(_PluginBase):
 
     _adult_kick_until = 0.0
 
-    def _adult_kick(self, minutes: int = 180) -> None:
-        """AV/里番提交后只在有活要干时主动推进：前 20 分钟每 20 秒（115 秒传 + MDC 刮削，一两分钟进库），之后每分钟，最长 minutes 分钟。"""
+    def _adult_kick(self, minutes: int = 60) -> None:
+        """AV 交给 MDC 后，只要还有 MDC 在处理的（new / scraping）就每 20 秒推进一次（MDC 没有推送），处理完就停；最长 minutes 分钟。"""
         busy = self._adult_kick_until > time.time()
         self._adult_kick_until = time.time() + minutes * 60
         if busy:
             return
 
+        def pending() -> bool:
+            st = ((self._adult.get_data("av") or {}).get("stubbed") or {}) if self._adult else {}
+            return any(v.get("status") in ("new", "scraping") for v in st.values())
+
         def loop():
-            t0 = time.time()
             while time.time() < self._adult_kick_until:
-                time.sleep(20 if time.time() - t0 < 1200 else 60)
+                time.sleep(20)
                 self.adult_track(quick=True)
+                if not pending():
+                    break
+            self._adult_kick_until = 0
         threading.Thread(target=loop, name="prowlarr115-adult-kick", daemon=True).start()
 
     def _drain_inbox(self, inbox: Dict[str, str]) -> None:
@@ -710,11 +815,13 @@ class Prowlarr115(_PluginBase):
             {"path": "/anime/tmdb_renumber", "endpoint": self.api_tmdb_renumber, "methods": ["POST"], "summary": "动漫库 TVDB 编号改回 TMDb：{dry_run, tmdbid}"},
             {"path": "/retarget", "endpoint": self.api_retarget, "methods": ["POST"], "summary": "任务认错作品时改到另一部：{hash, tmdbid, type, season, dry_run}（移动 115 文件、重建 strm）"},
             {"path": "/task_meta", "endpoint": self.api_task_meta, "methods": ["POST"], "summary": "改已提交任务的入库参数：{hash, meta:{merged_season, ep_offset, season_starts}}"},
+            {"path": "/sub_identity", "endpoint": self.api_sub_identity, "methods": ["GET"], "summary": "全部订阅的 TMDb 身份（跨 Bangumi/TMDb 来源判断是否已订阅）"},
             {"path": "/override", "endpoint": self.api_override, "methods": ["POST"], "summary": "给某作品某季的下一次下载附加参数：{tmdbid, season, ep_offset}"},
             {"path": "/av/add", "endpoint": self.api_av_add, "methods": ["POST"], "summary": "AV 入库：{items:[番号或磁力], dry_run, force}"},
             {"path": "/av/retry", "endpoint": self.api_av_retry, "methods": ["POST"], "summary": "MDC 刮削失败的 AV 重新刮削：{name}（空=全部失败的）"},
             {"path": "/hentai/add", "endpoint": self.api_hentai_add, "methods": ["POST"], "summary": "里番加入追更并立即搜索入库：{titles:[..], search:true}"},
             {"path": "/hentai/submit", "endpoint": self.api_hentai_submit, "methods": ["POST"], "summary": "指定里番资源入库：{magnet|hash, title, ep}"},
+            {"path": "/hentai/relib", "endpoint": self.api_hentai_relib, "methods": ["POST"], "summary": "里番系列重新识别 Bangumi 并迁移库目录：{series, names:[日文原名…]}"},
             {"path": "/hentai/scan", "endpoint": self.api_hentai_scan, "methods": ["POST"], "summary": "里番：扫描 115 上所有系列，补生成缺的 strm"},
             {"path": "/hentai/fix", "endpoint": self.api_hentai_fix, "methods": ["POST"], "summary": "Emby 里番按目录名里的 bangumiid 重新识别"},
             {"path": "/adult/status", "endpoint": self.api_adult_status, "methods": ["GET"], "summary": "AV/里番 状态"},
@@ -1974,6 +2081,11 @@ class Prowlarr115(_PluginBase):
         r = self._adult.hentai_submit(link, payload.get("title") or "", payload.get("ep"))
         self._adult_kick()
         return r
+
+    def api_hentai_relib(self, payload: dict = Body(...)) -> Any:
+        if self._need_adult():
+            return self._need_adult()
+        return self._adult.relib(str(payload.get("series") or ""), [str(x) for x in payload.get("names") or []])
 
     def api_hentai_scan(self) -> Any:
         if self._need_adult():

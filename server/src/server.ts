@@ -9,6 +9,7 @@ import { embyImage, extImage, posterPath, tmdbImage, tmdbPath } from "./images.t
 import { mp, mpRaw, plug, plugBytes, UpstreamError } from "./mp.ts";
 import { listUpdates, manifestResponse, storeUpdate } from "./updates.ts";
 import { registerCatalog } from "./catalog/index.ts";
+import { embyEvents, startEmbyEvents } from "./embyEvents.ts";
 
 const app = Fastify({
   // JSON lines to journald: `journalctl -u mediahub -o cat | grep <rid>`
@@ -201,6 +202,53 @@ app.get("/v1/overview", async () => {
   };
 });
 
+// Emby push listener (see embyEvents.ts): status for troubleshooting.
+startEmbyEvents(app.log);
+app.get("/admin/emby/events", async () => embyEvents);
+
+// ---------- health check (概览 需要处理) ----------
+// The only scheduled job: a read-only scan every HEALTH_EVERY that surfaces problems (unconfirmed scrapes, stuck
+// or failed tasks, 里番 not identified by their Bangumi id, MDC failures, missing posters). It fixes nothing by
+// itself; the app lists the findings and the user acts on them (/v1/health/fix).
+type Health = { ok: boolean; at: number; total: number; errors: string[]; checks: { key: string; title: string; severity: string; count: number; hint: string; items: unknown[] }[] };
+const HEALTH_EVERY = 6 * 3600_000;
+let health: Health | null = null;
+let healthRunning: Promise<Health | null> | null = null;
+
+async function runHealth(): Promise<Health | null> {
+  if (healthRunning) return healthRunning;
+  healthRunning = (async () => {
+    try {
+      const h = await plug<Health>("GET", "/hub/health", { timeoutMs: 120_000 });
+      if (h?.ok) {
+        health = h;
+        await mkdir(statsDir(), { recursive: true });
+        await writeFile(path.join(statsDir(), "health.json"), JSON.stringify(h));
+      }
+      return health;
+    } catch (e) {
+      app.log.warn({ err: e instanceof Error ? e.message : String(e) }, "health scan failed");
+      return health;
+    } finally {
+      healthRunning = null;
+    }
+  })();
+  return healthRunning;
+}
+
+void readFile(path.join(config.dataDir, "stats", "health.json"), "utf8").then((t) => { health = JSON.parse(t) as Health; }).catch(() => {});
+setTimeout(() => void runHealth(), 60_000);
+setInterval(() => void runHealth(), HEALTH_EVERY).unref();
+
+app.get("/v1/health", async () => health ?? { ok: false, error: "还没有检查结果" });
+app.post("/v1/health/run", async () => (await runHealth()) ?? { ok: false, error: "检查失败" });
+app.post("/v1/health/fix", async (req) => {
+  const b = z.object({ key: z.string().max(40), id: z.string().max(80) }).parse(req.body);
+  const r = await plug<{ ok: boolean }>("POST", "/hub/health/fix", { body: b, timeoutMs: 60_000 });
+  req.log.info({ ...b, ok: r.ok }, "health fix");
+  return r;
+});
+
 // ---------- system stats (系统页 存储 / 媒体库) ----------
 // The plugin's /hub/stats walks Emby and asks 115/qB, which takes a few seconds. Refreshed only while someone uses
 // the app: a request for /v1/stats answers from the cache at once and, if the cache is older than STATS_MIN_AGE,
@@ -315,6 +363,7 @@ app.get<{ Params: { type: string; id: string } }>("/v1/media/:type/:id", async (
     plug<Record<string, unknown>>("GET", "/hub/library/item", { query: { tmdbid: id, type } }).catch(() => null),
     mp<MpSub[]>("GET", "/subscribe/").catch(() => [] as MpSub[]),
   ]);
+  const ids = await subIdentities();
   return {
     media: {
       ...brief(detail),
@@ -335,7 +384,7 @@ app.get<{ Params: { type: string; id: string } }>("/v1/media/:type/:id", async (
       poster: tmdbPath(s.poster_path),
     })),
     library,
-    subscriptions: (subs ?? []).map(sub).filter((s) => s.tmdbid === id && s.type === type),
+    subscriptions: withIdentity((subs ?? []).map(sub), ids).filter((s) => s.tmdbid === id && s.type === type),
   };
 });
 
@@ -753,6 +802,19 @@ app.get<{ Params: { size: string; file: string } }>("/v1/img/tmdb/:size/:file", 
 
 app.get("/v1/subscriptions", async () => ({ items: ((await mp<MpSub[]>("GET", "/subscribe/")) ?? []).map(sub) }));
 
+// Subscriptions from the auto-subscribe helper are Bangumi-sourced (no TMDb id); the plugin maps every subscription
+// to its TMDb id + season, so "already subscribed" and duplicate checks work across sources.
+type SubIdentity = { id: number; tmdbid: number | null; season: number | null; offset: number };
+const subIdentities = () =>
+  remember("sub:identity", 5 * 60_000, () => plug<{ items: SubIdentity[] }>("GET", "/sub_identity", { timeoutMs: 90_000 })
+    .then((r) => new Map((r.items ?? []).map((i) => [i.id, i]))).catch(() => new Map<number, SubIdentity>()));
+function withIdentity<T extends { id: number; tmdbid: number | null; season: number | null }>(list: T[], ids: Map<number, SubIdentity>): T[] {
+  return list.map((s) => {
+    const i = ids.get(s.id);
+    return i?.tmdbid ? { ...s, tmdbid: s.tmdbid ?? i.tmdbid, season: i.season ?? s.season } : s;
+  });
+}
+
 app.post("/v1/subscriptions", async (req) => {
   const b = z.object({
     tmdbid: z.number().int().positive(),
@@ -762,6 +824,12 @@ app.post("/v1/subscriptions", async (req) => {
     season: z.number().int().min(0).optional(),
     startEpisode: z.number().int().min(1).optional(),
   }).parse(req.body);
+  // Same work (and season) already subscribed from any source → answer with that one instead of adding a duplicate.
+  const ids = await subIdentities();
+  const offset = Math.max(0, (b.startEpisode ?? 1) - 1);
+  const existing = withIdentity(((await mp<MpSub[]>("GET", "/subscribe/")) ?? []).map(sub), ids)
+    .find((s) => s.tmdbid === b.tmdbid && s.type === b.type && (b.type === "movie" || (s.season === (b.season ?? 1) && (ids.get(s.id)?.offset ?? 0) === offset)));
+  if (existing) return { ok: true, existing: true, message: "已经订阅过了", id: existing.id };
   const res = await mpRaw<{ success: boolean; message?: string; data?: { id?: number } }>("POST", "/subscribe/", {
     body: {
       name: b.title, year: b.year, type: TYPE_NAME[b.type], media_source: "themoviedb", media_id: String(b.tmdbid), tmdbid: b.tmdbid,
