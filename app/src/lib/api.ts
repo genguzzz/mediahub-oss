@@ -280,6 +280,15 @@ export interface Overview {
   errors: string[];
 }
 
+export interface LibStat { id: string; name: string; type: string; movies: number; series: number; episodes: number; videos: number; new7d: number; noPoster: number; adult: boolean }
+export interface Stats {
+  ok: boolean; at: number; errors: string[]; error?: string; refreshing?: boolean; nextRefresh?: number;
+  libraries: LibStat[];
+  storage: { c115?: { total: number; used: number; remain: number }; nas?: { free: number; dl: number; up: number } };
+  ingest: { byKind?: Record<string, Record<string, number>>; done7d?: number; blacklisted?: number };
+}
+export const statsQuery = (refresh = false) => api<Stats>(`/v1/stats${refresh ? "?refresh=1" : ""}`, { timeoutMs: refresh ? 150_000 : 30_000 });
+
 export interface OfflineTask { hash: string; name: string; size: number; percent: number; status: number; rate: number; peers: number; added: number; updated: number; dir: string | null; ours: boolean }
 
 export interface QbTorrent {

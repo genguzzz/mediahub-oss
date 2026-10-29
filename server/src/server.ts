@@ -201,6 +201,57 @@ app.get("/v1/overview", async () => {
   };
 });
 
+// ---------- system stats (系统页 存储 / 媒体库) ----------
+// The plugin's /hub/stats walks Emby and asks 115/qB, which takes a few seconds. Refreshed only while someone uses
+// the app: a request for /v1/stats answers from the cache at once and, if the cache is older than STATS_MIN_AGE,
+// refreshes it in the background (no timer). Manual refresh obeys the same minimum interval. The last result is kept
+// on disk, plus one snapshot per day (stats/days.jsonl) so growth (library size, 115 usage) can be shown later.
+
+type Stats = { ok: boolean; at: number; errors: string[]; libraries: unknown[]; storage: Record<string, unknown>; ingest: Record<string, unknown> };
+let statsCache: Stats | null = null;
+let statsRunning: Promise<Stats | null> | null = null;
+const STATS_MIN_AGE = 10 * 60_000;
+const statsAge = () => (statsCache ? Date.now() - statsCache.at * 1000 : Infinity);
+const statsDir = () => path.join(config.dataDir, "stats");
+
+async function refreshStats(): Promise<Stats | null> {
+  if (statsRunning) return statsRunning;
+  statsRunning = (async () => {
+    try {
+      const s = await plug<Stats>("GET", "/hub/stats", { timeoutMs: 120_000 });
+      if (!s?.ok) return statsCache;
+      statsCache = s;
+      await mkdir(statsDir(), { recursive: true });
+      await writeFile(path.join(statsDir(), "latest.json"), JSON.stringify(s));
+      const day = new Date().toISOString().slice(0, 10);
+      const days = await readFile(path.join(statsDir(), "days.jsonl"), "utf8").catch(() => "");
+      if (!days.includes(`"day":"${day}"`)) await appendFile(path.join(statsDir(), "days.jsonl"), JSON.stringify({ day, ...s }) + "\n");
+      return s;
+    } catch (e) {
+      app.log.warn({ err: e instanceof Error ? e.message : String(e) }, "stats refresh failed");
+      return statsCache;
+    } finally {
+      statsRunning = null;
+    }
+  })();
+  return statsRunning;
+}
+
+void readFile(path.join(statsDir(), "latest.json"), "utf8").then((t) => { statsCache = JSON.parse(t) as Stats; }).catch(() => {});
+app.get("/v1/stats", async (req) => {
+  const q = z.object({ refresh: z.enum(["0", "1"]).default("0") }).parse(req.query);
+  const due = statsAge() >= STATS_MIN_AGE;
+  if (!statsCache || (q.refresh === "1" && due)) return (await refreshStats()) ?? { ok: false, error: "统计还没准备好" };
+  if (due) void refreshStats();               // someone is looking: refresh in the background, answer from cache now
+  return { ...statsCache, refreshing: due || !!statsRunning, nextRefresh: statsCache.at + STATS_MIN_AGE / 1000 };
+});
+
+// Daily snapshots, oldest first (library counts and 115 usage over time).
+app.get("/v1/stats/days", async () => {
+  const raw = await readFile(path.join(statsDir(), "days.jsonl"), "utf8").catch(() => "");
+  return { days: raw.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Stats & { day: string }).slice(-90) };
+});
+
 // ---------- media (TMDb via MP) ----------
 
 app.get("/v1/media/search", async (req) => {

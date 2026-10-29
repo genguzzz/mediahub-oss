@@ -179,6 +179,15 @@ class Cloud115:
         except ValueError as err:
             raise ClientError(f"115 返回非 JSON（cookie 失效？）：{res.text[:80]}") from err
 
+    def space(self) -> Dict[str, int]:
+        """网盘空间（字节）：{total, used, remain}。"""
+        d = self._req("https://webapi.115.com/files/index_info")
+        si = ((d.get("data") or {}).get("space_info") or {}) if isinstance(d, dict) else {}
+        size = lambda k: int(float((si.get(k) or {}).get("size") or 0))  # noqa: E731
+        if not si:
+            raise ClientError(f"115 空间信息格式不对：{str(d)[:80]}")
+        return {"total": size("all_total"), "used": size("all_use"), "remain": size("all_remain")}
+
     def mkdir_p(self, path: str) -> str:
         """逐级建目录，返回最后一级 cid。path 是 115 内路径（不带 /115 前缀）。"""
         cid, cur = "0", ""

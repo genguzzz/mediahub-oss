@@ -132,6 +132,7 @@ class Hub:
             ("/hub/task/candidates", self.task_candidates, "GET", "给某任务换资源的候选：hash（按任务的作品/季/集重新搜，打分，标出当前和已拉黑的）"),
             ("/hub/task/reselect", self.task_reselect, "POST", "换资源：{hash, magnet, title, buffer}（取消旧任务+删 115 文件+拉黑，新资源进同一目录；buffer=直接走 NAS 缓冲）"),
             ("/hub/subscription", self.subscription, "GET", "订阅详情：id（每集状态：未播/缺/已提交/下载中/卡住/失败/已入库）"),
+            ("/hub/stats", self.stats, "GET", "系统统计：Emby 每个库的部数/集数/近 7 天新增、115 空间、NAS 下载盘剩余、入库任务按类型和状态"),
             ("/hub/blacklist", self.blacklist, "GET", "已拉黑的资源"),
             ("/hub/blacklist/remove", self.blacklist_remove, "POST", "解除拉黑：{hashes:[..]}"),
             ("/hub/offline", self.offline, "GET", "115 离线任务列表"),
@@ -933,6 +934,57 @@ class Hub:
         n = sum(1 for k in payload.get("hashes") or [] if bl.pop(str(k).lower(), None) is not None)
         self.p.save_data("blacklist", bl)
         return {"ok": True, "removed": n}
+
+    # ---------------- 系统统计 ----------------
+    def stats(self) -> Dict[str, Any]:
+        """后端按需调用（App 打开且缓存超过 10 分钟）并缓存；各段失败互不影响，错误写进 errors。"""
+        p = self.p._pipe
+        out: Dict[str, Any] = {"ok": True, "at": int(time.time()), "errors": [], "libraries": [], "storage": {}, "ingest": {}}
+        if not p:
+            return {"ok": False, "error": "流水线未就绪"}
+        since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 7 * 86400))
+
+        def count(**q: Any) -> int:
+            return int((p.emby.get("/Items", Recursive="true", Limit="0", **q) or {}).get("TotalRecordCount") or 0)
+        try:
+            for f in p.emby.get("/Library/VirtualFolders") or []:
+                lid, ctype = f.get("ItemId"), (f.get("CollectionType") or "mixed")
+                movies = count(ParentId=lid, IncludeItemTypes="Movie")
+                series = count(ParentId=lid, IncludeItemTypes="Series")
+                eps = count(ParentId=lid, IncludeItemTypes="Episode") if series else 0
+                vids = count(ParentId=lid, IncludeItemTypes="Video") if ctype in ("homevideos", "mixed") else 0
+                new7 = count(ParentId=lid, IncludeItemTypes="Movie,Episode,Video", MinDateCreated=since)
+                # Emby 4.10 不认 HasPrimaryImage=false：没海报 = 总数 - 有 Primary 图的
+                no_img = max(0, movies + series - count(ParentId=lid, IncludeItemTypes="Movie,Series", ImageTypes="Primary"))
+                out["libraries"].append({"id": lid, "name": f.get("Name"), "type": ctype, "movies": movies, "series": series,
+                                         "episodes": eps, "videos": vids, "new7d": new7, "noPoster": no_img,
+                                         "adult": f.get("Name") in ("AV", "里番")})
+        except Exception as err:  # noqa: BLE001
+            out["errors"].append(f"Emby：{err}")
+        try:
+            out["storage"]["c115"] = p.c115.space()
+        except Exception as err:  # noqa: BLE001
+            out["errors"].append(f"115：{err}")
+        if p.qb:
+            try:
+                srv = (p.qb.get("/api/v2/sync/maindata", {"rid": 0}) or {}).get("server_state") or {}
+                out["storage"]["nas"] = {"free": srv.get("free_space_on_disk"), "dl": srv.get("dl_info_speed"), "up": srv.get("up_info_speed")}
+            except Exception as err:  # noqa: BLE001
+                out["errors"].append(f"qBittorrent：{err}")
+        tasks = self.p._load_tasks() or {}
+        by: Dict[str, Dict[str, int]] = {}
+        week = 0
+        for t in tasks.values():
+            cat = (t.get("meta") or {}).get("kind") or "media"
+            st = t.get("status") or "?"
+            grp = "active" if st in ("downloading", "buffer", "uploaded", "scraping") else "done" if st == "done" else \
+                "ended" if st in ("cancelled", "superseded") else "failed"
+            by.setdefault(cat, {}).setdefault(grp, 0)
+            by[cat][grp] += 1
+            if st == "done" and (t.get("done") or 0) > time.time() - 7 * 86400:
+                week += 1
+        out["ingest"] = {"byKind": by, "done7d": week, "blacklisted": len(self.p._blacklist())}
+        return out
 
     # ---------------- 订阅详情 ----------------
     def subscription(self, id: int) -> Dict[str, Any]:  # noqa: A002
