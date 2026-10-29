@@ -23,12 +23,13 @@
 
 | 现象 | 处理 |
 |---|---|
-| `Please tell me who you are` / 提交没有作者 | `git config --global user.name "<你的名字>"`、`git config --global user.email "<你的邮箱>"`；不想公开邮箱就用 GitHub 的 `<id>+<用户名>@users.noreply.github.com` |
+| `Please tell me who you are` / 提交没有作者 | 在本仓库里设一个**可以公开**的身份：`git config user.name "<名字>"`、`git config user.email "<id>+<用户名>@users.noreply.github.com"`（GitHub 设置 → Emails 里的 noreply 地址）。不要用 `--global` 继承公司或其他场合的身份 |
+| 提交被拦：`commit identity above is private` | 作者/提交者身份会随每个提交公开。上面那条命令给本仓库设公开身份；已经推送过的提交见下面「私有值已经推送」 |
 | HTTPS 推送要密码 / `Authentication failed` | `gh auth setup-git`（让 git 用 gh 的登录）；或改用 SSH 远程并把公钥加到 GitHub |
 | `fatal: 'upstream' does not appear to be a git repository` | `./scripts/instance.sh init`（会添加不拉 tag 的 upstream） |
 | `tag vX.Y.Z already exists` | 新 fork 会继承上游当时的所有 tag。要发的正是这个版本而它不是你发的：`./scripts/release.sh X.Y.Z "说明" --retag`（替换成你自己的 tag 并在你的 fork 上编译）。以后不要 `git fetch upstream --tags` |
 | 提交被 `leak-scan` 拦下 | 说明文件或提交说明里有你的私有值：改成占位值或挪进实例配置。确属误报（例如公开的上游仓库地址）就在 `private-patterns.txt` 加一行 `!<允许的正则>`。不要 `--no-verify` |
-| 私有值已经推送到公开仓库 | 立刻轮换相关令牌/口令（见 `docs/UPSTREAM.md` 第 7 节）；再用 `git filter-repo` 清理历史并强推，告知 fork 者重新 clone。域名一旦公开无法收回，只能接受或更换 |
+| 私有值（含提交身份）已经推送到公开仓库 | 立刻轮换相关令牌/口令（见 `docs/UPSTREAM.md` 第 7 节）；重写历史（身份用 `git rebase -r <干净的提交> --exec 'git commit --amend --no-edit --reset-author'`，内容用 `git filter-repo`）并强推，tag 也要重建，告知 fork 者重新同步。旧提交在 GitHub 上仍可凭 SHA 访问，需要彻底清除时联系 GitHub Support。域名一旦公开无法收回，只能接受或更换 |
 | 合并上游冲突 | 只有改过被跟踪文件才会冲突。个人值类的冲突一律取上游版本、把值挪到实例配置；代码冲突按 `docs/UPSTREAM.md` 第 5 节处理 |
 
 ## GitHub Actions 编译

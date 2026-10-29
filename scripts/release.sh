@@ -30,6 +30,9 @@ if git rev-parse "v$VERSION" >/dev/null 2>&1; then
 fi
 # The tag message becomes the public Release notes: keep instance values out of it.
 printf '%s\n' "$NOTES" | ./scripts/instance.sh scan --text - || exit 1
+# The tagger identity is public as well.
+git var GIT_COMMITTER_IDENT | sed -E 's/ [0-9]+ [+-][0-9]{4}$//' | ./scripts/instance.sh scan --text - \
+  || { echo "tagger identity is private: git config user.name/user.email for this repo" >&2; exit 1; }
 
 CURRENT=$(node -p "require('./app/package.json').version")
 LOWER=$(printf '%s\n%s\n' "$CURRENT" "$VERSION" | sort -V | head -1)

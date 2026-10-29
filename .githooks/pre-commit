@@ -1,4 +1,8 @@
 #!/bin/sh
 # Enabled by `./scripts/instance.sh init` (git config core.hooksPath .githooks).
-# Blocks commits that contain this instance's private values (hosts, ids, names).
-exec "$(git rev-parse --show-toplevel)/scripts/instance.sh" scan --staged
+# Blocks commits that contain this instance's private values (hosts, ids, names) — in the staged files
+# and in the author/committer identity, which is public in every pushed commit.
+TOP="$(git rev-parse --show-toplevel)"
+"$TOP/scripts/instance.sh" scan --staged || exit 1
+{ git var GIT_AUTHOR_IDENT; git var GIT_COMMITTER_IDENT; } | sed -E 's/ [0-9]+ [+-][0-9]{4}$//' | "$TOP/scripts/instance.sh" scan --text - \
+  || { echo "commit identity above is private: set a public one for this repo — git config user.name '<name>'; git config user.email '<id>+<user>@users.noreply.github.com'" >&2; exit 1; }

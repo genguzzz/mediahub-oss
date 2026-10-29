@@ -35,7 +35,7 @@ case "${1:-check}" in
       echo "added remote upstream → $UP"
     fi
     # Upstream's vX.Y.Z tags must never mix with your fork's release tags.
-    git remote get-url upstream >/dev/null 2>&1 && git config remote.upstream.tagOpt --no-tags
+    if git remote get-url upstream >/dev/null 2>&1; then git config remote.upstream.tagOpt --no-tags; fi
     ;;
   check)
     instance_load
@@ -59,7 +59,7 @@ case "${1:-check}" in
       SECRETS=$(gh secret list -R "$REPO" --json name -q '[.[].name]|join(" ")' 2>/dev/null || echo "?")
       echo "  CI repo            $REPO (Actions enabled: $ACTIONS)"
       echo "  CI secrets         ${SECRETS:-none — run ./scripts/instance.sh ci}"
-      [ "$ACTIONS" = false ] && echo "warning: Actions are off on $REPO — forks start with them disabled; enable them in the repo's Actions tab" >&2
+      if [ "$ACTIONS" = false ]; then echo "warning: Actions are off on $REPO — forks start with them disabled; enable them in the repo's Actions tab" >&2; fi
     fi
     ;;
   ci)

@@ -31,9 +31,10 @@
 ### 1. 准备 fork 与实例配置（在我用来部署/发布的电脑上）
 
 1. 确认当前仓库是我自己的 fork（`git remote -v` 的 origin 是我的 GitHub 账号），不是上游。还没 fork 的话用 `gh repo fork https://github.com/genguzzz/mediahub-oss --clone`。fork 保持公开（公开仓库的 GitHub macOS runner 免费）。
-2. `./scripts/instance.sh init`：建实例目录、生成 IPA 加密口令、启用提交前检查、添加不拉 tag 的 `upstream` 远程。
-3. 把我的私有关键词（域名、主机名、用户名、IP、本机路径）逐行写进 `~/.config/mediahub/private-patterns.txt`。`APP_*` 里的域名和 bundle id 会自动检查，不用重复写。
-4. `instance.env` 先留着，后面每一步确定了值再填。
+2. 给本仓库设一个**可以公开**的 git 身份（`git config user.name`、`git config user.email` 用 GitHub noreply 地址，不加 `--global`），每个提交都会公开它。
+3. `./scripts/instance.sh init`：建实例目录、生成 IPA 加密口令、启用提交前检查、添加不拉 tag 的 `upstream` 远程。
+4. 把我的私有关键词（域名、主机名、用户名、真实姓名与邮箱、IP、本机路径）逐行写进 `~/.config/mediahub/private-patterns.txt`。`APP_*` 里的域名和 bundle id 会自动检查，不用重复写。
+5. `instance.env` 先留着，后面每一步确定了值再填。
 
 ### 2. 探测环境（只读）
 
