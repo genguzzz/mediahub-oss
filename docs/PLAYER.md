@@ -1,0 +1,23 @@
+# Player and native capabilities
+
+The native side of the app: what each runtime version added and how the player is linked. Native changes need a runtime bump and a CI build (see CLAUDE.md, Ship it).
+
+## Player (native, runtime 2+)
+
+- `modules/mediahub-player`: Expo view around [AetherEngine](https://github.com/superuser404notfound/AetherEngine) (LGPL + App Store exception; FFmpeg demux, VideoToolbox HEVC/H.264/AV1, Dolby Vision/HDR10 and Atmos via AVPlayer, MKV, PGS/ASS). Chosen over KSPlayer (its free GPL build has no iOS device binary), MPVKit (self-described "for learning") and VLCKit (no DV/Atmos). JS draws all controls (`src/app/player.tsx`), so control changes ship by OTA; the view draws subtitles (text + bitmap cues) natively.
+- Linking: the pod pulls AetherEngine with `spm_dependency` (Xcode merges its objects into the static pod); `plugins/with-aether-engine.js` links/embeds only the dynamic FFmpeg frameworks (+ static libdovi) in the app target. Linking the AetherEngine product in the app too = duplicate symbols. Bump AetherEngine in the podspec and the plugin's package versions together.
+- AetherEngine needs Xcode 27 and iOS 18: CI runs on `xcode-27`, deployment target 18.0 (expo-build-properties). A local build needs Xcode 27 (macOS 26.6+); otherwise native changes are verified only by CI.
+- Runtime 3 adds: PiP on both routes (native: a second `AVPlayerLayer` on `currentAVPlayer`; software: sample-buffer content source from `softwarePiPSource`), auto-PiP on swipe-home, `pipKeeper` keeps a view alive when its screen closes while PiP runs and `onPiPRestore` (module event) reopens `/player?at=`; background audio (`backgroundPlaybackEnabled`) and Now Playing/lock-screen commands (`ownsVideoNowPlayingSession` + remote commands); `addSubtitle`, `togglePiP`, `capabilities()`, brightness/volume (off-screen `MPVolumeView`), and the `MediahubAirPlay` view (separate module: one view per module).
+- Runtime 4 startup tuning: the source carries `probeBytes` 8 MB / `analyzeMs` 5 s (AetherEngine defaults 50 MB / 60 s) and `progressive` (loopback segments served while written); the view emits `onStartup` checkpoints (`streamsProbed`, `ready`, `presenting` with ms since load, tracked as `play_startup`); the module's `prewarm(uri, headers)` is called by `warmPlayback()` from the Emby detail page on Wi-Fi (PlaybackInfo + first 8 MB; the player then takes the cached plan within 5 min). AetherEngine caches the 302-resolved CDN URL itself, so seeks don't go back through go-emby2openlist. `play_start` has `fromOpen` (screen open → first frame) besides `ms` (plan → frame).
+- Playback speed tracking (runtime 4): `lib/playStats.ts` sends one `play_timeline` per play (ms since the player opened: item, info, subs, plan, native checkpoints `n_*`, engine open timings connect/openInput/findStreamInfo/demuxTotal, firstData, frame; context container/codec/route/resume/prewarm/net/cdn), plus `play_seek` and `play_stall`. The module forwards AetherEngine's diagnostic lines (`EngineLog.handler`, URLs cut to host) as `onEngineLog`; they also land in the uploaded log under `playstats`. Summary: `GET /admin/playstats?days=7[&version=]`.
+- Runtime 5 adds DLNA casting (native SSDP discovery, `src/lib/dlna.ts`, `components/CastPanel.tsx`).
+- Rotation is owned by the native stack only (`orientation: "portrait_up"` on the root stack, `"landscape"` on the player). Calling expo-screen-orientation as well made the player rotate twice.
+- Header values must be ASCII (the Emby client name is "MediaHub"; "影库" in a header made fetch throw).
+
+## Native capabilities (runtime 3+)
+
+- The binary ships, ahead of features: linear-gradient, glass-effect, svg, keep-awake, network, sqlite, local-authentication, document-picker, sharing, quick-actions, localization, crypto, speech-recognition, plus the player module above. Features built on these ship by OTA.
+- Feature code calls `src/lib/device.ts` (never `expo-*` directly): `has(capability)` first (OTA code can run on an older runtime), wrappers return `null` on cancel and log + track every call. Player-module features check `nativeCaps().module`.
+- Adding any native module, permission string or Swift change still means: bump `RUNTIME_VERSION`, `release.sh`. Verify Swift in small steps: push the native change alone (CI ~9 min) before building UI on it.
+- Settings → 能力自检 (`/diagnostics`) lists what the binary carries and exercises each capability on the device; results can be uploaded with the log.
+- OTA check: the server logs every manifest request (`journalctl -u mediahub -o cat | grep "updates manifest"` shows `current` → `served`); the app shows 「新版本已就绪 · 立即重启」 when one has downloaded.

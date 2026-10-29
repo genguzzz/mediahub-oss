@@ -1,0 +1,27 @@
+# App conventions
+
+How the Expo app is organised and the UI rules every screen follows.
+
+## App conventions
+
+- Tabs (`src/app/(tabs)`): 媒体库 (Emby home) · 发现 (search + MP discover rows) · 入库 · 管理 (媒体库 delete + 下载器 panel `components/Downloads.tsx`) · 概览, system tab bar (`NativeTabs`). Everything else opens from the left drawer (`components/Drawer.tsx`: libraries, favourites, subscriptions, history, settings; menu button in `TabHeader` or swipe from the left edge) or is a stack route with `TopBar`; settings is a modal, the player a full-screen modal.
+- Posters: always 2:3, landscape cards 16:9 (`components/media.tsx`). Lists use `Posters` = two-column waterfall or large-poster list (Settings → 海报排列, `LayoutToggle` in headers).
+- Pull-to-refresh: use `<Pull onRefresh>` (spins only for the user's pull; polling must not show the spinner).
+- Data: `useQuery(key, fn, {interval, staleMs})` from `lib/query.ts` — shared cache by key (persisted, so a cold start offline shows the last lists), refetches on focus when stale, polls only while focused and the app is active. `mutate`/`invalidate` after actions.
+- Theme: three styles (影院 default / 海盐 / 绯红) × light/dark in `lib/theme.ts`; `colors` is a mutable palette swapped by `applyTheme`; read it during render, never at module scope.
+- UI copy is Simplified Chinese, plain and precise (正在…/已…/未能…), no emoji or exclamation marks. Every tap gets haptics (`tap()`), results use `toast()` / `toastError()`, destructive actions go through `confirm()`.
+- Images: always through the backend (`img()` for `/v1/img/tmdb/*`, `embyImg()` for Emby) — the phone never talks to TMDb directly.
+- Adult content (AV/里番 libraries, sukebei sources, AV/里番 search modes) is hidden unless Settings → 成人内容 is on.
+- AV/里番 index (发现 → AV 番号 / 里番): backend provider registry in `server/src/catalog/` — `CatalogProvider` (home rows, list by sort/tag/person, detail, persons) and `StreamProvider` (`find` → sources with a `ref`; `/v1/stream/:id/resolve` → `{uri, headers}`, which the player opens via `/player?stream=&ref=`). Adding a source = one provider file + one line in `catalog/index.ts`; the app reads `/v1/catalog` and needs no change.
+  - Catalogs: `javdb` (rankings, ratings, actress index; pages and images through `INDEX_PROXY` when the server's country is refused), `jable` (hot lists, latest, actresses; pages through FlareSolverr `FLARESOLVERR_URL` with three persistent sessions `mediahub-1..3`: first page ~15 s, then 1–4 s), `emby-av` (the AV library), `hanime` (public DB, refreshed every 6 h, cached in `$CACHE_DIR/catalog/`). `server/src/catalog/http.ts` holds the fetchers and their cache; JavDB/Jable home rows are re-warmed every 25 min.
+  - Online sources: `jable` (番号 → `/videos/<code>/` and `<code>-c`; HLS on an open CDN, AES-128, URL expires after a few hours — resolved right before playing). Separate route `/v1/catalog/:p/item/:id/streams` because it takes 2–20 s. Emby is not an online source: a work already in the library gets a 「去 Emby 播放」 button (`library` in the detail response; AV by 番号, 里番 by the Japanese OriginalTitle inside hanime's search_titles).
+- The only content filter: titles explicitly describing minors (`REJECT` in `catalog/jable.ts`) and hanime's `school girl` tag.
+- Notifications are local: `lib/notify.ts` diffs the pipeline on foreground loads and in an `expo-background-task` (iOS decides when, ≥15 min). Self-signed builds have no push.
+- Logging: `logger("area")` for ids, counts, timings, phases, errors (never tokens or URLs with api_key). Settings → 上传日志 (also on the player error overlay and info panel) stores `$DATA_DIR/logs/<id>.log` + `.json`; list with `GET /admin/logs` (ADMIN_TOKEN); match request ids with `journalctl -u mediahub -o cat | grep <rid>`.
+- Feedback (反馈问题): long-press sheet → `components/FeedbackForm.tsx` (kinds + reason + optional log upload) → `POST /v1/feedback`; the server stores `$DATA_DIR/feedback/<id>.json` with an Emby snapshot (path, provider ids, images, streams) taken at submit time. Work through them with `GET /admin/feedback` (counts by kind/library/status), set `status`/`note` with `POST /v1/feedback/:id`; the app shows them under Settings → 问题反馈记录.
+- System stats (概览 存储/媒体库, `/stats`): plugin `/hub/stats` (Emby counts per library, 115 space, qB free disk, task counts); the server caches it and refreshes only on demand — a `/v1/stats` request with a cache older than 10 min triggers a background refresh (no timer; manual refresh obeys the same 10-min minimum). One snapshot per day in `$DATA_DIR/stats/days.jsonl`.
+- Usage events (埋点): `track(name, props)` / `timed()` from `lib/track.ts`, batched to `/v1/events` every 30 s and on background, stored as `$DATA_DIR/events/YYYY-MM-DD.jsonl`; summary `GET /admin/events?day=…&name=…`. Playback emits `play_start`, `play_info`, `play_error`, `play_stop`, `play_end`.
+- Detail pages (Emby item, 发现 TMDb work) share the immersive top from `components/DetailHero.tsx`: full-bleed backdrop fading into the page, poster + title over its lower edge, floating back button.
+- Screen actions sit at the top and are never repeated at the bottom; adding a button keeps the existing order (the established primary button stays first) and the row must not wrap — use `small` buttons with equal `flex` when three share a row.
+- The drawer footer shows the running version and a small 检查更新 (same check as Settings).
+- 概览 shows 需要处理 from the 6-hourly read-only health check (`/health` screen lists findings with explicit actions).
