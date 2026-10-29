@@ -45,7 +45,7 @@ from .adult import magnet as adult_magnet
 from .clients import ClientError, Emby
 from .hub import Hub
 from .pipeline import LIBS, Pipeline, btih as _pipe_btih, ep_of, with_trackers
-from .policy import DEFAULT_POLICY, DEFAULT_QUERY_TEMPLATES, load_policy, query_context, render_queries, veto, year_conflict
+from .policy import DEFAULT_POLICY, DEFAULT_QUERY_TEMPLATES, gb_per_hour, load_policy, query_context, render_queries, runtime_minutes, veto, year_conflict
 
 DOWNLOADER_NAME = "115离线"
 TRACKERS = ("udp://tracker.opentrackr.org:1337/announce", "udp://open.stealth.si:80/announce",
@@ -334,7 +334,7 @@ class Prowlarr115(_PluginBase):
     plugin_desc = ("未认证也能用：多关键词资源源 + 下载直接 115 离线（失败转 NAS 缓冲）+ strm 入 Emby + 刮削确认通知 + 批量入库 API；"
                    "AV（番号 → 115 → MDC 刮削）和里番（追更目录 + sukebei RSS → 115 → Bangumi）也在这里。")
     plugin_icon = "https://raw.githubusercontent.com/Prowlarr/Prowlarr/develop/Logo/256.png"
-    plugin_version = "2.22.0"
+    plugin_version = "2.23.0"
     plugin_label = "资源搜索,下载器"
     plugin_author = "mediahub"
     author_url = ""
@@ -901,13 +901,36 @@ class Prowlarr115(_PluginBase):
                 if merged is not None:
                     _MERGED_ENCL[t.enclosure] = merged
             out.append(t)
+        out, heavy = self._drop_heavy(out, target, pol)
         logger.info(f"【Prowlarr115】{target.title}：{len(queries)} 个关键词 {queries} 共 {len(out)} 条，"
                     f"{declared} 条按 IMDb {imdb} 声明身份" + (f"，{relabeled} 条绝对集号按偏移 {abs_off} 换算" if relabeled else "")
                     + (f"，{early} 条早于本季开播（{start}）丢弃" if early else "")
                     + (f"，{wrong_year} 条年份对不上丢弃" if wrong_year else "")
                     + ("，策略排除 " + "、".join(f"{k} {v}" for k, v in vetoed.items()) if vetoed else "")
+                    + (f"，{heavy} 条码率过高（同集有更合适的版本）去掉" if heavy else "")
                     + (f"（TMDb 对应 {twin.tmdb_id}）" if twin is not None else ""))
         return out
+
+    @staticmethod
+    def _drop_heavy(items: List[TorrentInfo], target: Any, pol: dict) -> Tuple[List[TorrentInfo], int]:
+        """码率扣分落实到 MP：同一集（同样的集数范围）或同一部电影里，有每小时不超过 max_gb_per_hour 的版本时，
+        把超过的去掉（MP 规则组只认 4K/H265 这类标签，不看体积）；没有替代就保留，宁可大也不缺。"""
+        mins = runtime_minutes(target)
+        if not mins:
+            return items, 0
+        cap = float(pol.get("max_gb_per_hour") or 10)
+        from app.domain.metainfo import MetaInfo
+        info = []
+        for t in items:
+            try:
+                eps = tuple(MetaInfo(t.title).episode_list or []) if getattr(target, "type", None) == MediaType.TV else ()
+            except Exception:  # noqa: BLE001
+                eps = ()
+            g = gb_per_hour(float(t.size or 0), len(eps) or 1, mins)
+            info.append((t, eps, g is not None and g > cap))
+        ok_keys = {eps for _, eps, heavy in info if not heavy}
+        keep = [t for t, eps, heavy in info if not (heavy and eps in ok_keys)]
+        return keep, len(items) - len(keep)
 
     _twin_cache: Dict[str, tuple] = {}
 

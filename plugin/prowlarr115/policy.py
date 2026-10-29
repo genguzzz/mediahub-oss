@@ -37,16 +37,17 @@ DEFAULT_QUERY_TEMPLATES = """{{ keyword }}
 {% endif %}{% endfor %}{% for n in latin_names[:3] %}{{ n }}
 {% endfor %}"""
 
-# 选片规范：剧集每集 1–3 GB、HEVC 优先、大组整季合集优先；电影可超 20 GB、4K HDR 压制优先、不要原盘。
+# 选片规范：4K HEVC 优先（其次 1080p HEVC），但码率不能太高：每小时超过 max_gb_per_hour（10 GB）扣分；
+# 剧集每集 1–3 GB、大组整季合集优先；电影 4K HDR 压制优先、不要原盘。
 # 字幕语言不限（英文版也行），但不要硬字幕（内嵌/烧录）：只要能在播放器里关掉的字幕轨（内封、MKV 字幕轨、外挂）。
 DEFAULT_POLICY: Dict[str, Any] = {
     "tv": {"per_episode_gb": [0.25, 4.0], "ideal_per_episode_gb": [1.0, 3.0]},
     "movie": {"min_gb": 2.0, "max_gb": 90.0, "ideal_gb": [8.0, 40.0]},
     "weights": {
-        "hevc": 20, "av1": 6, "avc": 0, "2160p": 8, "1080p": 10, "720p": -15, "bd": 10, "web": 3,
+        "hevc": 20, "av1": 6, "avc": 0, "2160p": 16, "1080p": 10, "720p": -15, "bd": 10, "web": 3,
         "hdr": 4, "cn_sub": 0, "cn_sub_inner": 0, "bilingual": 0, "softsub": 4, "pack": 18, "group": 12,
         "seeders_log": 3, "size_ideal": 10, "size_ok": 0, "size_bad": -40,
-        "foreign": -35, "multi_season_extra": -15,
+        "foreign": -35, "multi_season_extra": -15, "bitrate_high": -30,
     },
     # 这些组的发布自带中文字幕（标题里不一定写「简繁」，如 BeanSub&VCB-Studio 的 BD）
     "cn_groups": ["喵萌", "Nekomoe", "千夏", "豌豆", "BeanSub", "华盟", "诸神", "Kamigami", "北宇治", "桜都", "Sakurato",
@@ -61,6 +62,7 @@ DEFAULT_POLICY: Dict[str, Any] = {
                 ],
     "require_cn_sub": False,
     "exclude_hardsub": True,    # 硬字幕（内嵌/烧录，如 ANi 的巴哈版、「简日内嵌」）一律不要
+    "max_gb_per_hour": 10,      # 按 TMDb 片长算：每小时超过这么多 GB（4K REMUX 级码率）扣 bitrate_high
     "min_score": 25,            # 低于这个分数的候选不选（宁缺毋滥；720p、大小未知的小种子会被拦下）
     "score_expr": "",
 }
@@ -169,6 +171,12 @@ def features(title: str, size: float, seeders: int, episodes: List[int], policy:
     }
 
 
+def runtime_minutes(media: Any) -> float:
+    """每集（剧集）或整部（电影）的分钟数，取自 MP 的 TMDb 信息；没有就 0。"""
+    ert = [int(x) for x in (getattr(media, "episode_run_time", None) or []) if str(x).isdigit() and int(x) > 0]
+    return float(min(ert) if ert else getattr(media, "runtime", None) or 0)
+
+
 def veto(title: str, policy: Dict[str, Any], f: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """策略里的硬性排除（排除正则、硬字幕、要求中字）；不排除返回 None。订阅搜索和下载拦截也用它。"""
     for rx in policy.get("exclude", []):
@@ -183,7 +191,14 @@ def veto(title: str, policy: Dict[str, Any], f: Optional[Dict[str, Any]] = None)
     return None
 
 
-def score(f: Dict[str, Any], kind: str, policy: Dict[str, Any], need_eps: int = 0) -> Tuple[float, List[str]]:
+def gb_per_hour(size_bytes: float, n_eps: int, ep_minutes: float) -> Optional[float]:
+    """每小时多少 GB；不知道片长时返回 None。"""
+    if not size_bytes or not ep_minutes:
+        return None
+    return size_bytes / 1e9 / (max(1, n_eps) * ep_minutes / 60)
+
+
+def score(f: Dict[str, Any], kind: str, policy: Dict[str, Any], need_eps: int = 0, ep_minutes: float = 0) -> Tuple[float, List[str]]:
     """返回 (分数, 理由)。kind: "tv" / "movie"。分数 None 表示被排除。"""
     w = dict(DEFAULT_POLICY["weights"], **policy.get("weights", {}))
     why: List[str] = []
@@ -219,6 +234,9 @@ def score(f: Dict[str, Any], kind: str, policy: Dict[str, Any], need_eps: int = 
         ilo, ihi = policy.get("movie", {}).get("ideal_gb", [8, 40])
         tag = "size_ideal" if ilo <= g <= ihi else "size_ok" if lo <= g <= hi else "size_bad"
         add(tag, True, f"{g:.1f}G")
+    gph = gb_per_hour(f["size_gb"] * 1e9, n_eps if kind == "tv" else 1, ep_minutes)
+    if gph is not None and gph > float(policy.get("max_gb_per_hour") or 10):
+        add("bitrate_high", True, f"每小时{gph:.0f}G")
     expr = policy.get("score_expr")
     env = _env()
     if expr and env:
@@ -380,7 +398,7 @@ def pick(cands: List[Dict[str, Any]], kind: str, policy: Dict[str, Any], want_ep
          season_counts: Optional[Dict[int, int]] = None, movie_names: Optional[List[str]] = None,
          season_starts: Optional[Dict[int, int]] = None, sibling_names: Optional[List[str]] = None,
          want_seasons: Optional[List[int]] = None, season_year: Optional[int] = None,
-         movie_year: Any = None) -> Dict[str, Any]:
+         movie_year: Any = None, ep_minutes: float = 0) -> Dict[str, Any]:
     """在 _pick 之前按季/电影上下文过滤或加减分。
     sibling_names：同名的其他作品（重制版、衍生作）的独有名字，标题里出现就排除（狼与香辛料 2008 vs 2024「行商邂逅贤狼」）。
     want_seasons：这次要下的季；多季合集里含不需要的季（库里已有）扣分。"""
@@ -490,16 +508,16 @@ def pick(cands: List[Dict[str, Any]], kind: str, policy: Dict[str, Any], want_ep
                 b += 10; w.append("片名匹配+10")
             c["bonus"], c["bonus_why"] = b, " ".join(w)
         adj.append(c)
-    return _pick(adj, kind, policy, want_eps)
+    return _pick(adj, kind, policy, want_eps, ep_minutes)
 
 
-def _pick(cands: List[Dict[str, Any]], kind: str, policy: Dict[str, Any], want_eps: List[int]) -> Dict[str, Any]:
+def _pick(cands: List[Dict[str, Any]], kind: str, policy: Dict[str, Any], want_eps: List[int], ep_minutes: float = 0) -> Dict[str, Any]:
     """从候选里选：电影取最高分一个；剧集优先覆盖整季的合集，否则按集取每集最高分。
     cands: [{"idx", "title", "size", "seeders", "episodes"}]；返回 {"chosen": [...], "ranked": [...], "missing": [...]}"""
     ranked = []
     for c in cands:
         f = features(c["title"], c["size"], c["seeders"], c.get("episodes") or [], policy)
-        sc, why = score(f, kind, policy, len(want_eps))
+        sc, why = score(f, kind, policy, len(want_eps), ep_minutes)
         if sc is not None:
             if c.get("bonus"):
                 sc += c["bonus"]

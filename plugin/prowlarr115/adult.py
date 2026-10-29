@@ -224,10 +224,10 @@ class Adult:
                     break
             return False, err
 
-    def submit(self, kind: str, remote_dir: str, link: str, title: str, **meta: Any) -> Tuple[bool, str]:
+    def submit(self, kind: str, remote_dir: str, link: str, release: str, **meta: Any) -> Tuple[bool, str]:
         """AV / 里番 也进流水线任务表（和影视同一套：115 离线、卡住提示、NAS 缓冲、换资源、黑名单、事件日志），
         115 下完后由 Pipeline 调回 finish()。"""
-        ok, h, err = self.p.submit(link, remote_dir, title, meta=dict(meta, kind=kind))
+        ok, h, err = self.p.submit(link, remote_dir, release, meta=dict(meta, kind=kind))
         return ok, err
 
     def finish(self, kind: str, t: dict, scope: Optional[str], h: str) -> List[str]:

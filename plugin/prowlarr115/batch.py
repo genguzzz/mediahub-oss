@@ -18,7 +18,7 @@ import uuid
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-from .policy import pick
+from .policy import pick, runtime_minutes
 
 JOBS: Dict[str, Dict[str, Any]] = {}
 
@@ -271,7 +271,7 @@ def _one(plugin, job, rec, mode, replace, dry, policy) -> None:
                         srec["season_starts"] = starts
                     except Exception:  # noqa: BLE001
                         starts = None
-                res = pick(cands, "movie" if movie else "tv", policy, want, season=s,
+                res = pick(cands, "movie" if movie else "tv", policy, want, season=s, ep_minutes=runtime_minutes(media),
                            season_names=snames, season_counts=scounts, season_starts=starts,
                            sibling_names=sibs, want_seasons=todo,
                            season_year=_season_year(media, s) if not movie else None,

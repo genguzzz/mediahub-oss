@@ -22,7 +22,7 @@ from .adult import CAT_ANIME, CAT_REAL
 from .adult import magnet as adult_magnet
 from .adult import VIDEO as VIDEO_EXT
 from .pipeline import STALL_AFTER, btih, ep_of
-from .policy import features, pick, score, year_conflict
+from .policy import features, pick, runtime_minutes, score, year_conflict
 from .sources import animetosho, hex_magnet, mikan_rss, nyaa_limited
 
 # 直连来源（后端直接访问，不经 Prowlarr）
@@ -406,9 +406,10 @@ class Hub:
 
     def _score(self, items: List[dict], kind: str, media: Any, season: Optional[int], aired: List[int]) -> None:
         policy = self.p._policy()
+        mins = runtime_minutes(media) if media else 0
         for it in items:
             f = features(it["title"], it["size"], it["seeders"], it["episodes"], policy)
-            sc, why = score(f, kind, policy, len(aired))
+            sc, why = score(f, kind, policy, len(aired), mins)
             if sc is None:
                 it["excluded"] = "；".join(why) or "被策略排除"
             else:
@@ -431,7 +432,7 @@ class Hub:
                       "episodes": it["episodes"], "season": it["season"]} for i, it in enumerate(items)]
             names = [media.title, getattr(media, "original_title", None), getattr(media, "en_title", None)] + \
                     list(getattr(media, "names", None) or [])[:12]
-            res = pick(cands, kind, policy, aired if kind == "tv" else [], season=season if kind == "tv" else None,
+            res = pick(cands, kind, policy, aired if kind == "tv" else [], season=season if kind == "tv" else None, ep_minutes=mins,
                        movie_names=names, movie_year=media.year if kind == "movie" else None)
             for c in res["chosen"]:
                 items[c["idx"]]["recommended"] = True
