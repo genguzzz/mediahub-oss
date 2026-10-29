@@ -10,6 +10,7 @@
 """
 import base64
 import re
+import urllib.parse
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -25,6 +26,7 @@ LIBS = ("电影", "剧集", "动漫")
 MIN_MOVIE = 300e6
 MIN_EPISODE = 50e6
 STALL_AFTER = 6 * 3600
+STALL_HINT = 30 * 60          # 115 离线 30 分钟仍 0%：标成「卡住」，App 里给出改用 NAS 缓冲 / 换资源（6 小时后才自动改缓冲）
 LOST_AFTER = 3 * 86400
 DEAD_AFTER = 24 * 3600
 UPLOAD_TIMEOUT = 6 * 3600
@@ -100,6 +102,19 @@ def _version_label(remote: str) -> str:
     label = " ".join(x for x in (res, grp) if x) or re.sub(r"[\[\]【】]", "", name.rsplit(".", 1)[0])[:24]
     return re.sub(r'[\\/:*?"<>|]', " ", label).strip() or "版本2"
 
+# 磁力没带 tracker 时补上的公共 tracker（Nyaa 自己的 + 常用公共 tracker）
+PUBLIC_TRACKERS = ("http://nyaa.tracker.wf:7777/announce", "udp://tracker.opentrackr.org:1337/announce",
+                   "udp://open.stealth.si:80/announce", "udp://tracker.torrent.eu.org:451/announce",
+                   "udp://exodus.desync.com:6969/announce")
+
+
+def with_trackers(url: str) -> str:
+    """磁力缺 tracker 就补上：115 离线和 qB 拿种子信息都快得多（只靠 DHT 时新种子在 115 上会一直 0%）。"""
+    if not (url or "").startswith("magnet:") or "tr=" in url:
+        return url
+    return url + "".join("&tr=" + urllib.parse.quote(t, safe="") for t in PUBLIC_TRACKERS)
+
+
 class Pipeline:
     """任务状态保存在插件数据 tasks（{info_hash: task}）。"""
 
@@ -115,6 +130,8 @@ class Pipeline:
         self._cur = threading.local()          # 当前线程正在处理的任务和步骤：期间的 log/notify 都记到这个任务上
         self._subs_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="p115-subs")
         self.tvdb_map: Optional[Callable[[Any], dict]] = None    # 插件注入：tmdbid -> {(TMDb季,集): (TVDB季,集)}
+        self.on_fail: Optional[Callable[[str, dict, str], None]] = None   # 插件注入：资源不可用时拉黑 + 回滚订阅
+        self.on_ok: Optional[Callable[[str], None]] = None
         self.root = "/" + conf["root"].strip("/")
         self.lib_ol = "/" + conf["lib_ol_root"].strip("/")
         self.ol = OpenList(conf["openlist_url"], conf["openlist_user"], conf["openlist_pass"], conf["openlist_public"])
@@ -197,6 +214,16 @@ class Pipeline:
         return Pipeline._Ctx(self._cur, h, step)
 
     @staticmethod
+    def failed(self, h: str, t: dict, status: str, reason: str) -> None:
+        """资源本身不可用（太大 / 死种 / 没有可入库的视频）：置状态，交给插件拉黑并回滚订阅。"""
+        t["status"] = status
+        if self.on_fail:
+            try:
+                self.on_fail(h, t, reason)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"失败回调出错：{e}")
+
+    @staticmethod
     def mark(t: dict, step: str, at: Optional[int] = None) -> None:
         """记录步骤时间点（只记第一次）：submitted / offline / buffer / uploaded / strm / emby。"""
         t.setdefault("ts", {}).setdefault(step, at or now())
@@ -216,6 +243,7 @@ class Pipeline:
     def submit(self, url: str, d: str, title: str = "", meta: Optional[dict] = None) -> tuple:
         """提交 115 离线；失败时转 NAS 缓冲。返回 (ok, hash, err)。meta：作品信息（自动补字幕用）。"""
         d = self.check_dir(d)
+        url = with_trackers(url)
         h = btih(url)
         if not h:
             return False, "", "只支持磁力链接"
@@ -254,7 +282,7 @@ class Pipeline:
             raise ClientError("没有配置 NAS qBittorrent，无法缓冲")
         self.qb.post("/api/v2/torrents/createCategory", {"category": "mp115buffer", "savePath": self.buffer_local})
         code = self.qb.post("/api/v2/torrents/add", {
-            "urls": task.get("url") or f"magnet:?xt=urn:btih:{h}", "category": "mp115buffer",
+            "urls": with_trackers(task.get("url") or f"magnet:?xt=urn:btih:{h}"), "category": "mp115buffer",
             "savepath": f"{self.buffer_local}/{h}", "sequentialDownload": "true",
             "firstLastPiecePrio": "true", "autoTMM": "false"})
         if code != 200:
@@ -286,12 +314,12 @@ class Pipeline:
         t["name"] = q.get("name")
         if size > self.buffer_max:
             self.qb.post("/api/v2/torrents/delete", {"hashes": h, "deleteFiles": "true"})
-            t["status"] = "too-big"
+            self.failed(h, t, "too-big", f"种子 {size / 1e9:.1f}G 超过 NAS 缓冲上限")
             self.notify("❌ " + label(t["dir"]), f"NAS 缓冲上限 {self.buffer_max / 1e9:.0f}G，种子 {size / 1e9:.1f}G 太大，已放弃")
             return False, inflight
         if not q.get("progress") and now() - b["since"] > DEAD_AFTER:
             self.qb.post("/api/v2/torrents/delete", {"hashes": h, "deleteFiles": "true"})
-            t["status"] = "dead"
+            self.failed(h, t, "dead", "115 和 NAS 缓冲都下不动")
             self.notify("❌ " + label(t["dir"]), "115 和 NAS 缓冲都下载不动（24 小时 0%），判定死种，请换资源")
             return False, inflight
         if float(q.get("progress") or 0) < 1:
@@ -447,6 +475,9 @@ class Pipeline:
                 if s.rsplit("/", 1)[1].startswith(stem) or len(big) == 1:
                     self._copy_sub(s, stub)
             return made
+        # 短篇动画（暗芝居、轻松熊每集 4 分钟、50MB 上下）：门槛取 50MB 和本种最大视频一半里较小的那个，
+        # 特典由 EXTRA_DIR/EXTRA_TAG 排除，不靠大小
+        min_ep = min(MIN_EPISODE, 0.5 * max((it.get("size", 0) for _, it in vids), default=0)) or MIN_EPISODE
         meta = t_meta or {}
         off0 = int(meta.get("ep_offset") or 0)
         ep_max = int(meta.get("ep_max") or 0)
@@ -455,11 +486,11 @@ class Pipeline:
             # 合集已用发行方的绝对集号（VCB 文豪野犬 S3 是 [26]-[37]，日版把 OAD 算作第 25 话），
             # 与 TMDb 起点（25）不一致：整体平移到 off0+1 开始
             nums = sorted({e[1] for e in (ep_of(r.rsplit("/", 1)[1]) for r, it in vids
-                                          if it.get("size", 0) >= MIN_EPISODE) if e})
+                                          if it.get("size", 0) >= min_ep) if e})
             if nums and nums[0] > off0:
                 delta = nums[0] - (off0 + 1)
         for remote, it in sorted(vids, key=lambda v: -v[1].get("size", 0)):
-            if it.get("size", 0) < MIN_EPISODE:
+            if it.get("size", 0) < min_ep:
                 continue
             name = remote.rsplit("/", 1)[1]
             se = ep_of(name)
@@ -683,6 +714,10 @@ class Pipeline:
             t["empty_rounds"] = int(t.get("empty_rounds") or 0) + 1   # 115 刚完成时目录可能还列不出文件：下一轮再看
             return
         t["status"] = "done" if (made or linked) else "superseded" if kept else "no-video"
+        if t["status"] == "no-video" and self.on_fail:
+            self.failed(h, t, "no-video", "没有可入库的视频")
+        elif t["status"] == "done" and self.on_ok:
+            self.on_ok(h)                        # 重试后入库成功：解除拉黑
         t["done"] = t.get("done") or now()
         t["strm"] = (t.get("strm") or []) + [p[len(self.lib_ol) + 1:] for p in made]
         if not made:
@@ -724,6 +759,10 @@ class Pipeline:
             elif not t.get("ev_missing"):
                 t["ev_missing"] = 1
                 self.event(h, "offline", "115 离线列表里暂时找不到这个任务", "warn")
+            if age > STALL_HINT and not t.get("stalled"):
+                t["stalled"] = now()
+                self.notify("⏳ " + label(t["dir"]), f"115 离线列表里找不到这个任务（已 {int(age / 60)} 分钟）。可在影库 App 任务详情里"
+                                                     f"「改用 NAS 缓冲」或「换一个资源」；{LOST_AFTER // 86400} 天后会自动改用 NAS 缓冲")
             return
         old = int(t.get("percent") or 0)
         t["percent"], t["name"] = info.get("percentDone"), info.get("name")
@@ -734,6 +773,14 @@ class Pipeline:
             self.c115.task_del(h)
             self.buffer_start(h, t, "115 离线失败")
         elif info.get("status") != 2:
+            if t.get("percent"):
+                t.pop("stalled", None)
+            elif age > STALL_HINT and not t.get("stalled"):
+                t["stalled"] = now()
+                why = "还没拿到种子信息" if not info.get("size") else "没有下载进度"
+                self.event(h, "offline", f"115 离线 {int(age / 60)} 分钟仍是 0%（{why}）", "warn")
+                self.notify("⏳ " + label(t["dir"]), f"115 离线 {int(age / 60)} 分钟仍是 0%（{why}）。可在影库 App 任务详情里"
+                                                     f"「改用 NAS 缓冲」或「换一个资源」；{STALL_AFTER // 3600} 小时后会自动改用 NAS 缓冲")
             if not t.get("percent") and age > STALL_AFTER:
                 self.c115.task_del(h)
                 self.buffer_start(h, t, f"115 离线 {int(age / 3600)} 小时仍是 0%")

@@ -433,6 +433,34 @@ app.get<{ Params: { hash: string } }>("/v1/pipeline/:hash/events", async (req) =
   return plug("GET", "/hub/task/events", { query: { hash } });
 });
 
+// Download detail for one task: per-file progress while buffering on the NAS, 115 offline state otherwise.
+app.get<{ Params: { hash: string } }>("/v1/pipeline/:hash/files", async (req) => {
+  const hash = z.string().regex(/^[0-9a-f]{40}$/).parse(req.params.hash);
+  return plug("GET", "/hub/task/files", { query: { hash }, timeoutMs: 40_000 });
+});
+
+// Other releases for the same work / season / episodes, scored, with the current and blacklisted ones marked.
+app.get<{ Params: { hash: string } }>("/v1/pipeline/:hash/candidates", async (req) => {
+  const hash = z.string().regex(/^[0-9a-f]{40}$/).parse(req.params.hash);
+  return plug("GET", "/hub/task/candidates", { query: { hash }, timeoutMs: 90_000 });
+});
+
+// Swap a stuck or unwanted release: cancel + blacklist the old one, submit the new one into the same folder.
+app.post<{ Params: { hash: string } }>("/v1/pipeline/:hash/reselect", async (req) => {
+  const hash = z.string().regex(/^[0-9a-f]{40}$/).parse(req.params.hash);
+  const b = z.object({ magnet: z.string().startsWith("magnet:").max(4000), title: z.string().max(400).default(""), buffer: z.boolean().default(false) }).parse(req.body);
+  const res = await plug<{ ok: boolean; hash?: string }>("POST", "/hub/task/reselect", { body: { hash, ...b }, timeoutMs: 120_000 });
+  req.log.info({ hash, next: res.hash, buffer: b.buffer, ok: res.ok }, "reselect");
+  return res;
+});
+
+app.get("/v1/blacklist", async () => plug("GET", "/hub/blacklist"));
+
+app.post("/v1/blacklist/remove", async (req) => {
+  const b = z.object({ hashes: z.array(z.string().regex(/^[0-9a-f]{40}$/)).min(1).max(200) }).parse(req.body);
+  return plug("POST", "/hub/blacklist/remove", { body: b });
+});
+
 // A task landed under the wrong work (e.g. the 2024 concert under the 2026 entry): move its files and rebuild strm.
 app.post<{ Params: { hash: string } }>("/v1/pipeline/:hash/retarget", async (req) => {
   const hash = z.string().regex(/^[0-9a-f]{40}$/).parse(req.params.hash);
@@ -685,6 +713,12 @@ app.delete<{ Params: { id: string } }>("/v1/subscriptions/:id", async (req) => {
   return { ok: res.success, message: res.message ?? "" };
 });
 
+// Per-episode state of one subscription (not aired / missing / submitted / downloading / stuck / failed / in library).
+app.get<{ Params: { id: string } }>("/v1/subscriptions/:id", async (req) => {
+  const id = z.coerce.number().int().positive().parse(req.params.id);
+  return plug("GET", "/hub/subscription", { query: { id }, timeoutMs: 60_000 });
+});
+
 app.post<{ Params: { id: string } }>("/v1/subscriptions/:id/search", async (req) => {
   const id = z.coerce.number().int().positive().parse(req.params.id);
   const res = await mpRaw<{ success: boolean; message?: string }>("GET", `/subscribe/search/${id}`, { timeoutMs: 20_000 });
@@ -814,6 +848,85 @@ app.post("/v1/logs", async (req) => {
   await writeFile(path.join(dir, `${id}.json`), JSON.stringify({ ...b.meta, at: new Date().toISOString() }));
   req.log.info({ logId: id, bytes: b.log.length }, "log uploaded");
   return { id };
+});
+
+// ---------- feedback (long-press → 反馈问题) ----------
+// One JSON file per report in $DATA_DIR/feedback: what the user said, which item, and a snapshot of the Emby
+// record (path, provider ids, images, media streams) taken at submit time, so library problems can be sorted
+// out later without the phone. Optional log upload id links the app log.
+
+const FEEDBACK_KINDS = ["刮削信息错误", "认错作品", "海报图片未加载", "分季集号错", "资源画质问题", "字幕问题", "音轨问题", "播放失败", "重复条目", "缺集", "其他"] as const;
+const feedbackDir = () => path.join(config.dataDir, "feedback");
+
+interface EmbySnap { Id: string; Name?: string; Type?: string; Path?: string; ProductionYear?: number; ProviderIds?: Record<string, string>; ImageTags?: Record<string, string>; SeriesName?: string; SeriesId?: string; ParentIndexNumber?: number; IndexNumber?: number; MediaSources?: { Path?: string; Container?: string; Size?: number; MediaStreams?: { Type?: string; Codec?: string; Language?: string; DisplayTitle?: string; IsExternal?: boolean }[] }[] }
+
+async function embySnapshot(id: string) {
+  try {
+    const r = await plug<{ Items?: EmbySnap[] }>("GET", "/hub/emby/get", { query: { path: "/Items", query: `Ids=${encodeURIComponent(id)}&Recursive=true&Fields=Path,ProviderIds,MediaSources,ProductionYear,Overview` }, timeoutMs: 20_000 });
+    const it = r.Items?.[0];
+    if (!it) return null;
+    const src = it.MediaSources?.[0];
+    return {
+      id: it.Id, name: it.Name, type: it.Type, year: it.ProductionYear, path: it.Path, providers: it.ProviderIds ?? {},
+      images: Object.keys(it.ImageTags ?? {}), series: it.SeriesName, seriesId: it.SeriesId, season: it.ParentIndexNumber, episode: it.IndexNumber,
+      media: src ? { container: src.Container, size: src.Size, path: src.Path,
+        streams: (src.MediaStreams ?? []).map((m) => [m.Type, m.Codec, m.Language, m.IsExternal ? "external" : "", m.DisplayTitle].filter(Boolean).join(" ")) } : null,
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+app.post("/v1/feedback", async (req) => {
+  const b = z.object({
+    kinds: z.array(z.enum(FEEDBACK_KINDS)).min(1).max(FEEDBACK_KINDS.length),
+    reason: z.string().max(2000).default(""),
+    item: z.object({ embyId: z.string().max(64).optional(), title: z.string().max(300), subtitle: z.string().max(300).optional(), key: z.string().max(200).optional(), tmdbid: z.number().int().optional(), type: z.string().max(20).optional() }),
+    logId: z.string().max(16).optional(),
+    version: z.string().max(40).optional(),
+  }).parse(req.body);
+  const id = randomUUID().slice(0, 8);
+  const rec = { id, at: new Date().toISOString(), status: "open", ...b, emby: b.item.embyId ? await embySnapshot(b.item.embyId) : null };
+  await mkdir(feedbackDir(), { recursive: true });
+  await writeFile(path.join(feedbackDir(), `${id}.json`), JSON.stringify(rec, null, 1));
+  req.log.info({ feedback: id, kinds: b.kinds, item: b.item.embyId ?? b.item.title, logId: b.logId }, "feedback");
+  return { ok: true, id };
+});
+
+async function listFeedback() {
+  const names = (await readdir(feedbackDir()).catch(() => [] as string[])).filter((n) => n.endsWith(".json"));
+  const all = await Promise.all(names.map(async (n) => JSON.parse(await readFile(path.join(feedbackDir(), n), "utf8")) as { id: string; at: string; status: string; kinds: string[] }));
+  return all.sort((a, b) => b.at.localeCompare(a.at));
+}
+
+// The app's own list (Settings → 问题反馈): newest first, with status and the resolution note.
+app.get("/v1/feedback", async (req) => {
+  const q = z.object({ status: z.enum(["open", "done", "all"]).default("all") }).parse(req.query);
+  const all = await listFeedback();
+  return { items: all.filter((f) => q.status === "all" || f.status === q.status).slice(0, 200) };
+});
+
+app.post<{ Params: { id: string } }>("/v1/feedback/:id", async (req) => {
+  const id = z.string().regex(/^[0-9a-f-]{8}$/).parse(req.params.id);
+  const b = z.object({ status: z.enum(["open", "done", "wontfix"]).optional(), note: z.string().max(2000).optional() }).parse(req.body);
+  const file = path.join(feedbackDir(), `${id}.json`);
+  const rec = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>;
+  Object.assign(rec, b, { updated: new Date().toISOString() });
+  await writeFile(file, JSON.stringify(rec, null, 1));
+  return { ok: true };
+});
+
+// Summary for working through the reports: counts per kind / library / status.
+app.get("/admin/feedback", async () => {
+  const all = await listFeedback();
+  const count = (f: (x: Record<string, unknown>) => string[]) => all.reduce<Record<string, number>>((m, x) => { for (const k of f(x)) m[k] = (m[k] ?? 0) + 1; return m; }, {});
+  return {
+    total: all.length,
+    byStatus: count((x) => [String(x.status)]),
+    byKind: count((x) => (x.kinds as string[]) ?? []),
+    byLibrary: count((x) => [String(((x.emby as { path?: string } | null)?.path ?? "").split("/")[3] ?? "?")]),
+    items: all,
+  };
 });
 
 // ---------- Expo Updates (OTA) ----------

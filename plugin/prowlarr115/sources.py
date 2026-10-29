@@ -132,7 +132,9 @@ def hex_magnet(magnet: str, title: str = "") -> str:
             h = base64.b32decode(h.upper()).hex()
         except Exception:  # noqa: BLE001
             return magnet
-    return f"magnet:?xt=urn:btih:{h.lower()}&dn={urllib.parse.quote(title)}"
+    # 保留原来的 tracker：没有 tracker 的磁力，115 离线只能靠 DHT，刚发布、115 还没缓存的种子会一直拿不到种子信息
+    trs = re.findall(r"[&?](tr=[^&]+)", magnet or "")
+    return f"magnet:?xt=urn:btih:{h.lower()}&dn={urllib.parse.quote(title)}" + "".join("&" + t for t in trs)
 
 
 def _safe(fn, *a):

@@ -37,13 +37,14 @@ DEFAULT_QUERY_TEMPLATES = """{{ keyword }}
 {% endif %}{% endfor %}{% for n in latin_names[:3] %}{{ n }}
 {% endfor %}"""
 
-# 选片规范（用户 2026-10-10）：剧集每集 1–3 GB、HEVC 优先、中文字幕优先、大组整季合集优先；电影可超 20 GB、4K HDR 压制优先、不要原盘
+# 选片规范：剧集每集 1–3 GB、HEVC 优先、大组整季合集优先；电影可超 20 GB、4K HDR 压制优先、不要原盘。
+# 字幕语言不限（英文版也行），但不要硬字幕（内嵌/烧录）：只要能在播放器里关掉的字幕轨（内封、MKV 字幕轨、外挂）。
 DEFAULT_POLICY: Dict[str, Any] = {
     "tv": {"per_episode_gb": [0.25, 4.0], "ideal_per_episode_gb": [1.0, 3.0]},
     "movie": {"min_gb": 2.0, "max_gb": 90.0, "ideal_gb": [8.0, 40.0]},
     "weights": {
         "hevc": 20, "av1": 6, "avc": 0, "2160p": 8, "1080p": 10, "720p": -15, "bd": 10, "web": 3,
-        "hdr": 4, "cn_sub": 30, "cn_sub_inner": 6, "bilingual": 4, "pack": 18, "group": 12,
+        "hdr": 4, "cn_sub": 0, "cn_sub_inner": 0, "bilingual": 0, "softsub": 4, "pack": 18, "group": 12,
         "seeders_log": 3, "size_ideal": 10, "size_ok": 0, "size_bad": -40,
         "foreign": -35, "multi_season_extra": -15,
     },
@@ -53,12 +54,14 @@ DEFAULT_POLICY: Dict[str, Any] = {
                   "Snow-Raws", "悠哈", "ANi", "jibaketa", "绿茶", "织梦", "MCE", "猎户", "风之圣殿", "银色子弹"],
     "groups": ["LoliHouse", "喵萌奶茶屋", "Nekomoe", "桜都", "Sakurato", "VCB-Studio", "沸班亚马", "MTBB",
                "Beatrice-Raws", "ANi", "DBD-Raws", "Snow-Raws", "7³ACG", "SweetSub", "北宇治", "千夏",
-               "Kamigami", "澄空", "SumiSora", "云光", "极影", "动漫国", "幻樱", "Moozzi2", "BlackRose", "Judas"],
+               "Kamigami", "澄空", "SumiSora", "云光", "极影", "动漫国", "幻樱", "Moozzi2", "BlackRose", "Judas",
+               "SubsPlease", "Erai-raws", "ASW", "ToonsHub", "VARYG", "EMBER"],
     "exclude": [r"(?i)\bREMUX\b", r"(?i)\bBDMV\b", r"(?i)\bISO\b", r"(?i)\b(cam|ts|hdcam|telesync)\b",
                 r"(?i)\bxvid\b", r"(?i)(?<![0-9])480p", r"(?i)english dub(?!.*dual)", r"(?i)\b(sample|trailer|ost|soundtrack)\b",
-                r"(?i)\b(hardsub(bed)?|hard sub)\b(?!.*(chs|cht|简|繁))"],
+                ],
     "require_cn_sub": False,
-    "min_score": 35,            # 低于这个分数的候选不选（宁缺毋滥；720p、大小未知的小种子会被拦下）
+    "exclude_hardsub": True,    # 硬字幕（内嵌/烧录，如 ANi 的巴哈版、「简日内嵌」）一律不要
+    "min_score": 25,            # 低于这个分数的候选不选（宁缺毋滥；720p、大小未知的小种子会被拦下）
     "score_expr": "",
 }
 
@@ -123,6 +126,21 @@ def render_queries(template: str, ctx: Dict[str, Any], limit: int = 10) -> List[
 
 
 # ---------------- 选片打分 ----------------
+# 软字幕：内封/外挂/softsub/多语字幕轨（Erai 的 MultiSub、CR WEB-DL 的 Multi-Subs）
+_SOFT = re.compile(r"(?i)内封|內封|外挂|外掛|soft-?subs?|multi-?subs?|msubs|\bass(x\d)?\b|字幕轨|\[(简|繁|简繁|简日|繁日)?(内封|外挂)")
+# 硬字幕：「内嵌」、hardsub、scene 的 HC（hardcoded）、ANi（巴哈姆特 WEB-DL，字幕烧在画面里）
+_HARD = re.compile(r"(?i)内嵌|內嵌|hard-?sub(bed|s)?|\bHC\b|hardcoded|^\s*\[ANi\]|\[Baha\]")
+
+
+def is_softsub(title: str) -> bool:
+    return bool(_SOFT.search(title or ""))
+
+
+def is_hardsub(title: str) -> bool:
+    """标题明确写了硬字幕，且没同时写软字幕（「简繁内封」+「简日内嵌」两个版本时按软字幕算）。"""
+    return bool(_HARD.search(title or "")) and not is_softsub(title)
+
+
 def features(title: str, size: float, seeders: int, episodes: List[int], policy: Dict[str, Any]) -> Dict[str, Any]:
     """从发布标题提取打分特征。"""
     t = title or ""
@@ -144,20 +162,34 @@ def features(title: str, size: float, seeders: int, episodes: List[int], policy:
         "foreign": bool(re.search(r"(?i)\b(vostfr|vf|truefrench|french|ita|italian|rus|russian|castellano|latino|"
                                   r"german|deutsch|ger|pt-?br|portuguese)\b", t)) and not re.search(r"简|繁|chs|cht", low),
         "cn_sub_inner": bool(re.search(r"内封|內封|softsub", low)),
+        "softsub": is_softsub(t),
+        "hardsub": is_hardsub(t),
         "bilingual": bool(re.search(r"双语|雙語|简日|繁日|jpsc|jptc|中日", low)),
         "groups": groups,
     }
+
+
+def veto(title: str, policy: Dict[str, Any], f: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """策略里的硬性排除（排除正则、硬字幕、要求中字）；不排除返回 None。订阅搜索和下载拦截也用它。"""
+    for rx in policy.get("exclude", []):
+        if re.search(rx, title or ""):
+            return f"排除：{rx}"
+    if policy.get("exclude_hardsub", True) and (f["hardsub"] if f else is_hardsub(title)):
+        return "硬字幕"
+    if policy.get("require_cn_sub"):
+        f = f or features(title, 0, 0, [], policy)
+        if not f["cn_sub"]:
+            return "要求中文字幕"
+    return None
 
 
 def score(f: Dict[str, Any], kind: str, policy: Dict[str, Any], need_eps: int = 0) -> Tuple[float, List[str]]:
     """返回 (分数, 理由)。kind: "tv" / "movie"。分数 None 表示被排除。"""
     w = dict(DEFAULT_POLICY["weights"], **policy.get("weights", {}))
     why: List[str] = []
-    for rx in policy.get("exclude", []):
-        if re.search(rx, f["title"]):
-            return None, [f"排除：{rx}"]
-    if policy.get("require_cn_sub") and not f["cn_sub"]:
-        return None, ["要求中文字幕"]
+    bad = veto(f["title"], policy, f)
+    if bad:
+        return None, [bad]
     s = 0.0
 
     def add(k, cond=True, note=None):
@@ -169,7 +201,7 @@ def score(f: Dict[str, Any], kind: str, policy: Dict[str, Any], need_eps: int = 
     add("hevc", f["hevc"]); add("av1", f["av1"] and not f["hevc"]); add("avc", f["avc"] and not (f["hevc"] or f["av1"]))
     add(f["res"], bool(f["res"])); add("bd", f["bd"]); add("web", f["web"] and not f["bd"]); add("hdr", f["hdr"])
     add("cn_sub", f["cn_sub"], "中文字幕"); add("cn_sub_inner", f["cn_sub_inner"], "内封")
-    add("bilingual", f["bilingual"], "双语"); add("group", bool(f["groups"]), "大组" + ",".join(f["groups"][:1]))
+    add("bilingual", f["bilingual"], "双语"); add("softsub", f.get("softsub"), "软字幕"); add("group", bool(f["groups"]), "大组" + ",".join(f["groups"][:1]))
     add("foreign", f.get("foreign"), "外语版")
     n_eps = len(f["episodes"]) or (need_eps if kind == "tv" else 1)
     add("pack", kind == "tv" and n_eps >= max(2, need_eps or 2), "合集")

@@ -21,7 +21,7 @@ from . import batch as batch_mod
 from .adult import CAT_ANIME, CAT_REAL
 from .adult import magnet as adult_magnet
 from .adult import VIDEO as VIDEO_EXT
-from .pipeline import btih, ep_of
+from .pipeline import STALL_AFTER, btih, ep_of
 from .policy import features, pick, score, year_conflict
 from .sources import animetosho, hex_magnet, mikan_rss, nyaa_limited
 
@@ -128,6 +128,12 @@ class Hub:
             ("/hub/library/item", self.library_item, "GET", "某作品在 Emby 里的条目和已有集：tmdbid,type"),
             ("/hub/pipeline", self.pipeline, "GET", "入库全流程：任务阶段 + 实时 115/qB 进度 + AV 刮削"),
             ("/hub/task/events", self.task_events, "GET", "某任务的事件日志：hash（按步骤分组）"),
+            ("/hub/task/files", self.task_files, "GET", "某任务的文件和下载细节：hash（缓冲=qB 每个文件进度；115=任务状态、做种、速度）"),
+            ("/hub/task/candidates", self.task_candidates, "GET", "给某任务换资源的候选：hash（按任务的作品/季/集重新搜，打分，标出当前和已拉黑的）"),
+            ("/hub/task/reselect", self.task_reselect, "POST", "换资源：{hash, magnet, title, buffer}（取消旧任务+删 115 文件+拉黑，新资源进同一目录；buffer=直接走 NAS 缓冲）"),
+            ("/hub/subscription", self.subscription, "GET", "订阅详情：id（每集状态：未播/缺/已提交/下载中/卡住/失败/已入库）"),
+            ("/hub/blacklist", self.blacklist, "GET", "已拉黑的资源"),
+            ("/hub/blacklist/remove", self.blacklist_remove, "POST", "解除拉黑：{hashes:[..]}"),
             ("/hub/offline", self.offline, "GET", "115 离线任务列表"),
             ("/hub/offline/delete", self.offline_delete, "POST", "删 115 离线任务：{hashes:[..]}"),
             ("/hub/task/remove", self.task_remove, "POST", "从入库列表移除已结束（完成/失败/取消）的任务记录：{hashes:[..]}"),
@@ -408,7 +414,7 @@ class Hub:
                 it["score"], it["why"] = round(sc, 1), why
             it["tags"] = [x for x, ok in (("HEVC", f["hevc"]), ("AV1", f["av1"]), ("HDR", f["hdr"]), ("BD", f["bd"]),
                                           ("WEB", f["web"] and not f["bd"]), ("中字", f["cn_sub"]), ("内封", f["cn_sub_inner"]),
-                                          ("双语", f["bilingual"])) if ok]
+                                          ("软字幕", f.get("softsub")), ("硬字幕", f.get("hardsub")), ("双语", f["bilingual"])) if ok]
             if not it["res"] and f["res"]:
                 it["res"] = f["res"]
         if not media or not items:
@@ -569,6 +575,9 @@ class Hub:
             row = {"hash": h, "kind": "media", "status": t.get("status"), "stage": stage, "steps": steps, "failed": failed,
                    "dir": t.get("dir"), "name": t.get("name") or t.get("title") or "", "added": t.get("added"),
                    "done": t.get("done"), "emby": t.get("emby"), "identityWarn": t.get("identity_warn") or "", "percent": t.get("percent"), "strm": len(t.get("strm") or []),
+                   "stalled": t.get("stalled") if t.get("status") == "downloading" else None,
+                   "autoBufferAt": (t.get("added") or 0) + STALL_AFTER if t.get("status") == "downloading" and not t.get("percent") else None,
+                   "episodes": meta.get("episodes") or [], "subId": meta.get("sub_id"),
                    "title": meta.get("title") or (t.get("dir") or "").split("/")[-2 if "/Season " in (t.get("dir") or "") else -1],
                    "year": meta.get("year"), "tmdbid": meta.get("tmdbid"), "season": meta.get("merged_season") or meta.get("season"),
                    "type": "movie" if meta.get("type") == "电影" or "/电影/" in (t.get("dir") or "") else "tv"}
@@ -780,6 +789,201 @@ class Hub:
             pass
         logger.info(f"【Prowlarr115】删除 Emby 条目 {it.get('Name')}（{typ}）：115 {len(remotes)} 个文件，媒体库 {len(lib_dirs)} 个目录 {len(lib_files)} 个文件，错误 {len(errors)}")
         return {**plan, "dry_run": False, "removedRemoteDirs": removed_remote_dirs, "errors": errors, "ok": not errors}
+
+
+    # ---------------- 任务细节 / 换资源 ----------------
+    def task_files(self, hash: str) -> Dict[str, Any]:  # noqa: A002
+        """缓冲中：qB 每个文件的进度；115 离线中：任务状态、做种、速度（115 完成前列不出文件）；完成后：115 目录里的视频。"""
+        h, p = hash.lower(), self.p._pipe
+        t = (self.p._load_tasks() or {}).get(h)
+        if not p or not t:
+            return {"ok": False, "error": "任务不存在"}
+        out: Dict[str, Any] = {"ok": True, "status": t.get("status"), "files": [], "offline": None, "note": ""}
+        if t.get("status") == "buffer" and p.qb:
+            try:
+                fs = p.qb.get("/api/v2/torrents/files", {"hash": h}) or []
+                out["files"] = [{"name": f.get("name"), "size": f.get("size"), "progress": round(float(f.get("progress") or 0) * 100, 1),
+                                 "uploaded": (f.get("name") or "") in ((t.get("buffer") or {}).get("uploaded") or {})} for f in fs[:300]]
+                q = (p.qb.get("/api/v2/torrents/info", {"hashes": h}) or [{}])[0]
+                out["qb"] = {"state": q.get("state"), "seeds": q.get("num_seeds"), "peers": q.get("num_leechs"),
+                             "swarmSeeds": q.get("num_complete"), "rate": q.get("dlspeed"), "eta": q.get("eta")}
+            except Exception as err:  # noqa: BLE001
+                out["note"] = f"读取 qB 失败：{err}"
+        elif t.get("status") == "downloading":
+            info = self._c115().get(h)
+            if info:
+                out["offline"] = {"status": info.get("status"), "percent": info.get("percentDone"), "size": info.get("size"),
+                                  "peers": info.get("peers"), "rate": info.get("rateDownload"), "added": info.get("add_time"),
+                                  "updated": info.get("last_update")}
+                if not info.get("size"):
+                    out["note"] = "115 还没拿到种子信息（文件列表、大小都没有）：多半是 115 离线服务器连不上这个种子的做种者"
+            else:
+                out["note"] = "115 离线列表里暂时找不到这个任务"
+        elif t.get("status") in ("done", "uploaded") and t.get("name"):
+            name = t["name"]
+            try:
+                base = f"{t['dir']}/{name}"
+                if not p.ol.get(base):
+                    return out                 # 只列本任务自己的文件；找不到就不列（不能把整季目录当成这个任务的）
+                out["files"] = [{"name": r[len(t["dir"]) + 1:], "size": it.get("size"), "progress": 100.0}
+                                for r, it in list(p.ol.walk(base))[:300] if r.lower().endswith(VIDEO_EXT)]
+            except Exception as err:  # noqa: BLE001
+                out["note"] = f"列 115 目录失败：{err}"
+        return out
+
+    def _task_eps(self, t: dict) -> List[int]:
+        eps = [int(e) for e in (t.get("meta") or {}).get("episodes") or [] if str(e).isdigit()]
+        if not eps:
+            se = ep_of(t.get("name") or t.get("title") or "")
+            if se:
+                eps = [se[1]]
+        return eps
+
+    def task_candidates(self, hash: str) -> Dict[str, Any]:  # noqa: A002
+        h = hash.lower()
+        t = (self.p._load_tasks() or {}).get(h)
+        if not t:
+            return {"ok": False, "error": "任务不存在"}
+        meta = t.get("meta") or {}
+        if not meta.get("tmdbid"):
+            return {"ok": False, "error": "这个任务没有 TMDb 作品信息，请用发现页搜索后提交"}
+        kind = "movie" if meta.get("type") == "电影" else "tv"
+        season = meta.get("merged_season") or meta.get("season")
+        res = self.search({"tmdbid": meta["tmdbid"], "type": kind, "season": season})
+        if not res.get("ok"):
+            return res
+        eps = self._task_eps(t) if kind == "tv" else []
+        off = int(meta.get("ep_offset") or 0)
+        want = set(eps) | {e + off for e in eps}
+        bl = self.p._blacklist()
+        rows = []
+        for it in res["results"]:
+            if kind == "tv" and want and it["episodes"] and not (want & set(it["episodes"])):
+                continue                     # 别的集
+            it["current"] = it["id"] == h
+            it["blacklisted"] = (bl.get(it["id"]) or {}).get("reason")
+            rows.append(it)
+        return {"ok": True, "task": {"hash": h, "title": meta.get("title"), "season": season, "episodes": eps, "name": t.get("name")},
+                "elapsed": res.get("elapsed"), "results": rows[:40]}
+
+    def task_reselect(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        """换资源：旧任务取消（删 115 离线任务和已下文件、缓冲连本地文件）并拉黑，新资源用同样的目录和入库参数提交。"""
+        p = self.p._pipe
+        h = str(payload.get("hash") or "").lower()
+        magnet = str(payload.get("magnet") or "")
+        t = (self.p._load_tasks() or {}).get(h)
+        if not p or not t:
+            return {"ok": False, "error": "任务不存在"}
+        nh = btih(magnet)
+        if not nh:
+            return {"ok": False, "error": "只支持磁力链接"}
+        if nh == h:
+            return {"ok": False, "error": "选的就是当前资源"}
+        if t.get("status") in ("downloading", "buffer"):
+            self.p.api_cancel({"hashes": [h]})
+        self.p._blacklist_add(h, "手动换资源", t)
+        bl = self.p._blacklist()
+        if nh in bl:                       # 用户明确选了一个拉黑过的：以用户为准
+            bl.pop(nh, None)
+            self.p.save_data("blacklist", bl)
+        title = str(payload.get("title") or "")[:300]
+        ok, nh, err = p.submit(magnet, t["dir"], title, meta=dict(t.get("meta") or {}, replaced_from=h))
+        if not ok:
+            return {"ok": False, "error": err}
+        p.event(h, "manual", f"已换成另一个资源：{title[:120]}（{nh[:8]}）", "warn")
+        p.event(nh, "submit", f"由 {h[:8]} 换来（{(t.get('name') or t.get('title') or '')[:100]}）")
+        if payload.get("buffer"):
+            r = self.p.api_retry(nh, "buffer")
+            if not r.get("ok", True):
+                return {"ok": True, "hash": nh, "warning": r.get("error")}
+        self.p._kick()
+        return {"ok": True, "hash": nh}
+
+    def blacklist(self) -> Dict[str, Any]:
+        bl = self.p._blacklist()
+        return {"ok": True, "items": sorted(({"hash": k, **v} for k, v in bl.items()), key=lambda r: -r.get("at", 0))[:300]}
+
+    def blacklist_remove(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        bl = self.p._blacklist()
+        n = sum(1 for k in payload.get("hashes") or [] if bl.pop(str(k).lower(), None) is not None)
+        self.p.save_data("blacklist", bl)
+        return {"ok": True, "removed": n}
+
+    # ---------------- 订阅详情 ----------------
+    def subscription(self, id: int) -> Dict[str, Any]:  # noqa: A002
+        """一部订阅每一集现在在哪一步。集号按订阅自己的编号（Bangumi 来源是本季第几集），入库按 TMDb 编号核对。"""
+        from app.db.oper.subscribe import SubscribeOper
+        from app.chain.media import MediaChain
+        from app.schemas.types import MediaSource, MediaType
+        sub = SubscribeOper().get(int(id))
+        if not sub:
+            return {"ok": False, "error": "订阅不存在（可能已结束）"}
+        mtype = MediaType.MOVIE if sub.type == MediaType.MOVIE.value else MediaType.TV
+        src = sub.media_source or "themoviedb"
+        warn: List[str] = []
+        media = tmdb = None
+        try:
+            ms = {"themoviedb": MediaSource.TMDB, "bangumi": MediaSource.Bangumi}.get(src)
+            if ms:
+                media = MediaChain().recognize_media(mtype=mtype, media_source=ms, media_id=str(sub.media_id))
+        except Exception as err:  # noqa: BLE001
+            warn.append(f"识别失败：{err}")
+        info: Dict[str, Any] = {}
+        if media is not None:
+            if src == "bangumi":
+                tw = self.p._tmdb_twin(media, force=True)
+                tmdb = batch_mod._recognize({"tmdbid": tw.tmdb_id, "type": "tv"}) if tw is not None and tw.tmdb_id else None
+            else:
+                tmdb = media
+            try:
+                _, info = self.p._plan(media, [sub.season] if sub.season else [], sub.season, "")
+            except Exception as err:  # noqa: BLE001
+                warn.append(f"算目录失败：{err}")
+        tid = getattr(tmdb, "tmdb_id", None) or info.get("tmdbid")
+        season = info.get("merged_season") or info.get("season") or sub.season or 1
+        off = int(info.get("ep_offset") or 0)
+        have, aired, tm_eps = set(), [], []
+        if tmdb is not None and mtype == MediaType.TV:
+            try:
+                have = batch_mod._emby_eps(self.p, tmdb, season)
+                aired = batch_mod._aired(tmdb, season)
+                tm_eps = sorted(set((getattr(tmdb, "seasons", None) or {}).get(season) or []))
+            except Exception as err:  # noqa: BLE001
+                warn.append(f"读 Emby/TMDb 失败：{err}")
+        tasks = [(h, t) for h, t in (self.p._load_tasks() or {}).items()
+                 if (t.get("meta") or {}).get("sub_id") == sub.id
+                 or (tid and f"[tmdbid={tid}]" in (t.get("dir") or "") and (f"/Season {season}" in t.get("dir", "") or "/Season " not in t.get("dir", "")))]
+        note = {int(e) for e in (sub.note or []) if str(e).isdigit()} if isinstance(sub.note, list) else set()
+        total = int(sub.total_episode or 0)
+        span = [e for e in tm_eps if e > off]
+        if total and span and len(span) != total:
+            warn.append(f"订阅总集数 {total}（{'Bangumi' if src == 'bangumi' else 'MP'}）和 TMDb 本季 {len(span)} 集对不上")
+        first = int(sub.start_episode or 1)
+        eps_out = []
+        for e in range(first, max(total, len(span), max(note or {0})) + 1):
+            te = e + off
+            row = {"ep": e, "tmdbEp": te, "state": "未播", "hash": None, "detail": ""}
+            mine = [(h, t) for h, t in tasks if e in self._task_eps(t) or te in self._task_eps(t)]
+            mine.sort(key=lambda kv: -(kv[1].get("added") or 0))
+            if te in have:
+                row["state"] = "已入库"
+            elif mine:
+                h, t = mine[0]
+                st = t.get("status")
+                row["hash"], row["detail"] = h, (t.get("name") or t.get("title") or "")[:120]
+                row["state"] = ("卡住" if t.get("stalled") else "下载中") if st in ("downloading", "buffer") else \
+                    "入库中" if st in ("uploaded", "done") else "已取消" if st in ("cancelled", "superseded") else "失败"
+            elif e in note:
+                row["state"] = "已提交"
+            elif te in aired or (not tm_eps and e <= len(aired)):
+                row["state"] = "缺"
+            eps_out.append(row)
+        return {"ok": True, "warnings": warn,
+                "sub": {"id": sub.id, "name": sub.name, "year": sub.year, "season": sub.season, "source": src, "mediaId": sub.media_id,
+                        "total": total, "lack": sub.lack_episode, "state": sub.state, "user": sub.username,
+                        "lastSearch": str(sub.last_search or ""), "lastUpdate": sub.last_update, "poster": sub.poster},
+                "tmdb": {"id": tid, "season": season, "offset": off, "episodes": len(span), "aired": len([a for a in aired if a > off])},
+                "episodes": eps_out}
 
     # ---------------- 115 ----------------
     def offline(self, pages: int = 2) -> Dict[str, Any]:

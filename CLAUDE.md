@@ -102,6 +102,7 @@ iPhone 影库 ──HTTPS──▶ APP_SERVER  (nginx → mediahub :8793)
 - The only content filter: titles explicitly describing minors (`REJECT` in `catalog/jable.ts`) and hanime's `school girl` tag.
 - Notifications are local: `lib/notify.ts` diffs the pipeline on foreground loads and in an `expo-background-task` (iOS decides when, ≥15 min). Self-signed builds have no push.
 - Logging: `logger("area")` for ids, counts, timings, phases, errors (never tokens or URLs with api_key). Settings → 上传日志 (also on the player error overlay and info panel) stores `$DATA_DIR/logs/<id>.log` + `.json`; list with `GET /admin/logs` (ADMIN_TOKEN); match request ids with `journalctl -u mediahub -o cat | grep <rid>`.
+- Feedback (反馈问题): long-press sheet → `components/FeedbackForm.tsx` (kinds + reason + optional log upload) → `POST /v1/feedback`; the server stores `$DATA_DIR/feedback/<id>.json` with an Emby snapshot (path, provider ids, images, streams) taken at submit time. Work through them with `GET /admin/feedback` (counts by kind/library/status), set `status`/`note` with `POST /v1/feedback/:id`; the app shows them under Settings → 问题反馈记录.
 - Usage events (埋点): `track(name, props)` / `timed()` from `lib/track.ts`, batched to `/v1/events` every 30 s and on background, stored as `$DATA_DIR/events/YYYY-MM-DD.jsonl`; summary `GET /admin/events?day=…&name=…`. Playback emits `play_start`, `play_info`, `play_error`, `play_stop`, `play_end`.
 
 ## Traps
@@ -113,5 +114,5 @@ iPhone 影库 ──HTTPS──▶ APP_SERVER  (nginx → mediahub :8793)
 - hanime's stream manifests need a signed session; hanime is index-only.
 - MP answers are wrapped `{success, message, data}`; `mp()` unwraps, `mpRaw()` keeps `message` for writes the user should see.
 - Smart search is MP's own `search_by_id` (same results as the MP web page, season-filtered) and takes 10–40 s; raw search skips MP's filters and season checks. Both are scored by the plugin's 选片策略 (`policy.py`) and flagged `recommended` by its `pick()`.
-- The 动漫 library numbers seasons by TheTVDB; TMDb season episode counts may not match what Emby shows. Show Emby's numbers as the truth for "库里已有".
+- The 动漫 library numbers seasons by TMDb (it used TheTVDB before; `/anime/tmdb_renumber` migrates old folders). TMDb merges cours into one long season, so a show subscribed from cour 2 shows "缺" for cour 1 in `mpctl audit`. Show Emby's numbers as the truth for "库里已有".
 - `z.coerce.boolean()` turns "false" into true — parse query flags explicitly.

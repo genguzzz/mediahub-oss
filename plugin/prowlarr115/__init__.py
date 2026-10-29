@@ -44,8 +44,8 @@ from .adult import AV_REJECT, CAT_ANIME, CAT_REAL, CODE_ONLY, JUNK_RX, Adult, re
 from .adult import magnet as adult_magnet
 from .clients import ClientError, Emby
 from .hub import Hub
-from .pipeline import LIBS, Pipeline, btih as _pipe_btih, ep_of
-from .policy import DEFAULT_POLICY, DEFAULT_QUERY_TEMPLATES, load_policy, query_context, render_queries, year_conflict
+from .pipeline import LIBS, Pipeline, btih as _pipe_btih, ep_of, with_trackers
+from .policy import DEFAULT_POLICY, DEFAULT_QUERY_TEMPLATES, load_policy, query_context, render_queries, veto, year_conflict
 
 DOWNLOADER_NAME = "115离线"
 TRACKERS = ("udp://tracker.opentrackr.org:1337/announce", "udp://open.stealth.si:80/announce",
@@ -334,7 +334,7 @@ class Prowlarr115(_PluginBase):
     plugin_desc = ("未认证也能用：多关键词资源源 + 下载直接 115 离线（失败转 NAS 缓冲）+ strm 入 Emby + 刮削确认通知 + 批量入库 API；"
                    "AV（番号 → 115 → MDC 刮削）和里番（追更目录 + sukebei RSS → 115 → Bangumi）也在这里。")
     plugin_icon = "https://raw.githubusercontent.com/Prowlarr/Prowlarr/develop/Logo/256.png"
-    plugin_version = "2.20.0"
+    plugin_version = "2.21.1"
     plugin_label = "资源搜索,下载器"
     plugin_author = "mediahub"
     author_url = ""
@@ -408,6 +408,8 @@ class Prowlarr115(_PluginBase):
             try:
                 self._pipe = Pipeline(self._conf, self._load_tasks, self._save_tasks, self._post, self._log,
                                       lambda: self.get_data("events") or {}, lambda ev: self.save_data("events", ev))
+                self._pipe.on_fail = self._on_task_failed
+                self._pipe.on_ok = self._blacklist_drop
                 # 动漫库按 TMDb 编号（2026-10-27 起；之前按 TVDB，映射只留给 /anime/tmdb_renumber 迁移用）
             except Exception as err:  # noqa: BLE001 配置不全时不接管下载，免得原片落错地方
                 logger.error(f"【Prowlarr115】流水线初始化失败，下载不会被接管：{err}")
@@ -457,6 +459,95 @@ class Prowlarr115(_PluginBase):
         if self._notify:
             self.post_message(mtype=MessageType.Organize, title=title, text=text)
 
+    # ---------------- 黑名单与失败回滚 ----------------
+    # 下不动 / 没有可入库视频 / 用户换掉的资源记进黑名单：订阅搜索不再返回它、MP 选中它时下载事件里拦掉，
+    # MP 才会去选同一集的下一个候选。插件数据 blacklist = {hash: {at, reason, title, dir}}
+    def _blacklist(self) -> Dict[str, dict]:
+        return self.get_data("blacklist") or {}
+
+    def _blacklist_add(self, h: str, reason: str, t: Optional[dict] = None) -> None:
+        if not h:
+            return
+        bl = self._blacklist()
+        bl[h.lower()] = {"at": int(time.time()), "reason": reason[:120], "title": ((t or {}).get("name") or (t or {}).get("title") or "")[:200],
+                         "dir": (t or {}).get("dir") or ""}
+        if len(bl) > 3000:
+            for k in sorted(bl, key=lambda k: bl[k].get("at", 0))[:len(bl) - 3000]:
+                bl.pop(k, None)
+        self.save_data("blacklist", bl)
+
+    def _blacklist_drop(self, h: str) -> None:
+        bl = self._blacklist()
+        if bl.pop((h or "").lower(), None) is not None:
+            self.save_data("blacklist", bl)
+
+    def _on_task_failed(self, h: str, t: dict, reason: str) -> None:
+        """流水线判定资源不可用（no-video / dead / too-big）或被用户换掉时：拉黑，并把这几集从 MP 订阅的
+        「已下载」里去掉（MP 按订阅 note 记已下载集，不看入库结果；不回滚的话订阅会以为下好了直接结束）。"""
+        self._blacklist_add(h, reason, t)
+        meta = t.get("meta") or {}
+        sid, eps = meta.get("sub_id"), [int(e) for e in meta.get("episodes") or [] if str(e).isdigit()]
+        if not sid:
+            return
+        try:
+            from app.db.oper.subscribe import SubscribeOper
+            oper = SubscribeOper()
+            sub = oper.get(int(sid))
+            if not sub:
+                self._pipe.event(h, "manual", f"订阅 {sid} 已结束，没法回滚已下载集；请在影库 App 里换资源", "warn")
+                self._post("⚠️ " + (t.get("dir") or "").split("/")[-2 if "/Season " in (t.get("dir") or "") else -1],
+                           f"{reason}，但对应订阅已结束：请在影库 App 任务详情里「换一个资源」")
+                return
+            note = [e for e in (sub.note or []) if not eps or int(e) not in eps] if isinstance(sub.note, list) else sub.note
+            prio = {k: v for k, v in (sub.episode_priority or {}).items() if not eps or int(k) not in eps}
+            oper.update(int(sid), {"note": note, "episode_priority": prio})
+            self._pipe.event(h, "manual", f"已从订阅 {sub.name} 的已下载集里去掉 {eps or '全部'}，MP 下一轮会换资源")
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"【Prowlarr115】回滚订阅 {sid} 失败：{err}")
+
+    def _vetoed(self, title: str, h: str = "", pol: Optional[dict] = None, bl: Optional[dict] = None) -> Optional[str]:
+        """不该交给 MP 的资源：黑名单或选片策略硬性排除（硬字幕、REMUX…）。批量判断时传入 pol/bl 免得每条都读一次。"""
+        bl = self._blacklist() if bl is None else bl
+        if h and h.lower() in bl:
+            return "已拉黑：" + (bl[h.lower()].get("reason") or "")
+        return veto(title, pol or self._policy())
+
+    def _ended_key(self, sub: Any) -> str:
+        src = getattr(sub, "media_source", None) or "themoviedb"
+        mid = getattr(sub, "media_id", None) or getattr(sub, "tmdbid", None) or ""
+        return f"{src}:{mid}:{getattr(sub, 'season', None) or ''}"
+
+    @eventmanager.register(EventType.SubscribeComplete)
+    def on_subscribe_complete(self, event: Event) -> None:
+        self._remember_ended(event, "完成")
+
+    @eventmanager.register(EventType.SubscribeDeleted)
+    def on_subscribe_deleted(self, event: Event) -> None:
+        self._remember_ended(event, "删除")
+
+    def _remember_ended(self, event: Event, how: str) -> None:
+        """结束（完成/删除）的订阅记进「已结束」名单：自动订阅助手每天会把季度新番重新加一遍，
+        守卫据此删掉重复加回来的订阅（手动订阅不受影响）。插件数据 ended_subs = {key: {at, how, name}}"""
+        if not self._enabled or not event or not event.event_data:
+            return
+        try:
+            d = event.event_data or {}
+            info = (d.get("subscribe_info") if isinstance(d, dict) else getattr(d, "subscribe_info", None)) or {}
+            if not isinstance(info, dict):
+                info = getattr(info, "__dict__", {}) or {}
+            class _S:   # noqa: N801
+                pass
+            sub = _S()
+            for k in ("media_source", "media_id", "tmdbid", "season", "name"):
+                setattr(sub, k, info.get(k))
+            if not (sub.media_id or sub.tmdbid):
+                return
+            ended = self.get_data("ended_subs") or {}
+            ended[self._ended_key(sub)] = {"at": int(time.time()), "how": how, "name": sub.name}
+            self.save_data("ended_subs", ended)
+        except Exception as err:  # noqa: BLE001
+            logger.warning(f"【Prowlarr115】记录已结束订阅失败：{err}")
+
     # ---------------- 订阅守卫 ----------------
     GUARD_USERS = ("自动订阅助手",)
     BLOCKED_TITLES = ("暗芝居",)  # 用户不要的作品：自动订阅助手加了就删（配置 subscribe_block 可追加，逗号分隔）
@@ -477,12 +568,24 @@ class Prowlarr115(_PluginBase):
         limit = int(self._conf.get("subscribe_max_total") or 100)
         blocked = list(self.BLOCKED_TITLES) + [x.strip() for x in str(self._conf.get("subscribe_block") or "").split(",")]
         oper = SubscribeOper()
+        ended = self.get_data("ended_subs") or {}
         subs = [oper.get(int(sid))] if sid else oper.list()
         n = 0
         for sub in subs:
             if not sub or getattr(sub, "username", "") not in self.GUARD_USERS:
                 continue
             name = getattr(sub, "name", "") or ""
+            if self._ended_key(sub) in ended:
+                # 已结束（完成或被删）的订阅被自动订阅助手重新加回来：删掉，不发通知（10-11~10-27 每天循环过）
+                oper.delete(sub.id)
+                n += 1
+                self._log(f"订阅守卫：{name} S{sub.season} 已结束过（{ended[self._ended_key(sub)].get('how')}），删掉重新加回来的订阅")
+                continue
+            if getattr(sub, "type", "") == MediaType.TV.value and getattr(sub, "season", None) is None:
+                oper.delete(sub.id)
+                n += 1
+                self._post("🛑 已删除无法追更的订阅", f"{name}：没有季号（多半是剧场版/短片被当成剧集），自动订阅助手加的订阅已删除")
+                continue
             if any(b and b in name for b in blocked):
                 oper.delete(sub.id)
                 n += 1
@@ -663,7 +766,9 @@ class Prowlarr115(_PluginBase):
             if kind and self._adult and (target is None or not getattr(target, "title", None)):
                 return self._search_adult(kind, kw)
             if target is None or not getattr(target, "title", None):
-                return self._search(keyword.strip(), mtype)
+                pol, bl = self._policy(), self._blacklist()
+                return [t for t in self._search(keyword.strip(), mtype)
+                        if not self._vetoed(t.title or "", self._btih(t.enclosure or ""), pol, bl)]
             rnd = _ROUND.get()
             if rnd is not None:
                 if getattr(rnd, "_prowlarr115_done", False):
@@ -761,11 +866,17 @@ class Prowlarr115(_PluginBase):
         merged = _merged_season(target) if getattr(target, "type", None) == MediaType.TV else None
         if len(_MERGED_ENCL) > 5000:
             _MERGED_ENCL.clear()
+        pol, vetoed, bl = self._policy(), {}, self._blacklist()
         for t in (x for b in batches for x in b):
             h = (re.search(r"btih:([0-9a-fA-F]{40})", t.enclosure or "") or [None, t.enclosure])[1]
             if h in seen:
                 continue
             seen.add(h)
+            bad = self._vetoed(t.title or "", h if isinstance(h, str) and len(h) == 40 else "", pol, bl)
+            if bad:
+                key = bad.split("：")[0]
+                vetoed[key] = vetoed.get(key, 0) + 1
+                continue
             if cut and str(t.pubdate or "")[:10] and str(t.pubdate)[:10] < cut:
                 early += 1
                 continue
@@ -793,6 +904,7 @@ class Prowlarr115(_PluginBase):
                     f"{declared} 条按 IMDb {imdb} 声明身份" + (f"，{relabeled} 条绝对集号按偏移 {abs_off} 换算" if relabeled else "")
                     + (f"，{early} 条早于本季开播（{start}）丢弃" if early else "")
                     + (f"，{wrong_year} 条年份对不上丢弃" if wrong_year else "")
+                    + ("，策略排除 " + "、".join(f"{k} {v}" for k, v in vetoed.items()) if vetoed else "")
                     + (f"（TMDb 对应 {twin.tmdb_id}）" if twin is not None else ""))
         return out
 
@@ -1023,10 +1135,24 @@ class Prowlarr115(_PluginBase):
             media, meta = ctx.media_info, ctx.meta_info
             if not media or media.type not in (MediaType.MOVIE, MediaType.TV):
                 return
+            tinfo = getattr(ctx, "torrent_info", None)
+            bad = self._vetoed(getattr(tinfo, "title", "") or "", self._btih(getattr(tinfo, "enclosure", "") or ""))
+            if bad:
+                # 最后一道关：MP 自己的规则选中了策略排除或已拉黑的资源（比如订阅搜索结果缓存里的旧候选），不下载
+                data.cancel, data.source, data.reason = True, "Prowlarr115", bad
+                logger.info(f"【Prowlarr115】拦截下载 {getattr(tinfo, 'title', '')}：{bad}")
+                return
             path, info = self._plan(media, list(getattr(meta, "season_list", None) or []),
                                     getattr(meta, "begin_season", None), getattr(ctx.torrent_info, "enclosure", "") or "")
             data.options = dict(data.options or {}, save_path=path)
             # 按 (目录, hash) 记：同一目录同时进两个种子（批量选了几个合集）时各自的 ep_offset 不会串
+            origin = str(data.origin or "")
+            m_sid = re.search(r'"id"\s*:\s*(\d+)', origin) if origin.startswith("Subscribe") else None
+            if m_sid:
+                info["sub_id"] = int(m_sid.group(1))     # 入库失败时据此回滚订阅的「已下载集」
+            eps = sorted(int(e) for e in (data.episodes or getattr(meta, "episode_list", None) or []) if str(e).isdigit())
+            if eps:
+                info["episodes"] = eps
             self._pending_meta[(path, self._btih(getattr(ctx.torrent_info, "enclosure", "") or ""))] = dict(info, _at=time.time())
             logger.info(f"【Prowlarr115】{media.title_year} 保存到 {path}")
         except Exception as err:  # noqa: BLE001 路径计算失败时让 MP 用默认目录（会落到下载钩子里报错）
@@ -1315,7 +1441,7 @@ class Prowlarr115(_PluginBase):
         if mode == "buffer":
             p.buffer_start(h, t, "手动改用 NAS 缓冲")
         elif mode == "offline":
-            url = t.get("url") or f"magnet:?xt=urn:btih:{h}"
+            url = with_trackers(t.get("url") or f"magnet:?xt=urn:btih:{h}")
             try:
                 p.c115.task_del(h)
             except Exception:  # noqa: BLE001 旧任务可能已经不在了
