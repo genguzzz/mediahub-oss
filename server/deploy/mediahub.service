@@ -7,7 +7,8 @@ Wants=network-online.target
 WorkingDirectory=/opt/mediahub/app
 EnvironmentFile=/opt/mediahub/.env
 Environment=NODE_ENV=production
-ExecStart=/usr/local/bin/node src/server.ts
+# /usr/bin/env finds node in /usr/local/bin or /usr/bin (nvm users: put the absolute path in your override)
+ExecStart=/usr/bin/env node src/server.ts
 Restart=always
 RestartSec=3
 

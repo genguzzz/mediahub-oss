@@ -22,14 +22,26 @@ iPhone App (Expo) ──HTTPS──► 后端 (Fastify)
 | `server/` | Fastify 后端（Node 22，直接运行 `.ts`），聚合 MoviePilot / Emby / 在线源，托管 OTA 更新 |
 | `plugin/prowlarr115/` | MoviePilot V3 插件：多关键词搜索、选片打分、115 离线、strm 生成、字幕、Emby 刮削确认、AV/里番入库 |
 | `deploy/` | 示例配置：nginx 分流、go-emby2openlist 配置模板、MoviePilot compose |
-| `scripts/` | `release.sh`（打 tag 触发编译）、`publish.sh`（把 IPA 交给软件源）、`ota.sh`（推送 JS 更新） |
+| `scripts/` | `instance.sh`（实例配置）、`release.sh`（打 tag 触发编译）、`publish.sh`（把 IPA 放进软件源）、`ota.sh`（推送 JS 更新）、`update.sh`（跟进上游） |
+| `docs/` | 部署提示词、fork 维护与更新、常见问题 |
 | `.github/workflows/ios.yml` | GitHub Actions 编译未签名 IPA |
 
-## 部署
+## 部署：先 fork，再在自己的仓库里构建
 
-部署高度依赖各人的网络、机器和已有服务，所以这里不提供一键脚本，而是提供一份**部署提示词**：[`docs/DEPLOY_PROMPT.md`](docs/DEPLOY_PROMPT.md)。
+App 的 bundle id、后端地址（含 OTA 地址）是**编译时嵌进 IPA** 的，所以每个人都要：
 
-用法：在本仓库根目录启动 Claude Code（或其他能在你的服务器上执行命令的 AI 代理），把提示词整段贴给它。它会先探测你的环境，给出方案并等你确认，再按需安装 OpenList、Emby、go-emby2openlist、nginx、Prowlarr、MoviePilot（及可选的 FlareSolverr、MDC、qBittorrent），安装插件，部署后端，并指导 App 的编译与分发。
+1. **fork 本仓库**（保持公开，GitHub 的 macOS 编译对公开仓库免费），clone 自己的 fork；
+2. 在仓库之外的实例目录里配置自己的值，写入自己 fork 的 GitHub Secrets；
+3. 用自己 fork 的 GitHub Actions 编译 IPA，发布到自己的软件源 / 自己安装；
+4. 以后从上游拉更新，再按提示部署后端、推 OTA 或发新 IPA。
+
+部署高度依赖各人的网络、机器和已有服务，所以没有一键脚本，而是一份**部署提示词模板**：[`docs/DEPLOY_PROMPT.md`](docs/DEPLOY_PROMPT.md)。在你 fork 的仓库根目录启动 Claude Code（或其他能在你机器上执行命令的 AI 代理），把提示词整段贴给它：它先探测你的环境、给出方案等你确认，再按需安装 OpenList、Emby、go-emby2openlist、反代、Prowlarr、MoviePilot（及可选的 FlareSolverr、MDC、qBittorrent），装插件、部署后端、编译并分发 App。
+
+| 文档 | 内容 |
+|---|---|
+| [`docs/DEPLOY_PROMPT.md`](docs/DEPLOY_PROMPT.md) | 首次部署的提示词模板（按你的环境调整） |
+| [`docs/UPSTREAM.md`](docs/UPSTREAM.md) | fork 维护：什么放配置、怎么从上游更新、怎么发自己的版本、怎么定制、怎么给上游提 PR |
+| [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) | gh 登录与权限、写 Secrets、git 身份、提交被拦、CI、解密、ssh、OTA、软件源等常见问题 |
 
 ## 实例配置、发布与更新
 
@@ -37,22 +49,24 @@ iPhone App (Expo) ──HTTPS──► 后端 (Fastify)
 
 | 文件 | 内容 |
 |---|---|
-| `instance.env` | bundle id、后端/Emby 地址、编译用的 GitHub 仓库与构建号基数、服务器 ssh、软件源发布目标（模板 `instance.env.example`） |
+| `instance.env` | bundle id、后端/Emby 地址、编译用的 fork 与构建号基数、服务器 ssh、软件源发布方式（模板 `instance.env.example`） |
 | `secrets.env` | IPA 加密口令，以及可选的管理/发布令牌（模板 `secrets.env.example`，chmod 600） |
-| `private-patterns.txt` | 你的域名、主机名、IP 等，提交前自动检查，防止误提交 |
+| `private-patterns.txt` | 你的域名、主机名、IP 等，提交前自动检查文件和提交说明，防止误提交 |
 | `deploy/` | 可选：覆盖 `server/deploy/` 的 systemd 单元与 nginx 站点 |
 | `NOTES.md` | 你这套部署的运维笔记，AI 代理会读取 |
 
 ```bash
-./scripts/instance.sh init        # 建目录、生成口令、启用提交前检查
-./scripts/instance.sh check       # 查看配置与缺项
-./scripts/instance.sh ci          # 写入 GitHub Secrets / Variables
+./scripts/instance.sh init        # 建目录、生成口令、启用提交前检查、添加 upstream
+./scripts/instance.sh check       # 查看配置、缺项、fork 的 Actions 与 Secrets
+./scripts/instance.sh ci          # 写入你 fork 的 GitHub Secrets / Variables
 ./server/deploy/deploy.sh         # 部署后端（--dry-run 只看差异）
 ./scripts/ota.sh "说明"            # 只改 JS 时的热更新
-./scripts/release.sh 0.6.0 "说明" --publish   # 打 tag → GitHub Actions 编译 → 发布到 全能签 软件源
+./scripts/release.sh 0.6.0 "说明" --publish   # 打 tag → 你 fork 的 Actions 编译 → 发布到你的软件源
+./scripts/publish.sh 0.6.0 --out ~/Downloads  # 或者只下载解密 IPA，自己安装
+./scripts/update.sh --dry-run     # 上游有什么新东西、要怎么发布；去掉 --dry-run 即合并
 ```
 
-设置了 Secrets 后，CI 编译的 IPA 带你的域名，只以加密 artifact 上传，`publish.sh` 在本机解密后交给你的软件源；公开仓库里看不到你的域名。跟进上游只需 `git pull` 后 `./scripts/instance.sh check`，不会和你的配置冲突。
+设置了 Secrets 后，CI 编译的 IPA 带你的域名，只以加密 artifact 上传（Release 里只有说明），`publish.sh` 在本机解密后放进你的软件源：`static` 模式直接写网站目录并维护 `appstore.json`，`api` 模式交给你已有的发布服务。公开仓库和日志里看不到你的域名。
 
 ## 注意
 

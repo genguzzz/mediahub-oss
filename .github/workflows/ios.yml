@@ -33,8 +33,9 @@ jobs:
   build:
     # The release script pushes its "Release vX" commit together with the tag; build it once, via the tag.
     if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'Release v')
-    # AetherEngine requires Xcode 27 (its own CI uses the same preview image).
-    runs-on: xcode-27
+    # AetherEngine requires Xcode 27 (its own CI uses the same preview image). Forks can switch the
+    # image with the IOS_RUNNER repo variable (instance.env → ./scripts/instance.sh ci) without editing this file.
+    runs-on: ${{ vars.IOS_RUNNER || 'xcode-27' }}
     timeout-minutes: 60
     defaults:
       run:

@@ -2,7 +2,8 @@
 //   $MEDIAHUB_CONFIG_DIR/private-patterns.txt — one JS regex per line, "(?i)" prefix = ignore case,
 //   "!" prefix = allow (removed from a line before checking), "#" = comment.
 // Also checks the literal APP_* hosts and bundle id of the loaded instance.
-//   node scripts/lib/leak-scan.mjs [--staged]   exit 1 on hits
+//   node scripts/lib/leak-scan.mjs [--staged]     tracked + untracked files (or the staged versions); exit 1 on hits
+//   node scripts/lib/leak-scan.mjs --text <file>  one text (commit message, tag/release notes), "-" = stdin
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -33,11 +34,27 @@ if (!forbid.length) {
   process.exit(0);
 }
 
+const hits = [];
+const check = (s, where) => {
+  let clean = s;
+  for (const a of allow) clean = clean.replace(new RegExp(a.source, a.flags + "g"), "");
+  for (const r of forbid) if (r.test(clean)) hits.push(`${where}  [${r.source}]`);
+};
+const textArg = process.argv.indexOf("--text");
+if (textArg >= 0) {
+  const source = process.argv[textArg + 1] ?? "-";
+  const text = readFileSync(source === "-" ? 0 : source, "utf8");
+  text.split("\n").forEach((line, i) => check(line, `message:${i + 1}`));
+  if (hits.length) {
+    console.error(`leak-scan: ${hits.length} private value(s) in the message (commit messages, tags and release notes are public):\n  ` + hits.join("\n  "));
+    process.exit(1);
+  }
+  process.exit(0);
+}
 const staged = process.argv.includes("--staged");
 const git = (...a) => execFileSync("git", a, { encoding: "utf8", maxBuffer: 64 << 20 });
 const files = (staged ? git("diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z") : git("ls-files", "-co", "--exclude-standard", "-z"))
   .split("\0").filter(Boolean);
-const hits = [];
 for (const f of files) {
   let text;
   try {
@@ -46,11 +63,6 @@ for (const f of files) {
     continue;
   }
   if (text.includes("\0")) continue; // binary
-  const check = (s, where) => {
-    let clean = s;
-    for (const a of allow) clean = clean.replace(new RegExp(a.source, a.flags + "g"), "");
-    for (const r of forbid) if (r.test(clean)) hits.push(`${where}  [${r.source}]`);
-  };
   check(f, `${f} (path)`);
   text.split("\n").forEach((line, i) => check(line, `${f}:${i + 1}`));
 }

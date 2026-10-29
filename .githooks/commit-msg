@@ -1,0 +1,3 @@
+#!/bin/sh
+# Enabled by `./scripts/instance.sh init`. Commit messages are public too: block private values in them.
+exec "$(git rev-parse --show-toplevel)/scripts/instance.sh" scan --text "$1"

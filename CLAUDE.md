@@ -19,18 +19,34 @@ This repo is public and shared by every deployment. **Nothing deployment-specifi
 - Code defaults are placeholders only (`com.example.mediahub`, `media.example.com`, `emby.example.com`). App values reach the code through `app/app.config.ts` (`APP_*` env → bundle id, OTA URL, `extra`) and `src/lib/instance.ts`; the server reads only its env (`server/.env.example`).
 - Never print, echo or commit tokens or the passphrase; don't copy server-side tokens to the local machine when a `*_CMD` can read them remotely.
 
-## Customizing and updating from upstream
+## Privacy (every agent, every fork)
 
-- Work in your fork/clone of this repo. Changes useful to everyone: keep them generic (setting instead of constant) and send them upstream. Instance-only differences: express them as instance settings or deploy overrides, not as edits to tracked files — that keeps `git pull upstream main` conflict-free.
-- Before every commit: `cd app && npx tsc --noEmit && npx eslint src`, `cd server && npx tsc --noEmit -p .`; the pre-commit hook runs the leak scan (`./scripts/instance.sh scan` for the whole tree). Don't bypass it with `--no-verify`.
-- After pulling upstream: `./scripts/instance.sh check` (new settings show as missing), then deploy the server if `server/` changed, OTA if only JS changed, release if native changed (below).
+This repo and every fork of it are public. Whoever's instance you are working on, treat these as hard rules:
+
+- Instance values (hosts, domains, IPs, bundle ids, user names, machine names and paths, tokens, cookies, passphrases) never go into tracked files, commit messages, tag / Release notes, PR or issue text, workflow logs or unencrypted artifacts. They live in the instance dir, the fork's GitHub Secrets/Variables, and server-side `.env` files only.
+- Don't "adapt" the repo to an instance by replacing placeholders. Need a different value → instance setting or `deploy/` override. Missing knob → add a generic setting with a placeholder default and document it in `instance.env.example` / `server/.env.example`.
+- Hooks: `.githooks/pre-commit` scans staged files, `.githooks/commit-msg` scans the message, `release.sh` scans the tag notes, all with the instance's `APP_*` values + `private-patterns.txt`. Never `--no-verify`; a false positive gets an `!allow` line in `private-patterns.txt`. Stage files one by one (no blind `git add -A`), and run `./scripts/instance.sh scan` before pushing.
+- Never print secrets into the conversation or logs (say "set, N chars"). Prefer `*_CMD` settings that read server tokens on the server.
+- When writing docs, examples or error messages, use placeholders (`example.com`, `<your-server>`), even if you know the real value.
+- Writing GitHub Secrets is a sensitive action: if your own permission system blocks `./scripts/instance.sh ci`, ask the user to run it; don't route around the block.
+- Errors: follow `docs/TROUBLESHOOTING.md`. Things only the user can do (gh login, enabling Actions on a fork, adding ssh keys, approving secret writes) → stop and tell them exactly what to do.
+
+## Fork, customize, update from upstream
+
+Full guide: `docs/UPSTREAM.md`. First deployment: `docs/DEPLOY_PROMPT.md` (a template — adapt it to the user's machines; the author's setup is only one example).
+
+- Every deployment builds its own IPA from its **own fork** (bundle id and OTA URL are baked in at build time); upstream's Release IPA is the example build. Keep the fork public (free macOS runners). `./scripts/instance.sh init` adds an `upstream` remote with `tagOpt --no-tags` so upstream tags never mix with the fork's release tags.
+- Changes useful to everyone: generic (setting instead of constant), sent upstream as a PR from a branch based on `upstream/main`. Instance-only differences: instance settings or deploy overrides, not edits to tracked files — that keeps merges conflict-free. Fork-only code changes are the last resort; avoid fork-only native changes (they fight upstream's `RUNTIME_VERSION` / version numbers).
+- Before every commit: `cd app && npx tsc --noEmit && npx eslint src`, `cd server && npx tsc --noEmit -p .`.
+- Update: `./scripts/update.sh --dry-run` (what came in, what to ship, new settings) → `./scripts/update.sh` (merge, scan, push) → ship what it lists. Versions follow upstream: after upstream bumps to X.Y.Z, `./scripts/release.sh X.Y.Z "…" --publish` only tags (no bump commit).
 
 ## Ship it
 
 - Server change → `./server/deploy/deploy.sh` (`--dry-run` first shows how the unit/nginx site differ from the host), then curl the route. Deploy the server before the app when both change.
 - JS-only app change → `./scripts/ota.sh "说明"` (~1 min). It renders `app.config.ts` with the instance's APP_* values, so the bundle points at the same server as the IPA.
-- Native change (new/upgraded native package, config plugin, permission, SDK) → bump `RUNTIME_VERSION` in `app/app.config.ts`, then `./scripts/release.sh X.Y.Z "新增：…；修复：…" --publish`. The tag build (~15–25 min on a GitHub Mac; free for public repos) produces the IPA; `scripts/publish.sh X.Y.Z` (run in the background by `--publish`) puts it into the 全能签 source.
+- Native change (new/upgraded native package, config plugin, permission, SDK) → bump `RUNTIME_VERSION` in `app/app.config.ts`, then `./scripts/release.sh X.Y.Z "新增：…；修复：…" --publish`. The tag build (~15–25 min on a GitHub Mac; free for public repos) produces the IPA; `scripts/publish.sh X.Y.Z` (run in the background by `--publish`) puts it into the software source: `static` mode (`PUBLISH_DIR` + `SOURCE_BASE_URL`: copies IPA/icon into a web dir and updates `appstore.json` itself), `api` mode (`PUBLISH_URL`: hands it to an existing publisher service), or `--out <dir>` to just save the IPA.
 - Instance builds (CI secrets set by `instance.sh ci`) upload only an encrypted artifact (`ipa-encrypted-<run>`, kept 7 days) because the binary contains your hosts; `publish.sh` downloads and decrypts it with `IPA_PASSPHRASE`. The Release gets notes only. Without the secrets CI makes the public example build and attaches it to the Release. A failed instance build uploads `xcodebuild.log.enc`: `openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:IPA_PASSPHRASE -in xcodebuild.log.enc`.
+- CI runner label: `xcode-27` unless the repo variable `IOS_RUNNER` (instance.env) overrides it.
 - `CFBundleVersion` = `BUILD_NUMBER_BASE` (repo variable, from instance.env) + run number, or the manual run's `build_number` input; it must stay above every build already in the source.
 - Web preview for checking screens without a phone: `npx expo export --platform web`, serve it with an SPA fallback, set `localStorage["mediahub.settings"]` to `{"server":…, "token":…}`, screenshot with Playwright (tabs render on top on web; no player there).
 
