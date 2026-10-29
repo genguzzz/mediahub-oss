@@ -45,7 +45,7 @@ from .adult import magnet as adult_magnet
 from .clients import ClientError, Emby
 from .hub import Hub
 from .pipeline import LIBS, Pipeline, btih as _pipe_btih, ep_of, with_trackers
-from .policy import DEFAULT_POLICY, DEFAULT_QUERY_TEMPLATES, gb_per_hour, load_policy, query_context, render_queries, runtime_minutes, veto, year_conflict
+from .policy import DEFAULT_POLICY, DEFAULT_QUERY_TEMPLATES, arc_names, arc_season, title_season, gb_per_hour, load_policy, query_context, render_queries, runtime_minutes, veto, year_conflict
 
 DOWNLOADER_NAME = "115离线"
 TRACKERS = ("udp://tracker.opentrackr.org:1337/announce", "udp://open.stealth.si:80/announce",
@@ -334,7 +334,7 @@ class Prowlarr115(_PluginBase):
     plugin_desc = ("未认证也能用：多关键词资源源 + 下载直接 115 离线（失败转 NAS 缓冲）+ strm 入 Emby + 刮削确认通知 + 批量入库 API；"
                    "AV（番号 → 115 → MDC 刮削）和里番（追更目录 + sukebei RSS → 115 → Bangumi）也在这里。")
     plugin_icon = "https://raw.githubusercontent.com/Prowlarr/Prowlarr/develop/Logo/256.png"
-    plugin_version = "2.27.1"
+    plugin_version = "2.29.6"
     plugin_label = "资源搜索,下载器"
     plugin_author = "mediahub"
     author_url = ""
@@ -946,8 +946,23 @@ class Prowlarr115(_PluginBase):
                         + ([twin.original_title, twin.en_title] if twin is not None else []) if n]
             jp_latin = list(dict.fromkeys(b for b in (_base_name(n) for n in jp_latin) if b))
             zh = list(dict.fromkeys(b for b in (_base_name(n) for n in [target.title, ctx.get("short_title")] if n) if b))
+            # 搜某一季时加上这一季的篇章名（Nisemonogatari / Second Season / Owarimonogatari）：只用作品名搜，
+            # 篇章制作品的老季合集排不进结果（物语系列 S3/S4 曾 0 个候选）
+            tv_id0 = getattr(target, "tmdb_id", None) or (twin.tmdb_id if twin is not None else None)
+            arc_q: List[str] = []
+            if tv_id0 and seasons:
+                try:
+                    sn = batch_mod.season_names(tv_id0)[0]
+                    own = arc_names(sn, names)
+                    arc_q = [n for s_ in seasons if s_ in own for n in sn.get(s_) or []]
+                except Exception:  # noqa: BLE001
+                    pass
             batches = [self._search_anime(jp_latin, zh)]
-            queries = [f"[直连] {' | '.join(dict.fromkeys(jp_latin + zh))}"]
+            # 篇章名单独搜：并进作品名的大 OR 查询时，结果按做种取前几页，老篇章的合集排不进来
+            for n in dict.fromkeys(arc_q):
+                lat = bool(re.fullmatch(r"[\x20-\x7e]+", n))
+                batches.append(self._search_anime([n] if lat else [], [] if lat else [n]))
+            queries = [f"[直连] {' | '.join(dict.fromkeys(jp_latin + zh))}"] + [f"[直连·篇章] {n}" for n in dict.fromkeys(arc_q)]
         else:
             with ThreadPoolExecutor(max_workers=4) as pool:  # Prowlarr 每个查询会扇出到全部索引器，别开太多
                 batches = list(pool.map(lambda q: self._search(q, mtype), queries))
@@ -976,6 +991,16 @@ class Prowlarr115(_PluginBase):
         if len(_MERGED_ENCL) > 5000:
             _MERGED_ENCL.clear()
         pol, vetoed, bl = self._policy(), {}, self._blacklist()
+        # 篇章制作品（物语系列：TMDb S5 =「Off & Monster Season」）：标题里有哪一季的篇章名就改成那一季，
+        # 否则 MP 把没写季号的发布都当第 1 季（2026-10-30 Off & Monster 被当成化物语入库）
+        arcs: Dict[int, List[str]] = {}
+        tv_id = getattr(target, "tmdb_id", None) or (twin.tmdb_id if twin is not None else None)
+        if getattr(target, "type", None) == MediaType.TV and tv_id:
+            try:
+                arcs = arc_names(batch_mod.season_names(tv_id)[0], names)
+            except Exception as err:  # noqa: BLE001
+                logger.warning(f"【Prowlarr115】取季名失败：{err}")
+        arc_moved = 0
         for t in (x for b in batches for x in b):
             h = (re.search(r"btih:([0-9a-fA-F]{40})", t.enclosure or "") or [None, t.enclosure])[1]
             if h in seen:
@@ -989,6 +1014,14 @@ class Prowlarr115(_PluginBase):
             if cut and str(t.pubdate or "")[:10] and str(t.pubdate)[:10] < cut:
                 early += 1
                 continue
+            if arcs:
+                at = arc_season(t.title, arcs)
+                if at is not None and title_season(t.title) != at:
+                    # 先去掉标题里别的季号（smol 按 TVDB 编号：Second Season 叫「Season 4」，TMDb 是第 3 季）
+                    t.title = re.sub(r"(?i)\s*\(?\bseason\s*\d{1,2}\)?|\bS\d{1,2}(?=E\d|\b)", " ", t.title).strip()
+                    se = ep_of(t.title)
+                    t.title = _relabel_abs(t.title, se[1], se[1], at) if se and se[1] else f"{t.title} S{at:02d}"
+                    arc_moved += 1
             if abs_off and len(seasons) == 1:
                 se = ep_of(t.title)
                 # 绝对集号的判断：超出本季集数，或超出发布时本季最多能播到的集数（开播后每周一集，+2 容首播连播）。
@@ -1016,6 +1049,7 @@ class Prowlarr115(_PluginBase):
                     + (f"，{wrong_year} 条年份对不上丢弃" if wrong_year else "")
                     + ("，策略排除 " + "、".join(f"{k} {v}" for k, v in vetoed.items()) if vetoed else "")
                     + (f"，{heavy} 条码率过高（同集有更合适的版本）去掉" if heavy else "")
+                    + (f"，{arc_moved} 条按篇章名改了季号" if arc_moved else "")
                     + (f"（TMDb 对应 {twin.tmdb_id}）" if twin is not None else ""))
         return out
 
@@ -1034,6 +1068,9 @@ class Prowlarr115(_PluginBase):
                 eps = tuple(MetaInfo(t.title).episode_list or []) if getattr(target, "type", None) == MediaType.TV else ()
             except Exception:  # noqa: BLE001
                 eps = ()
+            if getattr(target, "type", None) == MediaType.TV and not eps:
+                info.append((t, eps, False))   # 集数不明（整季合集常解析不出）：算不出每小时体积，不参与比较
+                continue
             g = gb_per_hour(float(t.size or 0), len(eps) or 1, mins)
             info.append((t, eps, g is not None and g > cap))
         ok_keys = {eps for _, eps, heavy in info if not heavy}
@@ -2083,8 +2120,11 @@ class Prowlarr115(_PluginBase):
         return r
 
     def api_hentai_relib(self, payload: dict = Body(...)) -> Any:
+        """{series, names}：一个系列；{all: true, dry_run}：所有还没认出 Bangumi 的系列。"""
         if self._need_adult():
             return self._need_adult()
+        if payload.get("all"):
+            return {"ok": True, "items": self._adult.relib_unidentified(bool(payload.get("dry_run")))}
         return self._adult.relib(str(payload.get("series") or ""), [str(x) for x in payload.get("names") or []])
 
     def api_hentai_scan(self) -> Any:

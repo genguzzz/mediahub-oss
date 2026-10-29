@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Tuple, Any, Dict, List, Optional
 
 from .policy import pick, runtime_minutes
 
@@ -26,6 +26,52 @@ JOBS: Dict[str, Dict[str, Any]] = {}
 def _mtype(v: str):
     from app.schemas.types import MediaType
     return MediaType.MOVIE if str(v).lower() in ("movie", "电影", "m") else MediaType.TV
+
+
+_SNAMES: Dict[int, tuple] = {}
+
+
+def season_names(tmdbid: Any) -> Tuple[Dict[int, List[str]], Dict[int, int]]:
+    """TMDb 每季的名字（中/英/日）和集数，缓存 6 小时。篇章制作品（物语系列、鬼灭）靠季名而不是季号区分发布。"""
+    key = int(tmdbid or 0)
+    hit = _SNAMES.get(key)
+    if hit and time.time() - hit[0] < 6 * 3600:
+        return hit[1], hit[2]
+    names: Dict[int, List[str]] = {}
+    counts: Dict[int, int] = {}
+    try:
+        from app.chain.tmdb import TmdbChain
+        for x in TmdbChain().tmdb_seasons(tmdbid=key) or []:
+            n = getattr(x, "season_number", None)
+            if n is not None:
+                names.setdefault(int(n), []).append(getattr(x, "name", "") or "")
+                counts[int(n)] = int(getattr(x, "episode_count", 0) or 0)
+    except Exception:  # noqa: BLE001
+        pass
+    for lang in ("en-US", "ja-JP"):
+        try:
+            from app.modules.themoviedb.tmdbapi import TmdbApi
+            d = TmdbApi(language=lang).tv.details(key)
+            for x in (d.get("seasons") if isinstance(d, dict) else getattr(d, "seasons", None)) or []:
+                x = x if isinstance(x, dict) else getattr(x, "__dict__", {})
+                if x.get("season_number") is not None and x.get("name"):
+                    names.setdefault(int(x["season_number"]), []).append(x["name"])
+        except Exception:  # noqa: BLE001
+            pass
+        # 特别篇的篇章：每集标题开头那段（「Tsukimonogatari: Yotsugi Doll」->「Tsukimonogatari」），
+        # 标题写了这些的发布属于第 0 季，不能算进正片季（物语系列的憑物语曾被当成化物语）
+        try:
+            from app.modules.themoviedb.tmdbapi import TmdbApi
+            sd = TmdbApi(language=lang).get_tv_season_detail(key, 0) or {}
+            for ep in (sd.get("episodes") if isinstance(sd, dict) else []) or []:
+                head = re.split(r"\s*[:：,，(（\-–]\s*|\s+Part\s|\s+第", (ep.get("name") or "").strip())[0]
+                if head and not re.fullmatch(r"(?i)(episode|第)?\s*\d+\s*(话|話|集)?", head):
+                    names.setdefault(0, []).append(head)
+        except Exception:  # noqa: BLE001
+            pass
+    names = {k: list(dict.fromkeys(v)) for k, v in names.items()}
+    _SNAMES[key] = (time.time(), names, counts)
+    return names, counts
 
 
 def _recognize(item: Dict[str, Any]):
@@ -211,17 +257,7 @@ def _one(plugin, job, rec, mode, replace, dry, policy) -> None:
                 return
             rec["media"] = f"{media.title} ({media.year}) TMDb {media.tmdb_id}"
             movie = media.type == MediaType.MOVIE
-            snames, scounts = {}, {}
-            if not movie:
-                try:
-                    from app.chain.tmdb import TmdbChain
-                    for x in TmdbChain().tmdb_seasons(tmdbid=media.tmdb_id) or []:
-                        n = getattr(x, "season_number", None)
-                        if n is not None:
-                            snames[int(n)] = getattr(x, "name", "") or ""
-                            scounts[int(n)] = int(getattr(x, "episode_count", 0) or 0)
-                except Exception:  # noqa: BLE001
-                    pass
+            snames, scounts = ({}, {}) if movie else season_names(media.tmdb_id)
             seasons = [None] if movie else sorted(int(s) for s in (item.get("seasons") or (media.seasons or {}).keys())
                                                   if int(s) > 0 or item.get("seasons"))
             sibs = _siblings(media)
@@ -311,6 +347,10 @@ def _one(plugin, job, rec, mode, replace, dry, policy) -> None:
                                 {k: c[k] for k in ("ep_offset", "season_starts") if c.get(k)}, merged_season=s,
                                 ep_max=max(c.get("episodes") or [0]) or None)
                     hm = re.search(r"btih:([0-9a-fA-F]{40})", ctxs[c["idx"]].torrent_info.enclosure or "")
+                    if hm and not movie and not (c.get("ep_offset") or c.get("season_starts")):
+                        # 选片时已经确定是第 s 季：入库目录按这个季放，不再按发布标题重新解析
+                        # （「Monogatari Series - Off & Monster Season - 05」标题没季号，会被当成第 1 季）
+                        plugin._hash_overrides.setdefault(hm.group(1).lower(), {})["merged_season"] = s
                     if hm:   # 「搜索选片」节点：记下自动选片的依据，下载事件里写进任务
                         plugin._pick_info[hm.group(1).lower()] = {"by": "auto", "score": c.get("score"), "why": c.get("why") or [],
                                                                  "candidates": len(cands), "at": int(time.time())}

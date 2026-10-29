@@ -136,13 +136,16 @@ def series_names(raw: str) -> Tuple[str, List[str]]:
     「[AmateurSubs] Kyonyuu ga … Tsuma 01-02 (English subs) [DVDRip 576p] (巨乳が2人…妻 )」
     -> ('Kyonyuu ga … Tsuma', ['巨乳が2人…妻'])：去掉组名、规格、集数范围、字幕说明，括号里的日文名单独拿出来。"""
     t = (raw or "").strip()
-    alts = [x.strip() for x in re.findall(r"[(（]([^()（）]{4,})[)）]", t) if _KANA_KANJI.search(x)]
+    alts = [x.strip() for x in re.findall(r"[(（]([^()（）]{2,})(?:[)）]|$)", t) if _KANA_KANJI.search(x)]   # 截断的「(NTR騎士」也算
+    alts += [re.sub(r"\s*(上巻|下巻|中巻|前編|後編|中編|前篇|後篇)\s*$", "", a).strip() for a in alts]
     t = re.sub(r"^\s*\[[^\]]*\]\s*", "", t)
     t = re.sub(r"\s*[\[(（][^\])）]*[\])）]", " ", t)                       # 剩下的 [...] (...) 全去掉
     t = re.sub(r"(?i)\b(english|eng|chinese|chs|cht)\s*subs?\b", " ", t)
-    t = re.sub(r"\s+(?:#|ep?\.?\s*)?\d{1,3}(?:\s*[-~]\s*\d{1,3})?\s*$", "", t.strip())   # 末尾的「01-02」「02」
+    t = re.sub(r"\s*[(（][^()（）]*$", "", t)                                          # 截断的括号
+    t = re.sub(r"\s+(上巻|下巻|中巻|前編|後編|中編|前篇|後篇)$", "", t.strip())             # 分卷词：查 Bangumi 用系列名
+    t = re.sub(r"\s+[-–]?\s*(?:#|ep?\.?\s*)?\d{1,3}(?:\s*[-~]\s*\d{1,3})?\s*$", "", t.strip())   # 末尾的「- 08」「01-02」
     t = re.sub(r"\s+", " ", t).strip(" -_")
-    return (t or (raw or "").strip()), alts
+    return (t or (raw or "").strip()), list(dict.fromkeys(a for a in alts if a))
 
 
 def norm(t: str) -> str:
@@ -871,13 +874,16 @@ class Adult:
             series, ep = parse_release(r["title"])
             if series is None:
                 continue
+            clean, alts = series_names(r["title"])
+            if series.startswith("[") or len(series) > len(clean):
+                series = clean
             series, vol = split_vol(series)
             ep = file_ep(r["title"]) or vol or ep
             if not self._in_catalog(series, titles) and not HENTAI_STUDIOS.search(r["title"]):
                 continue
             key = next((k for k in downloaded if norm(k) == norm(series)), series)
-            entry = self.new_entry(downloaded, key, series)
-            lib = self.ensure_lib(entry, series)
+            entry = self.new_entry(downloaded, key, series, *alts)
+            lib = self.ensure_lib(entry, *alts, series)
             if str(ep) in entry["episodes"] or ep in self.existing_eps(lib):
                 continue
             ok, err = self.submit("hentai", f"{self.remote_h}/{entry['folder']}/Season {entry['season']}", magnet(r["hash"]), r["title"],
@@ -1067,6 +1073,27 @@ class Adult:
             cat["updated"] = now()
             self.save_data("hentai_catalog", cat)
         return added
+
+    def relib_unidentified(self, dry_run: bool = False) -> List[dict]:
+        """手动维护：所有还没认出 Bangumi 的系列，用清洗过的系列名 + 发布标题里的日文原名重新识别，认出来就迁库目录。
+        （早期按原始发布标题建的目录：「[RedgectX] Odette」「Choro Mesu Days - 01 (English subs)」，Emby 只能按名字乱认。）"""
+        with self._state_lock:
+            keys = [k for k, e in (self._h().get("downloaded") or {}).items() if not e.get("bgm")]
+        out = []
+        for key in keys:
+            entry = (self._h().get("downloaded") or {}).get(key) or {}
+            names = [*series_names(key)[1], series_names(key)[0]]      # 日文原名优先（Bangumi 比对原名最准）
+            for ep in (entry.get("episodes") or {}).values():
+                clean, alts = series_names(ep.get("title") or "")
+                names += alts + [clean]
+            names = [n for n in dict.fromkeys(names) if n and len(n) >= 2]
+            if dry_run:
+                bgm = self.bgm_identify(*names)
+                out.append({"series": key, "lib": entry.get("lib"), "names": names[:4], "bgm": bgm})
+                continue
+            r = self.relib(key, names)
+            out.append({"series": key, **r})
+        return out
 
     def relib(self, series: str, names: List[str]) -> dict:
         """系列重新识别 Bangumi（库目录名错了 / 当时没认出来）：用给的名字（日文原名最好）再查，查到就把 strm 目录迁过去。"""
