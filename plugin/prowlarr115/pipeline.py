@@ -276,11 +276,19 @@ class Pipeline:
             except Exception as e:  # noqa: BLE001
                 err = f"{err}；NAS 缓冲也失败：{e}"
         if ok:
+            pick = (task.get("meta") or {}).setdefault("pick", {"by": "manual", "at": now(), "title": title[:200]})
+            task["ts"]["select"] = pick.get("at") or now()
             with self._save_lock:
                 tasks = self.load()
                 tasks[h] = dict(task, api_ts=time.time())     # 这一轮跟踪若拿着旧快照，_persist 会以这次提交为准
                 self.save(tasks)
         self.log(f"提交 {d} {h[:8]} {'OK' if ok else 'FAIL ' + err}")
+        if ok:
+            pk = task["meta"]["pick"]
+            how = {"subscription": "订阅自动选中", "auto": "自动入库选中", "manual": "手动选择", "reselect": "手动换资源",
+                   "rss": "RSS 追更", "catalog": "追更目录搜索"}.get(pk.get("by"), pk.get("by") or "")
+            self.event(h, "select", how + (f"，评分 {pk['score']}（{' '.join(pk.get('why') or [])[:160]}）" if pk.get("score") is not None else "")
+                       + (f"，候选 {pk['candidates']} 个" if pk.get("candidates") else ""))
         self.event(h, "submit", f"提交到 {d}" + (f"（{title[:120]}）" if title else "") + ("" if ok else f"，失败：{err}"),
                    "info" if ok else "error")
         return ok, h, err

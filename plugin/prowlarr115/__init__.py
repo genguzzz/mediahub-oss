@@ -334,7 +334,7 @@ class Prowlarr115(_PluginBase):
     plugin_desc = ("未认证也能用：多关键词资源源 + 下载直接 115 离线（失败转 NAS 缓冲）+ strm 入 Emby + 刮削确认通知 + 批量入库 API；"
                    "AV（番号 → 115 → MDC 刮削）和里番（追更目录 + sukebei RSS → 115 → Bangumi）也在这里。")
     plugin_icon = "https://raw.githubusercontent.com/Prowlarr/Prowlarr/develop/Logo/256.png"
-    plugin_version = "2.23.0"
+    plugin_version = "2.24.0"
     plugin_label = "资源搜索,下载器"
     plugin_author = "mediahub"
     author_url = ""
@@ -375,6 +375,7 @@ class Prowlarr115(_PluginBase):
 
     _pipe = None
     _adult = None
+    _pick_info: Dict[str, dict] = {}        # btih -> 选片依据（批量自动 / App 换资源），下载事件里写进任务 meta.pick
     _adult_hints: Dict[str, dict] = {}      # MP 搜索框里搜出来的 AV/里番 结果：btih -> {kind, title}，下载时据此分流
     _notify = True
     _root = "/115/Emby"
@@ -1177,10 +1178,32 @@ class Prowlarr115(_PluginBase):
             eps = sorted(int(e) for e in (data.episodes or getattr(meta, "episode_list", None) or []) if str(e).isdigit())
             if eps:
                 info["episodes"] = eps
+            info["pick"] = self._pick_of(tinfo, media, origin)
             self._pending_meta[(path, self._btih(getattr(ctx.torrent_info, "enclosure", "") or ""))] = dict(info, _at=time.time())
             logger.info(f"【Prowlarr115】{media.title_year} 保存到 {path}")
         except Exception as err:  # noqa: BLE001 路径计算失败时让 MP 用默认目录（会落到下载钩子里报错）
             logger.error(f"【Prowlarr115】计算保存路径失败：{err}")
+
+    def _pick_of(self, tinfo: Any, media: Any, origin: str) -> dict:
+        """「搜索选片」节点的记录：谁选的（订阅 / 自动入库 / 手动），按选片策略的评分和理由。"""
+        h = self._btih(getattr(tinfo, "enclosure", "") or "")
+        pick = dict(self._pick_info.pop(h, None) or {})
+        if not pick:
+            by = "subscription" if origin.startswith("Subscribe") else "auto" if "批量" in origin else "manual"
+            pick = {"by": by, "at": int(time.time())}
+        if pick.get("score") is None:
+            try:
+                from .policy import features, score
+                pol = self._policy()
+                f = features(getattr(tinfo, "title", "") or "", float(getattr(tinfo, "size", 0) or 0),
+                             int(getattr(tinfo, "seeders", 0) or 0), [], pol)
+                sc, why = score(f, "movie" if media.type == MediaType.MOVIE else "tv", pol, 1, runtime_minutes(media))
+                pick.update(score=round(sc, 1) if sc is not None else None, why=why)
+            except Exception:  # noqa: BLE001
+                pass
+        pick.update(title=(getattr(tinfo, "title", "") or "")[:200], site=str(getattr(tinfo, "site_name", "") or ""),
+                    seeders=getattr(tinfo, "seeders", None))
+        return pick
 
     def _plan(self, media: Any, season_list: List[int], begin_season: Optional[int], enclosure: str) -> Tuple[str, dict]:
         """作品 + 种子的季信息 -> (115 保存目录, 入库用的作品信息)。下载事件和 /submit 共用。"""

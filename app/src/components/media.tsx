@@ -26,7 +26,8 @@ export interface CardData {
   played?: boolean;
   unplayed?: number;     // unwatched episodes
   tags?: string[];
-  embyId?: string;       // playable Emby item: the long-press sheet offers casting
+  embyId?: string;       // Emby item: the long-press sheet offers played/favourite/feedback
+  playable?: boolean;    // movie / episode / video (casting); default true when embyId is set
   link?: { name: string; url: string }; // source page, opened as H5
   actions?: SheetAction[]; // extra long-press actions
   onPress: () => void;

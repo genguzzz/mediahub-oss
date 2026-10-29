@@ -447,6 +447,20 @@ app.post("/v1/ingest", async (req) => {
   return out;
 });
 
+// 自动入库: the plugin's batch in auto mode — aired seasons / movies are searched, picked by the 选片 policy and
+// downloaded; airing seasons become a subscription. Returns a job id to poll.
+app.post("/v1/ingest/auto", async (req) => {
+  const b = z.object({ tmdbid: z.number().int().positive(), type: z.enum(["movie", "tv"]), seasons: z.array(z.number().int().min(0)).max(50).optional() }).parse(req.body);
+  const res = await plug<{ ok: boolean; job?: string; error?: string }>("POST", "/batch", { body: { items: [{ tmdbid: b.tmdbid, type: b.type, ...(b.seasons ? { seasons: b.seasons } : {}) }], mode: "auto" } });
+  req.log.info({ ...b, job: res.job, ok: res.ok }, "ingest auto");
+  return res;
+});
+
+app.get<{ Params: { job: string } }>("/v1/ingest/auto/:job", async (req) => {
+  const job = z.string().regex(/^[0-9a-f]{8}$/).parse(req.params.job);
+  return plug("GET", "/batch", { query: { job } });
+});
+
 // ---------- pipeline ----------
 
 app.get("/v1/pipeline", async (req) => {

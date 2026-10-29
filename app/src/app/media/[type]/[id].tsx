@@ -20,6 +20,35 @@ export default function MediaScreen() {
   const search = (season?: number) =>
     router.push({ pathname: "/resources", params: { mode: "smart", tmdbid: id, type: String(type), season: season === undefined ? "" : String(season), title: m?.title ?? "" } });
 
+  // 自动入库: the plugin searches, picks by the 选片 policy and downloads (airing seasons get a subscription instead).
+  const autoIngest = async (season?: number) => {
+    if (!m) return;
+    setBusy(`auto:${season ?? "m"}`);
+    try {
+      const r = await api<{ ok: boolean; job?: string; error?: string }>("/v1/ingest/auto", { body: { tmdbid: Number(id), type: m.type, ...(season !== undefined ? { seasons: [season] } : {}) } });
+      if (!r.ok) throw new Error(r.error || "提交失败");
+      toast("正在自动入库", "后台搜索并按选片规则挑选资源，选中后会出现在入库列表", { label: "查看入库", onPress: () => router.push("/pipeline") });
+      if (r.job) void pollAuto(r.job);
+    } catch (e) {
+      toastError("未能自动入库", e);
+    } finally {
+      setBusy(null);
+    }
+  };
+  // Report the outcome once the batch job ends (it takes 10–60 s): what was picked, or why nothing was.
+  const pollAuto = async (job: string) => {
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const j = await api<{ status?: string; results?: { error?: string; seasons: { season: number | null; action?: string; chosen?: { title: string }[] }[] }[] }>(`/v1/ingest/auto/${job}`).catch(() => null);
+      if (!j || j.status !== "done") continue;
+      const r = j.results?.[0];
+      const lines = r?.error ? [r.error] : (r?.seasons ?? []).map((x) => `${x.season ? `第 ${x.season} 季：` : ""}${x.action ?? ""}${x.chosen?.[0] ? `（${x.chosen[0].title.slice(0, 60)}）` : ""}`);
+      const okAny = (r?.seasons ?? []).some((x) => /已提交|订阅/.test(x.action ?? ""));
+      toast(okAny ? "自动入库已完成选片" : "自动入库没有选到资源", lines.join("\n").slice(0, 300), okAny ? { label: "查看入库", onPress: () => router.push("/pipeline") } : undefined, !okAny);
+      return;
+    }
+  };
+
   const subscribe = async (season?: number) => {
     if (!m) return;
     setBusy(`sub:${season ?? "m"}`);
@@ -92,7 +121,8 @@ export default function MediaScreen() {
 
             {m.type === "movie" ? (
               <View style={{ flexDirection: "row", gap: 10, marginTop: 18 }}>
-                <PillButton icon="search" label="搜索资源" onPress={() => search()} style={{ flex: 1 }} />
+                <PillButton icon="flash-outline" label="自动入库" loading={busy === "auto:m"} onPress={() => void autoIngest()} style={{ flex: 1 }} />
+                <PillButton variant="soft" icon="search" label="搜索资源" onPress={() => search()} style={{ flex: 1 }} />
                 {data.subscriptions.length ? (
                   <PillButton variant="soft" label="已订阅" icon="checkmark" onPress={() => unsubscribe(data.subscriptions[0].id)} />
                 ) : (
@@ -114,7 +144,8 @@ export default function MediaScreen() {
                       {have !== null && s.episodes ? <View style={{ marginTop: 8 }}><ProgressBar value={(have / s.episodes) * 100} color={have >= s.episodes ? colors.success : colors.primary} /></View> : null}
                       {sub ? <Text style={[styles.faint, { marginTop: 6 }]}>已订阅{sub.lack !== null ? `，还缺 ${sub.lack} 集` : ""}{sub.state === "S" ? "（暂停）" : ""}</Text> : null}
                       <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
-                        <PillButton small icon="search" label="搜索资源" onPress={() => search(s.season)} />
+                        <PillButton small icon="flash-outline" label="自动入库" loading={busy === `auto:${s.season}`} onPress={() => void autoIngest(s.season)} />
+                        <PillButton small variant="soft" icon="search" label="搜索资源" onPress={() => search(s.season)} />
                         {s.season > 0 ? (
                           sub ? (
                             <PillButton small variant="soft" icon="checkmark" label="已订阅" onPress={() => unsubscribe(sub.id)} />

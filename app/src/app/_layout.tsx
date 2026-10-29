@@ -6,6 +6,7 @@ import * as Device from "expo-device";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { PosterSheetHost } from "@/components/PosterSheet";
+import { FullWindowOverlay } from "react-native-screens";
 import { ToastHost, toast } from "@/components/ui";
 import { appVersion } from "@/lib/api";
 import { flush, installGlobalHandlers, logger, pruneLogs, sessionId } from "@/lib/log";
@@ -86,7 +87,8 @@ export default function RootLayout() {
           </View>
         )}
         {loaded ? <PosterSheetHost /> : null}
-        {loaded ? <ToastHost /> : null}
+        {/* iOS: toasts live in their own window above native sheets/modals (入库 sheet, settings), otherwise errors hide under them */}
+        {loaded ? (Platform.OS === "ios" ? <FullWindowOverlay><ToastHost /></FullWindowOverlay> : <ToastHost />) : null}
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

@@ -44,7 +44,7 @@ DEFAULT_POLICY: Dict[str, Any] = {
     "tv": {"per_episode_gb": [0.25, 4.0], "ideal_per_episode_gb": [1.0, 3.0]},
     "movie": {"min_gb": 2.0, "max_gb": 90.0, "ideal_gb": [8.0, 40.0]},
     "weights": {
-        "hevc": 20, "av1": 6, "avc": 0, "2160p": 16, "1080p": 10, "720p": -15, "bd": 10, "web": 3,
+        "hevc": 20, "av1": 6, "avc": 0, "2160p": 24, "1080p": 10, "720p": -15, "bd": 10, "web": 3,
         "hdr": 4, "cn_sub": 0, "cn_sub_inner": 0, "bilingual": 0, "softsub": 4, "pack": 18, "group": 12,
         "seeders_log": 3, "size_ideal": 10, "size_ok": 0, "size_bad": -40,
         "foreign": -35, "multi_season_extra": -15, "bitrate_high": -30,

@@ -17,7 +17,8 @@ export function itemCard(i: Item, open: (i: Item) => void, landscape = false): C
     played: i.UserData?.Played && i.Type !== "Series",
     unplayed: i.Type === "Series" ? i.UserData?.UnplayedItemCount : undefined,
     tags: i.Genres?.slice(0, 3),
-    embyId: i.Type === "Movie" || i.Type === "Episode" || i.Type === "Video" ? i.Id : undefined,
+    embyId: i.Id,
+    playable: i.Type === "Movie" || i.Type === "Episode" || i.Type === "Video",
     onPress: () => open(i),
   };
 }

@@ -505,10 +505,11 @@ class Hub:
         strm_end = ts.get("strm") or t.get("done")
         emby = t.get("emby") or 0
         scrape_end = ts.get("emby") or (emby if emby > 0 else None)
-        return [(sub, sub), (sub, dl_end), (strm_start, strm_end if strm_start else None),
+        sel = ts.get("select") or ((t.get("meta") or {}).get("pick") or {}).get("at") or sub
+        return [(sel, sel), (sub, sub), (sub, dl_end), (strm_start, strm_end if strm_start else None),
                 (strm_end, scrape_end if strm_end else None), (scrape_end, scrape_end)]
 
-    STEP_EVENTS = {"submit": ["submit"], "download": ["offline", "buffer"], "strm": ["strm", "subs"],
+    STEP_EVENTS = {"select": ["select"], "submit": ["submit"], "download": ["offline", "buffer"], "strm": ["strm", "subs"],
                    "scrape": ["emby"], "finish": ["manual"]}
 
     @staticmethod
@@ -518,18 +519,18 @@ class Hub:
         emby = t.get("emby") or 0
         kind = (t.get("meta") or {}).get("kind") or "media"
         via = "NAS 缓冲" if t.get("buffer") else "115 离线"
-        keys = ["submit", "download", "strm", "scrape", "finish"]
+        keys = ["select", "submit", "download", "strm", "scrape", "finish"]
         # 三类资源同一套步骤，只有入库/刮削两步不同：影视 TMDb、里番 Emby 的 Bangumi 插件、AV 交给 MDC 刮削整理
-        labels = ["提交", via, *{"av": ("写入 MDC 收件箱", "MDC 刮削整理"), "hentai": ("生成 strm", "Bangumi 刮削")}.get(kind, ("生成 strm", "Emby 刮削")), "完成"]
-        pos = {"downloading": 1, "buffer": 1, "uploaded": 2, "scraping": 3, "done": 5 if emby > 0 else 3}.get(st)
-        err = {"too-big": 1, "dead": 1, "no-video": 2, "strm-failed": 2, "needs-id": 2, "scrape-failed": 3}.get(st)
+        labels = ["搜索选片", "提交", via, *{"av": ("写入 MDC 收件箱", "MDC 刮削整理"), "hentai": ("生成 strm", "Bangumi 刮削")}.get(kind, ("生成 strm", "Emby 刮削")), "完成"]
+        pos = {"downloading": 2, "buffer": 2, "uploaded": 3, "scraping": 4, "done": 6 if emby > 0 else 4}.get(st)
+        err = {"too-big": 2, "dead": 2, "no-video": 3, "strm-failed": 3, "needs-id": 3, "scrape-failed": 4}.get(st)
         if st == "done" and emby < 0:
             err = 3
         steps = []
         times = Hub._times(t)
         for i, k in enumerate(keys):
             if st in ("superseded", "cancelled"):
-                state = "done" if i == 0 else "skipped"
+                state = "done" if i <= 1 else "skipped"
             elif err is not None:
                 state = "done" if i < err else "error" if i == err else "pending"
             else:
@@ -914,7 +915,8 @@ class Hub:
             bl.pop(nh, None)
             self.p.save_data("blacklist", bl)
         title = str(payload.get("title") or "")[:300]
-        ok, nh, err = p.submit(magnet, t["dir"], title, meta=dict(t.get("meta") or {}, replaced_from=h))
+        ok, nh, err = p.submit(magnet, t["dir"], title, meta=dict(t.get("meta") or {}, replaced_from=h,
+                                                             pick={"by": "reselect", "at": int(time.time()), "title": title}))
         if not ok:
             return {"ok": False, "error": err}
         p.event(h, "manual", f"已换成另一个资源：{title[:120]}（{nh[:8]}）", "warn")

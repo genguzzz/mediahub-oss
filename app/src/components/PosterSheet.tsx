@@ -5,6 +5,7 @@ import { ActivityIndicator, Pressable, ScrollView, Share, Text, View } from "rea
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as WebBrowser from "expo-web-browser";
+import Animated, { FadeIn, FadeInDown, LinearTransition } from "react-native-reanimated";
 import { CastPanel } from "./CastPanel";
 import { FeedbackForm } from "./FeedbackForm";
 import { Img, MiniTag, type CardData } from "./media";
@@ -42,7 +43,7 @@ export function PosterSheetHost() {
 
   const id = card.embyId;
   const tiles: Tile[] = [{ label: "详情", icon: "information-circle-outline", run: () => { close(); card.onPress(); } }];
-  if (id) {
+  if (id && card.playable !== false) {
     tiles.push({
       label: "投屏", icon: "tv-outline", keep: true,
       run: async () => {
@@ -50,6 +51,8 @@ export function PosterSheetHost() {
         setMode("cast");
       },
     });
+  }
+  if (id) {
     tiles.push({
       label: user?.played ? "标为未看" : "标为已看", icon: user?.played ? "eye-off-outline" : "checkmark-circle-outline",
       run: async () => { await embyApi.setPlayed(id, !user?.played); toast(user?.played ? "已标为未看" : "已标为已看"); },
@@ -103,9 +106,9 @@ export function PosterSheetHost() {
       {card.overview ? <Text style={{ fontSize: 13, lineHeight: 19, color: colors.textSoft, marginTop: 14 }} numberOfLines={mode === "menu" ? 6 : 2}>{card.overview}</Text> : null}
 
       {mode === "feedback" ? (
-        <View style={{ marginTop: 14 }}>
+        <Animated.View key="feedback" entering={FadeInDown.duration(240)} layout={LinearTransition.duration(220)} style={{ marginTop: 14 }}>
           <FeedbackForm item={{ embyId: card.embyId, title: card.title, subtitle: card.subtitle, key: card.key }} onDone={close} onCancel={() => setMode("menu")} />
-        </View>
+        </Animated.View>
       ) : mode === "cast" ? (
         <View style={{ marginTop: 14 }}>
           <Pressable onPress={() => setMode("menu")} style={{ flexDirection: "row", alignItems: "center", gap: 4, marginBottom: 8 }}>
@@ -115,7 +118,7 @@ export function PosterSheetHost() {
           <CastPanel uri={plan?.uri ?? null} title={card.title} position={0} canScan={scan} onStart={() => {}} onStop={() => {}} />
         </View>
       ) : (
-        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 16 }}>
+        <Animated.View key="menu" entering={FadeIn.duration(200)} style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 16 }}>
           {tiles.map((t) => {
             const color = t.destructive ? colors.danger : colors.text;
             return (
@@ -130,7 +133,7 @@ export function PosterSheetHost() {
               </Pressable>
             );
           })}
-        </View>
+        </Animated.View>
       )}
     </Sheet>
   );

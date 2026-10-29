@@ -224,9 +224,10 @@ class Adult:
                     break
             return False, err
 
-    def submit(self, kind: str, remote_dir: str, link: str, release: str, **meta: Any) -> Tuple[bool, str]:
+    def submit(self, kind: str, remote_dir: str, link: str, release: str, by: str = "manual", **meta: Any) -> Tuple[bool, str]:
         """AV / 里番 也进流水线任务表（和影视同一套：115 离线、卡住提示、NAS 缓冲、换资源、黑名单、事件日志），
         115 下完后由 Pipeline 调回 finish()。"""
+        meta["pick"] = {"by": by, "at": now(), "title": release[:200]}
         ok, h, err = self.p.submit(link, remote_dir, release, meta=dict(meta, kind=kind))
         return ok, err
 
@@ -417,7 +418,8 @@ class Adult:
             if dry_run:
                 out.append(dict(r, ok=True, dry_run=True))
                 continue
-            ok, err = self.submit("av", self.remote_dl, link, r.get("title") or code or raw[:80], title=code or "AV", code=code)
+            ok, err = self.submit("av", self.remote_dl, link, r.get("title") or code or raw[:80], by="auto" if r.get("title") else "manual",
+                                  title=code or "AV", code=code)
             out.append(dict(r, ok=ok, **({"error": err} if err else {})))
             if ok:
                 with self._state_lock:
@@ -861,7 +863,7 @@ class Adult:
             if str(ep) in entry["episodes"] or ep in self.existing_eps(lib):
                 continue
             ok, err = self.submit("hentai", f"{self.remote_h}/{entry['folder']}/Season {entry['season']}", magnet(r["hash"]), r["title"],
-                                  title=lib, series=key, ep=ep)
+                                  by="rss", title=lib, series=key, ep=ep)
             self.log(f"里番 RSS {lib} E{ep:02d} [{r['seeders']}S {r['size'] / 1e6:.0f}MB] {'OK' if ok else 'FAIL ' + err}")
             if ok:
                 entry["episodes"][str(ep)] = {"hash": r["hash"], "title": r["title"][:120], "added": now()}
@@ -934,7 +936,7 @@ class Adult:
             for ep, ihash, rtitle, size, seeders in results:
                 if ihash in seen or str(ep) in entry["episodes"] or (ep > 0 and ep in have):
                     continue
-                ok, err = self.submit("hentai", remote_dir, magnet(ihash), rtitle, title=lib, series=key, ep=ep if ep > 0 else None)
+                ok, err = self.submit("hentai", remote_dir, magnet(ihash), rtitle, by="catalog", title=lib, series=key, ep=ep if ep > 0 else None)
                 msg = f"{lib} {'E%02d' % ep if ep > 0 else '合集'} [{seeders}S {size / 1e6:.0f}MB] {'OK' if ok else 'FAIL ' + err}"
                 self.log("里番搜索 " + msg)
                 report.append(msg)

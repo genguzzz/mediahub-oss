@@ -310,6 +310,10 @@ def _one(plugin, job, rec, mode, replace, dry, policy) -> None:
                             plugin._hash_overrides[h.group(1).lower()] = dict(
                                 {k: c[k] for k in ("ep_offset", "season_starts") if c.get(k)}, merged_season=s,
                                 ep_max=max(c.get("episodes") or [0]) or None)
+                    hm = re.search(r"btih:([0-9a-fA-F]{40})", ctxs[c["idx"]].torrent_info.enclosure or "")
+                    if hm:   # 「搜索选片」节点：记下自动选片的依据，下载事件里写进任务
+                        plugin._pick_info[hm.group(1).lower()] = {"by": "auto", "score": c.get("score"), "why": c.get("why") or [],
+                                                                 "candidates": len(cands), "at": int(time.time())}
                     if dl.download_single(ctxs[c["idx"]], source="Prowlarr115批量"):
                         ok += 1
                 if item.get("ep_offset"):

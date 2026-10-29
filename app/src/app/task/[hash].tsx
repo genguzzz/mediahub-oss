@@ -16,6 +16,7 @@ const STEP_HINT_ADULT: Record<string, Record<string, string>> = {
   hentai: { strm: "按 Bangumi 中文名目录生成 strm（<名> [bangumiid=N]/Season 1）", scrape: "Emby 的 Bangumi 插件刮削，确认有 Bangumi ID 和海报", finish: "已入里番库" },
 };
 const STEP_HINT: Record<string, string> = {
+  select: "怎么选中这个资源的：订阅自动 / 自动入库 / 手动 / 换资源，按选片规则的评分和理由（4K HEVC 优先，码率过高扣分，不要硬字幕）",
   submit: "磁力已交给插件，按 TMDb 识别结果算好 115 目录",
   download: "115 离线下载；提交失败、6 小时 0% 或任务丢失时改用 NAS qBittorrent 缓冲，下完一个文件传一个到 115",
   strm: "只处理本任务的种子目录（排除特典），生成 OpenList 签名直链 strm、拷外挂字幕、替换旧版本",
@@ -301,7 +302,7 @@ function ReselectSheet({ visible, hash, onClose, onDone }: { visible: boolean; h
 }
 
 const LEVEL_COLOR = { info: colors.textSoft, notice: colors.primary, warn: colors.warning, error: colors.danger };
-const STEP_NAME: Record<string, string> = { submit: "提交", offline: "115", buffer: "缓冲", strm: "strm", subs: "字幕", emby: "Emby", manual: "手动" };
+const STEP_NAME: Record<string, string> = { select: "选片", submit: "提交", offline: "115", buffer: "缓冲", strm: "strm", subs: "字幕", emby: "Emby", manual: "手动" };
 
 // Total time and the slowest step, so a stuck task is obvious at a glance.
 function Summary({ steps, now }: { steps: Step[]; now: number }) {
@@ -310,7 +311,7 @@ function Summary({ steps, now }: { steps: Step[]; now: number }) {
   const end = fin?.state === "done" ? fin.end : null;
   if (!first) return null;
   const total = (end ?? now / 1000) - first;
-  const spans = steps.slice(1, 4).map((s) => ({ s, d: s.start ? (s.end ?? (s.state === "active" ? now / 1000 : NaN)) - s.start : NaN })).filter((x) => Number.isFinite(x.d));
+  const spans = steps.filter((s) => ["download", "strm", "scrape"].includes(s.key)).map((s) => ({ s, d: s.start ? (s.end ?? (s.state === "active" ? now / 1000 : NaN)) - s.start : NaN })).filter((x) => Number.isFinite(x.d));
   const slow = spans.sort((a, b) => b.d - a.d)[0];
   return (
     <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
@@ -343,7 +344,7 @@ function StepRow({ s, last, now, open, events, onPress, hint }: { s: Step; last:
   const icon = { done: "checkmark-circle", active: "ellipse", pending: "ellipse-outline", error: "close-circle", skipped: "remove-circle-outline" }[s.state] as keyof typeof Ionicons.glyphMap;
   const span = s.start ? (s.end ?? (s.state === "active" ? now / 1000 : null)) : null;
   const d = s.start && span ? span - s.start : null;
-  const instant = s.key === "submit" || s.key === "finish";
+  const instant = s.key === "select" || s.key === "submit" || s.key === "finish";
   const time = s.start ? (instant ? clock(s.start, now) : `${clock(s.start, now)}${s.end ? ` → ${clock(s.end, now)}` : " 起"}`) : "";
   return (
     <Animated.View layout={LinearTransition.duration(220)}>

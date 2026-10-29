@@ -12,6 +12,7 @@ import { Chip, CopyText, ChipRow, ErrorBox, IconButton, Loading, PillButton, con
 import { api } from "@/lib/api";
 import { backdropOf, embyApi, embyImage, landscapeOf, posterOf, runtime, seconds, techBadges, warmPlayback, type Item } from "@/lib/emby";
 import { deleteFromLibrary } from "@/lib/libraryDelete";
+import { openPeek } from "@/lib/peek";
 import { load, useQuery } from "@/lib/query";
 import { colors, radius } from "@/lib/theme";
 import { track } from "@/lib/track";
@@ -240,10 +241,12 @@ function IconCircle({ name, label, onPress, active, busy }: { name: keyof typeof
 }
 
 function EpisodeRow({ e, onPlay, onInfo }: { e: Item; onPlay: () => void; onInfo: () => void }) {
+  // Long-press: the same 更多 sheet as posters (cast, played, favourite, feedback…).
+  const more = () => { tap(); openPeek(itemCard(e, () => onPlay(), true)); };
   const pos = seconds(e.UserData?.PlaybackPositionTicks);
   const total = seconds(e.RunTimeTicks);
   return (
-    <Pressable onPress={() => { tap(); onPlay(); }} style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}>
+    <Pressable onPress={() => { tap(); onPlay(); }} onLongPress={more} delayLongPress={350} style={({ pressed }) => ({ opacity: pressed ? 0.85 : 1 })}>
       <View style={{ flexDirection: "row", gap: 12 }}>
         <View style={{ borderRadius: 10, overflow: "hidden" }}>
           <Img source={landscapeOf(e, 480)} style={{ width: 150, height: 84 }} icon="tv-outline" />
