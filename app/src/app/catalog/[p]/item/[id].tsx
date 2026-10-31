@@ -1,5 +1,6 @@
 // One work from a catalog: artwork, rating, facts, tags and people (each opens the filtered list),
 // the other parts of the series, online stream sources and the way to search resources for ingest.
+import { useState } from "react";
 import { Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -13,6 +14,9 @@ import { useQuery } from "@/lib/query";
 import { colors, radius } from "@/lib/theme";
 import { track } from "@/lib/track";
 
+// Long tag lists (Jable, hanime) fold after this many; a chip opens the rest.
+const TAGS_FOLDED = 8;
+
 export default function CatalogItemScreen() {
   const { p, id } = useLocalSearchParams<{ p: string; id: string }>();
   const router = useRouter();
@@ -23,6 +27,7 @@ export default function CatalogItemScreen() {
   const providers = useQuery("catalog:providers", catalogApi.providers, { staleMs: 60 * 60_000 });
   const tagFilter = !!providers.data?.providers.find((x) => x.id === p)?.tagFilter;
   const it = q.data?.item;
+  const [tagsOpen, setTagsOpen] = useState(false);
   const cover = useCover(img(it?.poster)?.uri, it?.posterCrop === "right", it?.posterAspect);
   const coverW = cover.aspect && cover.aspect > 1 ? 150 : 104;
   const kind = q.data?.kind;
@@ -105,7 +110,10 @@ export default function CatalogItemScreen() {
 
             {it.tags.length ? (
               <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 14 }}>
-                {it.tags.map((t) => <Chip key={t} label={t} onPress={tagFilter ? () => list(t, { tag: t }) : undefined} />)}
+                {(tagsOpen ? it.tags : it.tags.slice(0, TAGS_FOLDED)).map((t) => <Chip key={t} label={t} onPress={tagFilter ? () => list(t, { tag: t }) : undefined} />)}
+                {it.tags.length > TAGS_FOLDED ? (
+                  <Chip icon={tagsOpen ? "chevron-up" : "chevron-down"} label={tagsOpen ? "收起" : `展开 +${it.tags.length - TAGS_FOLDED}`} onPress={() => setTagsOpen((o) => !o)} />
+                ) : null}
               </View>
             ) : null}
 

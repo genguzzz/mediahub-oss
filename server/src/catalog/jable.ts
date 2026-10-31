@@ -41,6 +41,10 @@ function page(html: string, n: number, size = 24): Page<CatalogItem> {
   return { items, total: 0, page: n, hasMore: raw.length >= size };
 }
 
+// Tag name → its page ("/tags/<slug>/" or "/categories/<slug>/"), learnt from the detail pages that show the
+// tag, so a tag tapped on a detail lists that tag's works.
+const tagPages = new Map<string, string>();
+
 const HOT: Record<string, string> = { week: "video_viewed_week", today: "video_viewed_today", month: "video_viewed_month", all: "video_viewed" };
 const PERSON_SORT: Record<string, string> = { released: "post_date", views: "video_viewed", favs: "most_favourited" };
 
@@ -48,7 +52,11 @@ async function list(q: ListQuery): Promise<Page<CatalogItem>> {
   let url: string;
   if (q.person) url = block(`/models/${encodeURIComponent(q.person)}/`, "list_videos_common_videos_list", { sort_by: PERSON_SORT[q.sort] ?? "post_date", from: q.page });
   else if (q.q) url = block(`/search/${encodeURIComponent(q.q)}/`, "list_videos_videos_list_search_result", { q: q.q, sort_by: "post_date_and_popularity", from_videos: q.page, from: q.page });
-  else if (q.sort === "latest") url = block("/latest-updates/", "list_videos_latest_videos_list", { sort_by: "post_date", from: q.page });
+  else if (q.tag) {
+    const page = tagPages.get(q.tag);
+    if (!page) throw Object.assign(new Error("先打开带这个标签的作品，再点标签"), { statusCode: 404 });
+    url = block(page, "list_videos_common_videos_list", { sort_by: q.sort in HOT ? HOT[q.sort] : "post_date", from: q.page });
+  } else if (q.sort === "latest") url = block("/latest-updates/", "list_videos_latest_videos_list", { sort_by: "post_date", from: q.page });
   else if (q.sort === "uncensored" || q.sort === "uncensored_hot") url = block("/categories/uncensored/", "list_videos_common_videos_list", { sort_by: q.sort === "uncensored" ? "post_date" : HOT.month, from: q.page });
   else url = block("/hot/", "list_videos_common_videos_list", { sort_by: HOT[q.sort] ?? HOT.week, from: q.page });
   return page(await flare(url, q.sort === "latest" || q.sort === "today" ? 20 * 60_000 : 60 * 60_000), q.page);
@@ -67,7 +75,11 @@ async function video(slug: string, ttlMs = 15 * 60_000): Promise<VideoPage | nul
     title: m ? full.slice(m[0].length) : full, code: (m?.[1] ?? slug.replace(/-c$/, "")).toUpperCase(), cover: og("image") || null,
     hls: /hlsUrl\s*=\s*'([^']+)'/.exec(html)?.[1] ?? null,
     people: [...html.matchAll(/<a class="model" href="https:\/\/jable\.tv\/models\/([^/"]+)\/">[\s\S]*?(?:data-original-title|title)="([^"]+)"/g)].map((x) => ({ id: x[1], name: decode(x[2]) })),
-    tags: [...html.matchAll(/href="https:\/\/jable\.tv\/(?:tags|categories)\/[^/"]+\/"[^>]*>([^<]+)</g)].map((x) => decode(x[1]).trim()).filter(Boolean),
+    tags: [...html.matchAll(/href="https:\/\/jable\.tv\/(tags|categories)\/([^/"]+)\/"[^>]*>([^<]+)</g)].map((x) => {
+      const name = decode(x[3]).trim();
+      if (name) tagPages.set(name, `/${x[1]}/${x[2]}/`);
+      return name;
+    }).filter(Boolean),
     views, note: og("description"),
   };
 }
@@ -94,7 +106,7 @@ export const jable: CatalogProvider = {
   sorts: [{ id: "week", label: "本周热门" }, { id: "today", label: "今日热门" }, { id: "month", label: "本月热门" }, { id: "all", label: "总榜" }, { id: "latest", label: "最新上架" }, { id: "uncensored", label: "无码最新" }, { id: "uncensored_hot", label: "无码热门" }],
   personSorts: [{ id: "released", label: "最新" }, { id: "views", label: "播放" }, { id: "favs", label: "收藏" }],
   personIndexSorts: [{ id: "hot", label: "人气" }, { id: "count", label: "作品数" }, { id: "recent", label: "最近更新" }, { id: "name", label: "名字" }],
-  tagFilter: false,
+  tagFilter: true,          // tags from detail pages (their pages are learnt there)
 
   async home(): Promise<HomeRow[]> {
     const rows = [["week", "本周热门"], ["today", "今日热门"], ["latest", "最新上架"], ["uncensored", "无码最新"], ["month", "本月热门"]] as const;
