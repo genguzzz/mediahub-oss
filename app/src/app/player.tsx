@@ -101,7 +101,9 @@ export default function PlayerScreen() {
   const panMode = useRef<null | "seek" | "brightness" | "volume" | "dismiss">(null);
   // Swipe down in the middle of the picture drags the player away and closes it (YouTube-style).
   const drag = useSharedValue(0);
-  const dragStyle = useAnimatedStyle(() => ({ flex: 1, transform: [{ translateY: drag.value }], opacity: 1 - Math.min(drag.value / 700, 0.6) }));
+  // Only transform/opacity animate: layout (flex) set from an animated style lands after the first layout
+  // pass and the video was sized against the wrong frame (no longer edge to edge).
+  const dragStyle = useAnimatedStyle(() => (drag.value ? { transform: [{ translateY: drag.value }], opacity: 1 - Math.min(drag.value / 700, 0.6) } : { transform: [], opacity: 1 }));
   const panStart = useRef({ pos: 0, level: 0 });
   const it = item.data;
   // Effects below key on the item id, not the object: the item is refetched when the app comes back
@@ -486,7 +488,7 @@ export default function PlayerScreen() {
     <View style={{ flex: 1, backgroundColor: "#000" }} onLayout={(e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width)}>
       <StatusBar hidden />
       <GestureDetector gesture={surfaceGesture}>
-        <Animated.View style={dragStyle}>
+        <Animated.View style={[{ flex: 1 }, dragStyle]}>
           <PlayerView
             ref={ref}
             style={{ flex: 1 }}
