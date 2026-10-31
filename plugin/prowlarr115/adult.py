@@ -184,7 +184,9 @@ def score(q: str, names: List[str]) -> float:
                     r = min(r, 0.5)
                 elif rest[:1] in SEP or rest.strip().startswith("the animation"):
                     r = max(r, 0.9)
-        short, long_ = min(qn, n, key=len), max(qn, n, key=len)
+        # 等长时 min/max 会返回同一个字符串，「互相包含」恒成立 → 任何两个等长的名字都得 0.8
+        # （「大好きなママ」被认成「大小姐喜欢H」，2026-10-31）
+        short, long_ = (qn, n) if len(qn) <= len(n) else (n, qn)
         # 互相包含：短的至少占长的一半（只要求 3 个字时「Celaeno X Linnea」被认成过「el」）
         if len(short) >= max(3, len(long_) // 2) and short in long_ and not re.search(re.escape(short) + r"\d", long_):
             r = max(r, 0.8)

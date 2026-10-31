@@ -152,9 +152,12 @@ function append<T>(items: T[], add: T[], id: (t: T) => string): T[] {
   return [...items, ...add.filter((t) => !seen.has(id(t)) && !!seen.add(id(t)))];
 }
 
-// Paged list that grows in place: `more()` fetches only the next page and appends it, so the
-// items already on screen never disappear. A refresh (focus, pull) re-fetches page 1 and keeps the
-// pages loaded so far behind it, so coming back from a detail page doesn't shrink the list.
+// Paged list that grows in place: `more()` fetches only the next page and appends it. A refresh
+// (focus, pull, cold start from the disk cache) re-fetches every page loaded so far (in parallel, up to
+// REFRESH_PAGES) and rebuilds the list from them, so coming back doesn't shrink the list and items
+// deleted or renamed at the source drop out (keeping old pages behind page 1 used to show deleted
+// 里番 entries indefinitely).
+const REFRESH_PAGES = 10;
 export function usePaged<T>(
   key: string,
   fetchPage: (page: number) => Promise<PageResult<T>>,
@@ -172,11 +175,23 @@ export function usePaged<T>(
   const q = useQuery<Pages<T>>(
     key,
     async () => {
-      const { items: first, total } = unpack(await fetchRef.current(1));
       const cur = entries.get(key)?.data as Pages<T> | undefined;
-      const fresh = append([], first, idRef.current);
-      if (!cur || cur.page <= 1) return { items: fresh, page: 1, total, done: finished(first.length, first.length, 1, fresh.length, total) };
-      return { items: append(fresh, cur.items, idRef.current), page: cur.page, total: total ?? cur.total, done: cur.done };
+      const pages = Math.min(Math.max(cur?.page ?? 1, 1), REFRESH_PAGES);
+      const got = (await Promise.all(Array.from({ length: pages }, (_, i) => fetchRef.current(i + 1)))).map(unpack);
+      const total = got[0].total;
+      let items: T[] = [];
+      let done = false;
+      let page = 0;
+      for (const g of got) {
+        page++;
+        const before = items.length;
+        items = append(items, g.items, idRef.current);
+        if (finished(g.items.length, items.length - before, page, items.length, total ?? got[got.length - 1].total)) {
+          done = true;
+          break;
+        }
+      }
+      return { items, page, total, done };
     },
     { staleMs: opts.staleMs },
   );

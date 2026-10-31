@@ -1248,14 +1248,25 @@ class Hub:
                 bad = []
                 for it in items:
                     m = re.search(r"\[bangumiid=(\d+)\]", it.get("Path") or "")
-                    if m and (it.get("ProviderIds") or {}).get("Bangumi") != m.group(1):
+                    if not m:
+                        # 没有按 Bangumi 识别出来的目录（旧名、罗马音名）：以前直接跳过，问题看不到
+                        bad.append({"id": it["Id"], "title": it.get("Name"), "detail": "目录没有 bangumiid，未识别", "emby": it["Id"]})
+                    elif (it.get("ProviderIds") or {}).get("Bangumi") != m.group(1):
                         bad.append({"id": it["Id"], "title": it.get("Name"), "detail": f"目录 bangumiid={m.group(1)}，Emby 是 {(it.get('ProviderIds') or {}).get('Bangumi') or '无'}",
                                     "action": "identify"})
                 add("hentai_ids", "里番没按 Bangumi ID 识别", bad, hint="点「识别」按目录名里的 bangumiid 识别")
             except Exception as err:  # noqa: BLE001
                 errors.append(f"里番库：{err}")
         try:
-            miss = (p.emby.get("/Items", Recursive="true", IncludeItemTypes="Movie,Series", Fields="Path", Limit="2000") or {}).get("Items") or []
+            # 分页读完：以前只读前 2000 条，AV 库占满后其他库的缺图都看不到
+            miss, start = [], 0
+            while True:
+                page = (p.emby.get("/Items", Recursive="true", IncludeItemTypes="Movie,Series", Fields="Path",
+                                   StartIndex=str(start), Limit="2000") or {}).get("Items") or []
+                miss += page
+                start += len(page)
+                if len(page) < 2000 or start >= 40000:
+                    break
             add("no_poster", "缺海报", [{"id": it["Id"], "title": it.get("Name"), "detail": (it.get("Path") or "").split("/library/", 1)[-1].split("/")[0],
                                        "emby": it["Id"]} for it in miss if not (it.get("ImageTags") or {}).get("Primary")],
                 severity="info", hint="在 Emby 详情里「识别」或长按反馈")

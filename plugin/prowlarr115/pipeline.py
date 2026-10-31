@@ -52,6 +52,7 @@ def _season_of(meta: dict) -> int:
 
 def ep_of(name: str):
     """从文件名取 (季, 集)；季可能为 None。认不出返回 None。"""
+    name = name.replace("_", " ")          # 「[DB]Koyomimonogatari_-_03_(10bit…)」：下划线当空格
     for rx in (r"[Ss](\d{1,2})[Ee](\d{1,3})", r"\b[Ee][Pp]?(\d{1,3})\b", r"第\s*(\d{1,3})\s*[集话話]",
                r"\s-\s(\d{1,3})(?:v\d)?['’]?(?:\s|\[|\(|\.|$)", r"\[(\d{1,3})(?:v\d)?\]",
                r"\[(\d{1,3})(?:v\d)?\s*\(\d{1,3}\)\]",          # VCB「[12(24)]」：本季集号(绝对集号)
