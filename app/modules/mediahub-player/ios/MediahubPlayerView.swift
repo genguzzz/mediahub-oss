@@ -41,7 +41,14 @@ final class MediahubPlayerView: ExpoView {
   // Picture fit (VidHub-style): "fit" = aspect fit (whole picture, bars), "fill" = aspect fill (covers the
   // screen, crops the overflow), "stretch" = scale fill (fills both axes, distorts). Applied live.
   var fitMode: String = "fit" {
-    didSet { if fitMode != oldValue { engine?.videoGravity = gravity; renderSubtitles(at: lastSourceTime, force: true) } }
+    didSet {
+      guard fitMode != oldValue else { return }
+      engine?.videoGravity = gravity
+      // The PiP source is a second layer showing the same picture on top of the engine's: it must follow the
+      // mode too, or "fill" shows the fitted picture over the filled one (0.6.0).
+      pipSource.playerLayer.videoGravity = gravity
+      renderSubtitles(at: lastSourceTime, force: true)
+    }
   }
   private var gravity: AVLayerVideoGravity {
     switch fitMode {
@@ -89,7 +96,7 @@ final class MediahubPlayerView: ExpoView {
       addSubview(v)
     }
     pipSource.isUserInteractionEnabled = false
-    pipSource.playerLayer.videoGravity = .resizeAspect
+    pipSource.playerLayer.videoGravity = gravity
 
     subtitleLabel.numberOfLines = 0
     subtitleLabel.textAlignment = .center
