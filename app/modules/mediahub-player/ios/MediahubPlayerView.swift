@@ -183,6 +183,24 @@ final class MediahubPlayerView: ExpoView {
 
   // MARK: - Commands
 
+  /// Scrub preview (module 7): the frame at `seconds` from the engine's extractor (keyframe-accurate,
+  /// its own demux/decode context, cached per segment), written as a small JPEG; returns its file URL.
+  @MainActor
+  func thumbnail(_ seconds: Double) async -> String? {
+    guard let engine, let image = await engine.scrubThumbnail(atSeconds: seconds, maxWidth: 320) else { return nil }
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("scrub", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let url = dir.appendingPathComponent("\(itemId.isEmpty ? "v" : itemId)-\(Int(seconds)).jpg")
+    if FileManager.default.fileExists(atPath: url.path) { return url.absoluteString }
+    guard let data = UIImage(cgImage: image).jpegData(compressionQuality: 0.7) else { return nil }
+    do {
+      try data.write(to: url, options: .atomic)
+      return url.absoluteString
+    } catch {
+      return nil
+    }
+  }
+
   func seek(_ seconds: Double) {
     guard let engine else { return }
     endedSent = false

@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, View, type LayoutChangeEvent } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { Image } from "expo-image";
+import { GlassView, isLiquidGlassAvailable } from "expo-glass-effect";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -61,6 +63,10 @@ export default function PlayerScreen() {
   const subtitleScale = useSettings((s) => s.subtitleScale);
   const fitMode = useSettings((s) => s.fitMode ?? "fit");
   const [fitHud, setFitHud] = useState<string | null>(null);
+  // Scrub preview (module 7): one request at a time, always for the latest position (2-s steps).
+  const [thumb, setThumb] = useState<{ t: number; uri: string } | null>(null);
+  const thumbBusy = useRef(false);
+  const thumbWant = useRef<number | null>(null);
   const fitHudTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [itemId, setItemId] = useState(params.id);
   const [fromStart, setFromStart] = useState(params.resume === "0");
@@ -364,6 +370,7 @@ export default function PlayerScreen() {
     }
   };
 
+  const PREVIEW_W = 200;
   const FIT_LABEL: Record<"fit" | "fill" | "stretch", string> = { fit: "适应（完整画面）", fill: "填充（裁切边缘）", stretch: "拉伸（铺满）" };
   function setFit(m: "fit" | "fill" | "stretch") {
     tap();
@@ -374,6 +381,27 @@ export default function PlayerScreen() {
     fitHudTimer.current = setTimeout(() => setFitHud(null), 1400);
   }
   const cycleFit = () => { kick(); setFit(fitMode === "fit" ? "fill" : fitMode === "fill" ? "stretch" : "fit"); };
+
+  const requestThumb = (v: number) => {
+    if (!caps || caps.module < 7 || !ref.current?.thumbnail) return;
+    thumbWant.current = Math.round(v / 2) * 2;
+    if (thumbBusy.current) return;
+    const next = async () => {
+      const t = thumbWant.current;
+      if (t === null) return;
+      thumbBusy.current = true;
+      const uri = await ref.current?.thumbnail?.(t).catch(() => null);
+      thumbBusy.current = false;
+      if (uri) setThumb({ t, uri });
+      if (thumbWant.current !== t) void next();
+    };
+    void next();
+  };
+  const scrubTo = (v: number | null) => {
+    setScrub(v);
+    if (v === null) thumbWant.current = null;
+    else requestThumb(v);
+  };
 
   const close = () => {
     tap();
@@ -445,7 +473,7 @@ export default function PlayerScreen() {
         drag.set(Math.max(0, e.translationY));
       } else if (mode === "seek") {
         const span = Math.max(120, Math.min(dur, 600));
-        setScrub(Math.max(0, Math.min(dur, panStart.current.pos + (e.translationX / width) * span)));
+        scrubTo(Math.max(0, Math.min(dur, panStart.current.pos + (e.translationX / width) * span)));
         setControls(true);
       } else {
         const v = Math.max(0, Math.min(1, panStart.current.level - e.translationY / 300));
@@ -468,7 +496,7 @@ export default function PlayerScreen() {
         seekTo(scrub);
         kick();
       }
-      setScrub(null);
+      scrubTo(null);
       setGestureHud(null);
       panMode.current = null;
     });
@@ -621,7 +649,18 @@ export default function PlayerScreen() {
               </View>
             </Animated.View>
           ) : null}
-          {scrub !== null ? (
+          {scrub !== null && caps && caps.module >= 7 ? (
+            // Scrub preview above the progress bar, following the drag position.
+            <Animated.View entering={FadeIn.duration(100)} exiting={FadeOut.duration(160)} pointerEvents="none" style={{
+              position: "absolute", bottom: Math.max(insets.bottom, 10) + 78, alignItems: "center",
+              left: Math.max(8, Math.min(width - 8 - PREVIEW_W, L + (dur ? scrub / dur : 0) * (width - L - R) - PREVIEW_W / 2)),
+            }}>
+              <View style={{ width: PREVIEW_W, height: (PREVIEW_W * 9) / 16, borderRadius: 12, overflow: "hidden", backgroundColor: "rgba(0,0,0,0.6)", borderWidth: 1, borderColor: "rgba(255,255,255,0.25)" }}>
+                {thumb ? <Image source={{ uri: thumb.uri }} style={{ width: "100%", height: "100%" }} contentFit="cover" transition={80} /> : null}
+              </View>
+              <Text style={{ color: "#fff", fontSize: 15, fontWeight: "800", fontVariant: ["tabular-nums"], marginTop: 6, textShadowColor: "rgba(0,0,0,0.8)", textShadowRadius: 4 }}>{clock(scrub)}</Text>
+            </Animated.View>
+          ) : scrub !== null ? (
             <Animated.View entering={FadeIn.duration(120)} exiting={FadeOut.duration(180)} pointerEvents="none" style={{ position: "absolute", top: "38%", alignSelf: "center", alignItems: "center", backgroundColor: "rgba(0,0,0,0.6)", paddingHorizontal: 22, paddingVertical: 10, borderRadius: 16 }}>
               <Text style={{ color: "#fff", fontSize: 26, fontWeight: "800", fontVariant: ["tabular-nums"] }}>{clock(scrub)}</Text>
               <Text style={{ color: "#ccc", fontSize: 13, marginTop: 2 }}>{scrub >= pos ? "+" : "-"}{clock(Math.abs(scrub - pos))} / {clock(dur)}</Text>
@@ -642,7 +681,7 @@ export default function PlayerScreen() {
           <>
             {/* box-none + a pass-through title: a swipe down that starts on the bar still closes the player */}
             <Animated.View pointerEvents="box-none" style={[{ position: "absolute", top: TOP, left: L, right: R, flexDirection: "row", alignItems: "center", gap: 18 }, topStyle]}>
-              <Btn name="chevron-down" onPress={close} label="关闭" size={26} />
+              <GlassBtn name="chevron-down" onPress={close} label="关闭" icon={24} />
               <View style={{ flex: 1 }} pointerEvents="none">
                 <Text style={{ color: "#fff", fontSize: 17, fontWeight: "700" }} numberOfLines={1}>{title}</Text>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
@@ -651,18 +690,24 @@ export default function PlayerScreen() {
                   {curAudio?.isAtmos ? <Badge text="Atmos" /> : null}
                 </View>
               </View>
-              {caps && caps.module >= 6 ? <Btn name={fitMode === "fit" ? "scan-outline" : fitMode === "fill" ? "expand-outline" : "resize-outline"} label="画面比例" onPress={cycleFit} /> : null}
-              <Btn name="tv-outline" label="投屏" onPress={() => { kick(); setSheet("cast"); }} />
-              {has("airplay") ? <AirPlayButton tint="#ffffff" style={{ width: 28, height: 28 }} /> : null}
-              {caps?.pip ? <Btn name={pipActive ? "contract-outline" : "browsers-outline"} label="小窗" onPress={togglePiP} /> : null}
-              <Btn name="information-circle-outline" label="信息" onPress={() => { kick(); setSheet("info"); }} />
+              {caps && caps.module >= 6 ? <GlassBtn name={fitMode === "fit" ? "scan-outline" : fitMode === "fill" ? "expand-outline" : "resize-outline"} label="画面比例" onPress={cycleFit} /> : null}
+              <GlassBtn name="tv-outline" label="投屏" onPress={() => { kick(); setSheet("cast"); }} />
+              {has("airplay") ? (
+                <View style={{ width: 44, height: 44 }}>
+                  <GlassCircle size={44}><View /></GlassCircle>
+                  <AirPlayButton tint="#ffffff" style={{ position: "absolute", left: 10, top: 10, width: 24, height: 24 }} />
+                </View>
+              ) : null}
+              {caps?.pip ? <GlassBtn name={pipActive ? "contract-outline" : "browsers-outline"} label="小窗" onPress={togglePiP} /> : null}
+              <GlassBtn name="information-circle-outline" label="信息" onPress={() => { kick(); setSheet("info"); }} />
             </Animated.View>
 
             {!error && !planError && !ended && !pipActive ? (
               <Animated.View pointerEvents="box-none" style={[{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 64 }, centerStyle]}>
-                <Btn name="play-back" size={30} label="后退 10 秒" onPress={() => skip(-10)} />
+                <GlassBtn name="play-back" size={56} icon={26} label="后退 10 秒" onPress={() => skip(-10)} />
                 <Animated.View style={playStyle}>
-                  <Pressable accessibilityLabel={paused ? "播放" : "暂停"} onPress={() => { tap(); togglePause(); }} style={{ width: 76, height: 76, borderRadius: 38, backgroundColor: "rgba(0,0,0,0.4)", borderWidth: 1, borderColor: "rgba(255,255,255,0.18)", alignItems: "center", justifyContent: "center" }}>
+                  <Pressable accessibilityLabel={paused ? "播放" : "暂停"} onPress={() => { tap(); togglePause(); }} style={({ pressed }) => ({ width: 80, height: 80, alignItems: "center", justifyContent: "center", transform: [{ scale: pressed ? 0.93 : 1 }] })}>
+                    <View style={{ position: "absolute" }}><GlassCircle size={80}><View /></GlassCircle></View>
                     {busy && !paused ? (
                       <Animated.View key="busy" entering={FadeIn.duration(160)} exiting={FadeOut.duration(160)}>
                         <ActivityIndicator color="#fff" size="large" />
@@ -674,7 +719,7 @@ export default function PlayerScreen() {
                     )}
                   </Pressable>
                 </Animated.View>
-                <Btn name="play-forward" size={30} label="前进 10 秒" onPress={() => skip(10)} />
+                <GlassBtn name="play-forward" size={56} icon={26} label="前进 10 秒" onPress={() => skip(10)} />
               </Animated.View>
             ) : null}
 
@@ -685,7 +730,7 @@ export default function PlayerScreen() {
             <Animated.View style={[{ position: "absolute", bottom: Math.max(insets.bottom, 10), left: L, right: R }, bottomStyle]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
                 <Text style={{ color: "#fff", fontSize: 12, fontVariant: ["tabular-nums"], minWidth: 48 }}>{clock(shownPos)}</Text>
-                <SeekBar value={shownPos} duration={dur} buffered={buffered} onScrub={(v) => { kick(); setScrub(v); }} onSeek={(v) => { setScrub(null); seekTo(v); kick(); }} />
+                <SeekBar value={shownPos} duration={dur} buffered={buffered} onScrub={(v) => { kick(); scrubTo(v); }} onSeek={(v) => { scrubTo(null); seekTo(v); kick(); }} />
                 <Text style={{ color: "#fff", fontSize: 12, fontVariant: ["tabular-nums"], minWidth: 48, textAlign: "right" }}>-{clock(Math.max(0, dur - shownPos))}</Text>
               </View>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginTop: 6 }}>
@@ -826,18 +871,29 @@ function Ripple({ side, onDone }: { side: "left" | "right"; onDone: () => void }
   );
 }
 
-function Btn({ name, onPress, label, size = 24 }: { name: keyof typeof Ionicons.glyphMap; onPress: () => void; label: string; size?: number }) {
+// Player buttons on glass (VidHub-style): iOS 26 Liquid Glass where the system has it, a dark translucent
+// circle elsewhere. The press feedback is our own scale (the glass itself does not take touches).
+const GLASS = isLiquidGlassAvailable();
+function GlassCircle({ size, children }: { size: number; children: ReactNode }) {
+  const shape = { width: size, height: size, borderRadius: size / 2, alignItems: "center" as const, justifyContent: "center" as const };
+  return GLASS
+    ? <GlassView pointerEvents="none" glassEffectStyle="regular" tintColor="rgba(0,0,0,0.12)" style={shape}>{children}</GlassView>
+    : <View pointerEvents="none" style={[shape, { backgroundColor: "rgba(0,0,0,0.42)", borderWidth: 1, borderColor: "rgba(255,255,255,0.16)" }]}>{children}</View>;
+}
+
+function GlassBtn({ name, onPress, label, size = 44, icon = 22 }: { name: keyof typeof Ionicons.glyphMap; onPress: () => void; label: string; size?: number; icon?: number }) {
   return (
-    <Pressable hitSlop={12} accessibilityLabel={label} onPress={() => { tap(); onPress(); }} style={({ pressed }) => ({ opacity: pressed ? 0.55 : 1, transform: [{ scale: pressed ? 0.92 : 1 }] })}>
-      <Ionicons name={name} size={size} color="#fff" />
+    <Pressable hitSlop={8} accessibilityLabel={label} onPress={() => { tap(); onPress(); }} style={({ pressed }) => ({ transform: [{ scale: pressed ? 0.9 : 1 }] })}>
+      <GlassCircle size={size}><Ionicons name={name} size={icon} color="#fff" /></GlassCircle>
     </Pressable>
   );
 }
 
+
 function Round({ name, onPress, label }: { name: keyof typeof Ionicons.glyphMap; onPress: () => void; label: string }) {
   return (
-    <Pressable hitSlop={10} accessibilityLabel={label} onPress={() => { tap(); onPress(); }} style={({ pressed }) => ({ width: 42, height: 42, borderRadius: 21, backgroundColor: "rgba(0,0,0,0.45)", alignItems: "center", justifyContent: "center", opacity: pressed ? 0.7 : 1 })}>
-      <Ionicons name={name} size={19} color="#fff" />
+    <Pressable hitSlop={10} accessibilityLabel={label} onPress={() => { tap(); onPress(); }} style={({ pressed }) => ({ transform: [{ scale: pressed ? 0.9 : 1 }] })}>
+      <GlassCircle size={44}><Ionicons name={name} size={20} color="#fff" /></GlassCircle>
     </Pressable>
   );
 }

@@ -97,7 +97,7 @@ public class MediahubPlayerModule: Module {
     AsyncFunction("capabilities") { () -> [String: Any] in
       let d = MainActor.assumeIsolated { AetherEngine.displayCapabilities }
       return [
-        "module": 6,   // 6: fitMode prop
+        "module": 7,   // 6: fitMode prop; 7: thumbnail(seconds) scrub preview
         "ssdp": true,
         "prewarm": true,
         "startupEvents": true,
@@ -173,6 +173,9 @@ public class MediahubPlayerModule: Module {
         view.nowPlaying = np
       }
 
+      AsyncFunction("thumbnail") { (view: MediahubPlayerView, seconds: Double) async -> String? in
+        await view.thumbnail(seconds)
+      }
       AsyncFunction("seek") { (view: MediahubPlayerView, seconds: Double) in
         view.seek(seconds)
       }

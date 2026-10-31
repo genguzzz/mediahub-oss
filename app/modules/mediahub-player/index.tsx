@@ -45,6 +45,7 @@ export interface PlayerViewProps extends ViewProps {
 
 export interface PlayerHandle {
   seek(seconds: number): Promise<void>;
+  thumbnail?(seconds: number): Promise<string | null>; // module 7+: scrub preview frame (file URL)
   selectAudio(id: number): Promise<void>;
   selectSubtitle(id: number): Promise<void>;
   addSubtitle?(sub: ExternalSub): Promise<number>; // runtime 3+
