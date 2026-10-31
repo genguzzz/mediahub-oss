@@ -25,7 +25,8 @@ export default function CatalogItemScreen() {
   const q = useQuery(`catalog:${p}:item:${id}`, () => catalogApi.item(p, id), { staleMs: 5 * 60_000 });
   const play = usePlaySource();
   const providers = useQuery("catalog:providers", catalogApi.providers, { staleMs: 60 * 60_000 });
-  const tagFilter = !!providers.data?.providers.find((x) => x.id === p)?.tagFilter;
+  // The detail says whether its tags open lists (the providers list is cached for an hour).
+  const tagFilter = q.data?.tagFilter ?? !!providers.data?.providers.find((x) => x.id === p)?.tagFilter;
   const it = q.data?.item;
   const [tagsOpen, setTagsOpen] = useState(false);
   const cover = useCover(img(it?.poster)?.uri, it?.posterCrop === "right", it?.posterAspect);

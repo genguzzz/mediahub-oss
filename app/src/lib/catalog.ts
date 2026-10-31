@@ -64,7 +64,7 @@ export const catalogApi = {
     api<{ items: CatalogItem[]; total: number; hasMore: boolean }>(`/v1/catalog/${p}/list?${qs({ ...q, page, size })}`, { timeoutMs: 60_000 }),
   tags: (p: string) => api<{ tags: { name: string; count: number }[] }>(`/v1/catalog/${p}/tags`),
   persons: (p: string, sort: string, page = 1) => api<{ items: Person[]; hasMore: boolean }>(`/v1/catalog/${p}/persons?${qs({ sort, page })}`, { timeoutMs: 90_000 }),
-  item: (p: string, id: string) => api<{ item: CatalogDetail; kind: CatalogKind; library: LibraryHit | null; moreStreams: boolean }>(`/v1/catalog/${p}/item/${encodeURIComponent(id)}`, { timeoutMs: 60_000 }),
+  item: (p: string, id: string) => api<{ item: CatalogDetail; kind: CatalogKind; tagFilter?: boolean; library: LibraryHit | null; moreStreams: boolean }>(`/v1/catalog/${p}/item/${encodeURIComponent(id)}`, { timeoutMs: 60_000 }),
   streams: (p: string, id: string) => api<{ streams: StreamSource[]; errors: string[] }>(`/v1/catalog/${p}/item/${encodeURIComponent(id)}/streams`, { timeoutMs: 120_000 }),
 };
 

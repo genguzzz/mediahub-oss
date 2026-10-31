@@ -108,7 +108,7 @@ export function registerCatalog(app: FastifyInstance, embyGet: EmbyGet) {
     d.sourceName = d.sourceName ?? c.name;
     d.inLibrary = !!lib || d.inLibrary;
     return {
-      item: d, kind: c.kind,
+      item: d, kind: c.kind, tagFilter: c.tagFilter,
       library: lib ? { embyId: lib.embyId, folder: !!lib.embyFolder, note: lib.note } : null,
       streams: [] as StreamSource[], streamErrors: [] as string[],
       moreStreams: streams.some((x) => x.slow && x.kinds.includes(c.kind)),
