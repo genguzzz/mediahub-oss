@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { embyCatalog, embyStreams, hentaiLibrary, type EmbyGet } from "./emby.ts";
 import { hanime, titlesOf } from "./hanime.ts";
+import { hanime1, hanime1Enabled, hanime1Streams } from "./hanime1.ts";
 import { jable, jableStreams } from "./jable.ts";
 import { javdb } from "./javdb.ts";
 import { javdbLogin, javdbLoginStart, javdbLogout, javdbStatus } from "./javdbSession.ts";
@@ -28,9 +29,10 @@ export function registerCatalog(app: FastifyInstance, embyGet: EmbyGet) {
   });
 
   const embyAv = embyCatalog(embyGet);
-  const catalogs: CatalogProvider[] = [javdb, jable, embyAv, hanime];
+  // Hanime1 needs an exit that the site accepts (SOURCE_PROXY hanime1=…); without one it is not offered.
+  const catalogs: CatalogProvider[] = [javdb, jable, embyAv, hanime, ...(hanime1Enabled() ? [hanime1] : [])];
   const hentaiLib = hentaiLibrary(embyGet);
-  const streams: StreamProvider[] = [embyStreams(embyGet, hentaiLib, embyAv), jableStreams];
+  const streams: StreamProvider[] = [embyStreams(embyGet, hentaiLib, embyAv), jableStreams, ...(hanime1Enabled() ? [hanime1Streams] : [])];
 
   // Keep the web home rows warm: a cold Jable home is ~5 FlareSolverr page loads.
   // JavDB only (plain HTTP through the home proxy). Jable lists go through Cloudflare and load when opened:

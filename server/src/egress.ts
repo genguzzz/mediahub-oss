@@ -5,12 +5,12 @@
 //
 // Values: `direct`, `http(s)://…` (HTTP CONNECT proxy) or `socks5://…`. A source not listed goes direct,
 // except `javdb`, which falls back to INDEX_PROXY (the older single setting). Sources: javdb, jable,
-// hanime, tmdb, douban, bangumi. Jable pages go through FlareSolverr (FLARESOLVERR_URL), which uses its
-// own network; Emby, MoviePilot and the plugin are reached directly.
+// hanime, hanime1 (refuses datacenter addresses: offered only when an exit is set), tmdb, douban,
+// bangumi. Jable pages go through FlareSolverr (FLARESOLVERR_URL), which uses its own network; Emby, MoviePilot and the plugin are reached directly.
 import { Agent, type Dispatcher, ProxyAgent, Socks5ProxyAgent } from "undici";
 import { logger } from "./log.ts";
 
-export type Source = "javdb" | "jable" | "hanime" | "tmdb" | "douban" | "bangumi";
+export type Source = "javdb" | "jable" | "hanime" | "hanime1" | "tmdb" | "douban" | "bangumi";
 
 const log = logger("egress");
 
@@ -48,7 +48,7 @@ export function dispatcherFor(source: Source): Dispatcher {
 /** How each source goes out (for logs and /admin): "direct", "http proxy host:port", "socks5 host:port". */
 export function egressSummary(): Record<Source, string> {
   const out = {} as Record<Source, string>;
-  for (const s of ["javdb", "jable", "hanime", "tmdb", "douban", "bangumi"] as Source[]) {
+  for (const s of ["javdb", "jable", "hanime", "hanime1", "tmdb", "douban", "bangumi"] as Source[]) {
     const url = proxyOf(s);
     if (!url) {
       out[s] = s === "jable" ? "FlareSolverr (its own network) + direct IPv4 with its clearance" : "direct";

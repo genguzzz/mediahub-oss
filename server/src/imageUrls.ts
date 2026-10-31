@@ -3,7 +3,7 @@
 // (app/src/lib/api.ts img()). The rest go through the backend (/v1/img/ext): Jable's CDN sits behind
 // Cloudflare; hanime-cdn takes 1-2 s per image, so the backend pre-fills its cache (catalog/hanime.ts).
 // Emby images keep their own route (the plugin holds the Emby key).
-const DIRECT = /^(image\.tmdb\.org|lain\.bgm\.tv|[a-z0-9]+\.doubanio\.com|c\d\.jdbstatic\.com)$/;
+const DIRECT = /^(image\.tmdb\.org|lain\.bgm\.tv|[a-z0-9]+\.doubanio\.com|c\d\.jdbstatic\.com|vdownload\.hembed\.com)$/;
 const PROXIED = /^(assets-cdn\.jable\.tv|hanime-cdn\.com)$/;
 
 // Bangumi's "l" cover is the original scan (up to ~6000×8000, several MB); its resizer serves 400 px wide.
