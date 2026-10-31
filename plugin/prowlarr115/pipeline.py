@@ -45,6 +45,11 @@ def btih(link: str) -> str:
     return h.lower()
 
 
+def _season_of(meta: dict) -> int:
+    s = meta.get("season")
+    return 1 if s is None else int(s)
+
+
 def ep_of(name: str):
     """从文件名取 (季, 集)；季可能为 None。认不出返回 None。"""
     for rx in (r"[Ss](\d{1,2})[Ee](\d{1,3})", r"\b[Ee][Pp]?(\d{1,3})\b", r"第\s*(\d{1,3})\s*[集话話]",
@@ -524,18 +529,18 @@ class Pipeline:
                 se = (None, se[1])
                 if str(k) in starts:
                     se = (None, int(starts[str(k)]) - 1 + se[1])
-            season = se[0] if se[0] is not None else (dir_season or 1)
-            if (t_meta or {}).get("merged_season"):
+            season = se[0] if se[0] is not None else (1 if dir_season is None else dir_season)   # Season 0 = 特别篇
+            if (t_meta or {}).get("merged_season") is not None:
                 season = int(t_meta["merged_season"])      # 字幕组的「S3」在 TMDb 合并季里，目录名上的季号不算
             off = 0 if starts else int((t_meta or {}).get("ep_offset") or 0)
             if off and 0 < se[1] <= off:
                 se = (se[0], se[1] + off)          # TMDb 把多季合成一季：文件里是本季集号就加偏移，已是绝对集号的不动
-            n_season = int(meta.get("ep_count") or 0) if not meta.get("merged_season") else 0
+            n_season = int(meta.get("ep_count") or 0) if meta.get("merged_season") is None else 0
             abs_off = int(meta.get("abs_offset") or 0)
-            if abs_off and n_season and season == (meta.get("season") or 1) and se[1] > n_season \
+            if abs_off and n_season and season == _season_of(meta) and se[1] > n_season \
                     and 1 <= se[1] - abs_off <= n_season:
                 se = (se[0], se[1] - abs_off)      # 绝对集号（「第二季 [27]」）换成本季集号
-            if n_season and season == (meta.get("season") or 1) and se[1] > n_season + 2:
+            if n_season and season == _season_of(meta) and se[1] > n_season + 2:
                 # 集号远超 TMDb 本季集数：多半是别的编号体系（Crunchyroll 把鬼灭游郭篇算 S2 第 8-18 集），不入库
                 self.log(f"第 {se[1]} 集超出 TMDb 本季 {n_season} 集，不入库：{remote[-90:]}")
                 self._tl.zero.append(remote)

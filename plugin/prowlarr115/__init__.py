@@ -334,7 +334,7 @@ class Prowlarr115(_PluginBase):
     plugin_desc = ("未认证也能用：多关键词资源源 + 下载直接 115 离线（失败转 NAS 缓冲）+ strm 入 Emby + 刮削确认通知 + 批量入库 API；"
                    "AV（番号 → 115 → MDC 刮削）和里番（追更目录 + sukebei RSS → 115 → Bangumi）也在这里。")
     plugin_icon = "https://raw.githubusercontent.com/Prowlarr/Prowlarr/develop/Logo/256.png"
-    plugin_version = "2.32.5"
+    plugin_version = "2.32.6"
     plugin_label = "资源搜索,下载器"
     plugin_author = "mediahub"
     author_url = ""
@@ -1382,7 +1382,7 @@ class Prowlarr115(_PluginBase):
             "short_title": re.split(r"\s*[～~:：\-－—]\s*", media.title or "")[0],
             "year": media.year, "tmdbid": media.tmdb_id, "type": media.type.value, "season": season_no,
             "season_year": (getattr(media, "season_years", None) or {}).get(season_no) if season_no else media.year,
-            "ep_count": len((getattr(media, "seasons", None) or {}).get(season_no or 1) or []) or None,
+            "ep_count": len((getattr(media, "seasons", None) or {}).get(1 if season_no is None else season_no) or []) or None,
             **self._abs_meta(media, season_no, merged),
             **ov, **(self._overrides.get((str(media.tmdb_id), season_no)) or {}),
             **ho}
