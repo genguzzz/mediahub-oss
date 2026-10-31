@@ -55,6 +55,8 @@ export interface StreamSource { provider: string; label: string; note?: string; 
 
 export const PROVIDER_FOR: Record<CatalogKind, string> = { av: "javdb", hentai: "hanime" };
 // AV has several indexes; 发现 → AV shows a switch between them.
+// 里番 likewise when the server offers Hanime1 (it needs an exit the site accepts; see server egress).
+export const HENTAI_PROVIDERS = [{ value: "hanime", label: "hanime" }, { value: "hanime1", label: "Hanime1 中字" }];
 export const AV_PROVIDERS = [{ value: "javdb", label: "JavDB 排行" }, { value: "jable", label: "Jable 热门" }, { value: "emby-av", label: "我的库" }];
 
 export const catalogApi = {

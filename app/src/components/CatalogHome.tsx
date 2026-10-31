@@ -7,14 +7,15 @@ import { useRouter } from "expo-router";
 import { Img, PosterTile, Row } from "./media";
 import { Chip, ChipRow, ErrorBox, Loading, Pull, Segmented, TAB_BAR_SPACE, styles, tap } from "./ui";
 import { img } from "@/lib/api";
-import { AV_PROVIDERS, catalogApi, catalogCard, PROVIDER_FOR, useOpenCatalog, type CatalogKind, type ListQuery, type Person } from "@/lib/catalog";
+import { AV_PROVIDERS, HENTAI_PROVIDERS, catalogApi, catalogCard, PROVIDER_FOR, useOpenCatalog, type CatalogKind, type ListQuery, type Person } from "@/lib/catalog";
 import { useQuery } from "@/lib/query";
 import { colors } from "@/lib/theme";
 import { track } from "@/lib/track";
 
 export function CatalogHome({ kind }: { kind: CatalogKind }) {
   const [avProvider, setAvProvider] = useState(PROVIDER_FOR.av);
-  const p = kind === "av" ? avProvider : PROVIDER_FOR[kind];
+  const [hProvider, setHProvider] = useState(PROVIDER_FOR.hentai);
+  const p = kind === "av" ? avProvider : hProvider;
   const router = useRouter();
   const open = useOpenCatalog(p);
   // landscape covers (Jable) get two tiles per screen width; portrait covers keep the narrow tile
@@ -31,6 +32,8 @@ export function CatalogHome({ kind }: { kind: CatalogKind }) {
     <ScrollView contentContainerStyle={{ paddingBottom: TAB_BAR_SPACE }} refreshControl={<Pull onRefresh={() => { void home.refresh(); void tags.refresh(); void persons.refresh(); }} />}>
       {kind === "av" ? (
         <Segmented value={avProvider} options={AV_PROVIDERS} onChange={(v) => { track("catalog_provider", { p: v }); setAvProvider(v); }} style={{ marginHorizontal: 16, marginTop: 12 }} />
+      ) : providers.data?.providers.some((x) => x.id === "hanime1") ? (
+        <Segmented value={hProvider} options={HENTAI_PROVIDERS} onChange={(v) => { track("catalog_provider", { p: v }); setHProvider(v); }} style={{ marginHorizontal: 16, marginTop: 12 }} />
       ) : null}
       {tags.data?.tags.length ? (
         <ChipRow style={{ marginTop: 14 }}>
