@@ -12,7 +12,13 @@ const SEV = { error: () => colors.danger, warn: () => colors.warning, info: () =
 // 健康检查：后端每 6 小时只读扫描一次（也可以立即检查），这里列出问题，处理由人决定。
 export default function HealthScreen() {
   const router = useRouter();
-  const q = useQuery("health", () => api<Health>("/v1/health"), { staleMs: 60_000 });
+  // The server re-checks stale findings when the page opens; poll until that finishes.
+  const [refreshing, setRefreshing] = useState(true);
+  const q = useQuery("health", async () => {
+    const r = await api<Health>("/v1/health");
+    setRefreshing(!r.ok || !!r.refreshing);
+    return r;
+  }, { staleMs: 5_000, interval: refreshing ? 8_000 : undefined });
   const [busy, setBusy] = useState<string | null>(null);
   const [now] = useState(() => Date.now());
   const h = q.data?.ok ? q.data : null;
@@ -51,7 +57,7 @@ export default function HealthScreen() {
       {q.loading && !q.data ? <Loading /> : null}
       <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60 }} refreshControl={<Pull onRefresh={q.refresh} />}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text style={[styles.faint, { flex: 1 }]}>{h ? `上次检查 ${ago(h.at, now)}；每 6 小时自动检查一次，只报告不处理` : "还没有检查结果"}</Text>
+          <Text style={[styles.faint, { flex: 1 }]}>{h ? (h.refreshing ? "正在重新检查…" : `上次检查 ${ago(h.at, now)}；每 6 小时和打开本页时检查，只报告不处理`) : "正在检查…"}</Text>
           <PillButton small variant="soft" icon="pulse-outline" label="立即检查" loading={busy === "run"} onPress={() => void run()} />
         </View>
         {h?.errors.length ? <ErrorBox text={`部分检查没完成：${h.errors.join("；").slice(0, 200)}`} /> : null}

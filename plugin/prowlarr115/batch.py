@@ -31,8 +31,8 @@ def _mtype(v: str):
 _SNAMES: Dict[int, tuple] = {}
 
 
-def season_names(tmdbid: Any) -> Tuple[Dict[int, List[str]], Dict[int, int]]:
-    """TMDb 每季的名字（中/英/日）和集数，缓存 6 小时。篇章制作品（物语系列、鬼灭）靠季名而不是季号区分发布。"""
+def season_names(tmdbid: Any) -> Tuple[Dict[int, str], Dict[int, int]]:
+    """TMDb 每季的名字和集数，缓存 6 小时。"""
     key = int(tmdbid or 0)
     hit = _SNAMES.get(key)
     if hit and time.time() - hit[0] < 6 * 3600:
@@ -48,28 +48,7 @@ def season_names(tmdbid: Any) -> Tuple[Dict[int, List[str]], Dict[int, int]]:
                 counts[int(n)] = int(getattr(x, "episode_count", 0) or 0)
     except Exception:  # noqa: BLE001
         pass
-    for lang in ("en-US", "ja-JP"):
-        try:
-            from app.modules.themoviedb.tmdbapi import TmdbApi
-            d = TmdbApi(language=lang).tv.details(key)
-            for x in (d.get("seasons") if isinstance(d, dict) else getattr(d, "seasons", None)) or []:
-                x = x if isinstance(x, dict) else getattr(x, "__dict__", {})
-                if x.get("season_number") is not None and x.get("name"):
-                    names.setdefault(int(x["season_number"]), []).append(x["name"])
-        except Exception:  # noqa: BLE001
-            pass
-        # 特别篇的篇章：每集标题开头那段（「Tsukimonogatari: Yotsugi Doll」->「Tsukimonogatari」），
-        # 标题写了这些的发布属于第 0 季，不能算进正片季（物语系列的憑物语曾被当成化物语）
-        try:
-            from app.modules.themoviedb.tmdbapi import TmdbApi
-            sd = TmdbApi(language=lang).get_tv_season_detail(key, 0) or {}
-            for ep in (sd.get("episodes") if isinstance(sd, dict) else []) or []:
-                head = re.split(r"\s*[:：,，(（\-–]\s*|\s+Part\s|\s+第", (ep.get("name") or "").strip())[0]
-                if head and not re.fullmatch(r"(?i)(episode|第)?\s*\d+\s*(话|話|集)?", head):
-                    names.setdefault(0, []).append(head)
-        except Exception:  # noqa: BLE001
-            pass
-    names = {k: list(dict.fromkeys(v)) for k, v in names.items()}
+    names = {k: (v[0] if v else "") for k, v in names.items()}
     _SNAMES[key] = (time.time(), names, counts)
     return names, counts
 

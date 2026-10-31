@@ -240,12 +240,19 @@ void readFile(path.join(config.dataDir, "stats", "health.json"), "utf8").then((t
 setTimeout(() => void runHealth(), 60_000);
 setInterval(() => void runHealth(), HEALTH_EVERY).unref();
 
-app.get("/v1/health", async () => health ?? { ok: false, error: "还没有检查结果" });
+// Opening the page refreshes stale findings (≥ 10 min old) in the background, so fixed problems disappear without
+// waiting for the 6-hour scan; the answer comes from the cache at once.
+app.get("/v1/health", async () => {
+  const stale = !health || Date.now() - health.at * 1000 >= 10 * 60_000;
+  if (stale) void runHealth();
+  return health ? { ...health, refreshing: stale || !!healthRunning } : { ok: false, error: "正在检查，稍后刷新" };
+});
 app.post("/v1/health/run", async () => (await runHealth()) ?? { ok: false, error: "检查失败" });
 app.post("/v1/health/fix", async (req) => {
   const b = z.object({ key: z.string().max(40), id: z.string().max(80) }).parse(req.body);
   const r = await plug<{ ok: boolean }>("POST", "/hub/health/fix", { body: b, timeoutMs: 60_000 });
   req.log.info({ ...b, ok: r.ok }, "health fix");
+  if (r.ok) void runHealth();
   return r;
 });
 

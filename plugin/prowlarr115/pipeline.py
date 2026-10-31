@@ -649,11 +649,14 @@ class Pipeline:
         want = self.emby_path(f"{self.lib_ol}/{lib}/{folder}")
         title = re.sub(r"\s*(\(\d{4}\))?\s*(\[tmdbid=\d+\])?$", "", folder)
         # 目录名带 [tmdbid=N] 就按 ID 查（Emby 刮削后的名字常和目录名不同：「转生成为魔剑了」→「转生成为魔剑」，按名字搜会漏）
-        fid = (re.search(r"\[tmdbid=(\d+)\]", folder) or [None, None])[1]
+        fid = (re.search(r"\[tmdbid=(\d+)\]", folder) or [None, None])[1] or (t.get("meta") or {}).get("tmdbid")
         q = {"AnyProviderIdEquals": f"Tmdb.{fid}"} if fid else {"SearchTerm": title}
         d = self.emby.get("/Items", Recursive="true", IncludeItemTypes="Movie" if lib == "电影" else "Series",
                           Fields="Path,ProviderIds,ProductionYear", **q) or {}
         items = [i for i in d.get("Items") or [] if (i.get("Path") or "").startswith(want)]
+        if not items and fid and "AnyProviderIdEquals" in q:
+            # 按 ID 找到了但不在任务记的目录：作品目录后来改名/合并过（「青之箱 第二季 (2026)」并进「青之箱 (2024) [tmdbid=…]」）
+            items = [i for i in d.get("Items") or [] if str((i.get("ProviderIds") or {}).get("Tmdb")) == str(fid)]
         if not items and fid:
             # 按 ID 没找到这个目录：可能 Emby 认成了别的作品，按名字找到它，下面会报「可能认错」
             d = self.emby.get("/Items", Recursive="true", IncludeItemTypes="Movie" if lib == "电影" else "Series",
@@ -730,6 +733,12 @@ class Pipeline:
                 if kind in ADULT_KINDS and self.adult:
                     self._tl.replaced, self._tl.zero, self._tl.linked, self._tl.kept, self._tl.nvid = 0, [], 0, 0, 0
                     made = self.adult.finish(kind, t, scope, h)
+                    if made is None:     # 里番没认出 Bangumi：不建库目录，等人指定作品（/hentai/relib）后再生成 strm
+                        if t.get("status") != "needs-id":
+                            t["status"], t["done"] = "needs-id", now()
+                            self.event(h, "strm", "没认出 Bangumi 条目，等待指定作品（健康检查 / mpctl relib）", "warn")
+                            self.notify("❓ 里番待识别", f"{(t.get('meta') or {}).get('title') or t.get('name')}：Bangumi 没找到，请指定作品")
+                        return
                     self._tl.nvid = len(made)
                 else:
                     made = self.make_strms(t["dir"], t.get("meta"), scope)

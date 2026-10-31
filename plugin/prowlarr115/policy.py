@@ -317,64 +317,28 @@ def name_season(title: str, work_names: List[str]) -> Optional[int]:
     return None
 
 
-def arc_names(names: Dict[int, Any], work_names: Optional[List[str]] = None) -> Dict[int, List[str]]:
-    """每季能区分它的篇章名（多语言 TMDb 季名去掉作品名本身）：
-    物语系列 S5「Monogatari Series: Off & Monster Season」-> 「offmonsterseason」，S3「Monogatari Series Second Season」->
-    「secondseason」。去掉作品名后什么都不剩（上低音号 S1 叫「吹响吧！上低音号」）或只剩「第 2 季」这类通用写法的不算。"""
-    # 作品别名里常有篇章名本身（物语系列的别名有 Nisemonogatari、Bakemonogatari）：等于某季名字的别名不当作品名去掉
-    season_norms = {_norm(n) for ns in names.values() for n in ([ns] if isinstance(ns, str) else list(ns or []))}
-    works = sorted({_norm(w) for w in (work_names or []) if w and len(_norm(w)) >= 3 and _norm(w) not in season_norms},
-                   key=len, reverse=True)
-    out: Dict[int, List[str]] = {}
-    for s, ns in names.items():
-        for n in ([ns] if isinstance(ns, str) else list(ns or [])):
-            if not n or GENERIC_SEASON.match(n.strip()):
-                continue
-            a = _norm(n)
-            for w in works:
-                a = a.replace(w, "")
-            if len(a) >= 4 and not re.fullmatch(r"(season|series|part|第?\d+(季|期|部分)?|s\d+)+", a):
-                out.setdefault(int(s), []).append(a)
-    return out
-
-
-def arc_season(title: str, arcs: Dict[int, List[str]]) -> Optional[int]:
-    """标题里出现了哪一季的篇章名（只认唯一的一季）。"""
-    t = _norm(title)
-    best = {s: max(len(a) for a in al if a in t) for s, al in arcs.items() if any(a in t for a in al)}
-    if not best:
-        return None
-    # 最具体的篇章名为准（「Zoku Owarimonogatari」的「zokuowari」比第 4 季的「owari」长，归特别篇）；
-    # 一样长时归正片季（特别篇的集名常带正片篇章名：「Off & Monster Season」总集篇）
-    top = max(best.values())
-    hit = {s for s, n in best.items() if n == top}
-    if len(hit) > 1:
-        hit.discard(0)
-    return hit.pop() if len(hit) == 1 else None
-
-
-def season_ok(c: Dict[str, Any], season: Optional[int], names: Dict[int, Any], counts: Dict[int, int],
+def season_ok(c: Dict[str, Any], season: Optional[int], names: Dict[int, str], counts: Dict[int, int],
               work_names: Optional[List[str]] = None) -> Tuple[Optional[int], str]:
     """判断候选是否属于目标季：返回 (加分, 理由)；None = 排除。
-    篇章名（多语言 TMDb 季名，如「游郭篇」「Off & Monster Season」）优先；其次标题里的季号；再看集号是否超出本季集数。"""
+    篇章名（TMDb 季名，如「游郭篇」）优先；其次标题里的季号；再看集号是否超出本季集数。"""
     if season is None:
         return 0, ""
-    arcs = arc_names(names, work_names)
-    at = arc_season(c["title"], arcs)
-    label = lambda s: (names[s] if isinstance(names.get(s), str) else (list(names.get(s) or [""]) or [""])[0])  # noqa: E731
-    if at == season:
-        return 15, f"篇章「{label(season)}」+15"
-    if at is not None:
-        return None, f"属于第{at}季「{label(at)}」"
+    t = _norm(c["title"])
+    works = [_norm(w) for w in (work_names or []) if w]
+    # 季名就是剧名本身（上低音号 S1 叫「吹响吧！上低音号」）不算篇章名，否则「上低音号2」也会被当成第 1 季
+    arcs = {s: _norm(n) for s, n in names.items() if n and not GENERIC_SEASON.match(n.strip()) and len(_norm(n)) >= 2
+            and not any(_norm(n) in w or w in _norm(n) for w in works if w)}
+    own = arcs.get(season)
+    others = [s for s, a in arcs.items() if s != season and a and a in t]
+    if own and own in t:
+        return 15, f"篇章「{names[season]}」+15"
+    if others:
+        return None, f"属于第{others[0]}季「{names[others[0]]}」"
     ts = title_season(c["title"])
     if ts is None:
         ts = name_season(c["title"], work_names or [])
     if ts is not None and ts != season:
         return None, f"标题写的是第{ts}季"
-    eps0 = c.get("episodes") or []
-    if season in arcs and ts is None and (not eps0 or len(eps0) >= 6):
-        # 篇章制作品：本季有篇章名，合集却既没写篇章名也没写季号——多半是全系列合集（「Monogatari Series [BD]」）
-        return None, "合集没写篇章名，可能是全系列"
     eps = c.get("episodes") or []
     if eps and counts.get(season) and max(eps) > counts[season] + 1 and min(eps) > counts[season]:
         prev = sum(n for k, n in counts.items() if 0 < k < season)

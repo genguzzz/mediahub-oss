@@ -12,6 +12,7 @@ AV：番号或磁力 → 115 离线到 /115/Emby/下载 → 在 媒体库/AV/dow
 由插件服务 Prowlarr115Adult 每 5 分钟推进；RSS 每 30 分钟，catalog 全量搜索每天一次（只搜没齐的系列）。
 """
 import difflib
+import json
 import re
 import threading
 import time
@@ -136,7 +137,16 @@ def series_names(raw: str) -> Tuple[str, List[str]]:
     「[AmateurSubs] Kyonyuu ga … Tsuma 01-02 (English subs) [DVDRip 576p] (巨乳が2人…妻 )」
     -> ('Kyonyuu ga … Tsuma', ['巨乳が2人…妻'])：去掉组名、规格、集数范围、字幕说明，括号里的日文名单独拿出来。"""
     t = (raw or "").strip()
-    alts = [x.strip() for x in re.findall(r"[(（]([^()（）]{2,})(?:[)）]|$)", t) if _KANA_KANJI.search(x)]   # 截断的「(NTR騎士」也算
+    # 「罗马音 (日文名…)」：从第一个日文字符所在的括号起，后面整段是日文名（里面还可能套括号：「あの女（ひと）と」）
+    m = re.search(r"[(（]\s*(?=[^()（）]*[\u3040-\u30ff\u3400-\u9fff])", t)
+    if m and _KANA_KANJI.search(t[m.end():]) and not _KANA_KANJI.search(t[:m.start()]):
+        jp = re.sub(r"\s*\[[^\]]*\]\s*", " ", t[m.end():])
+        jp = re.sub(r"[)）\s]+$", "", jp).strip()
+        t = t[:m.start()].strip()
+        alts = [jp] if jp else []
+    else:
+        alts = []
+    alts += [x.strip() for x in re.findall(r"[(（]([^()（）]{2,})(?:[)）]|$)", t) if _KANA_KANJI.search(x)]   # 截断的「(NTR騎士」也算
     alts += [re.sub(r"\s*(上巻|下巻|中巻|前編|後編|中編|前篇|後篇)\s*$", "", a).strip() for a in alts]
     t = re.sub(r"^\s*\[[^\]]*\]\s*", "", t)
     t = re.sub(r"\s*[\[(（][^\])）]*[\])）]", " ", t)                       # 剩下的 [...] (...) 全去掉
@@ -144,6 +154,7 @@ def series_names(raw: str) -> Tuple[str, List[str]]:
     t = re.sub(r"\s*[(（][^()（）]*$", "", t)                                          # 截断的括号
     t = re.sub(r"\s+(上巻|下巻|中巻|前編|後編|中編|前篇|後篇)$", "", t.strip())             # 分卷词：查 Bangumi 用系列名
     t = re.sub(r"\s+[-–]?\s*(?:#|ep?\.?\s*)?\d{1,3}(?:\s*[-~]\s*\d{1,3})?\s*$", "", t.strip())   # 末尾的「- 08」「01-02」
+    t = re.sub(r"\s*第\s*[\d〇一二三四五六七八九十]+\s*[話话巻].*$", "", t)       # 「君想ふ恋 第2話ピッタリ…」
     t = re.sub(r"\s+", " ", t).strip(" -_")
     return (t or (raw or "").strip()), list(dict.fromkeys(a for a in alts if a))
 
@@ -173,8 +184,9 @@ def score(q: str, names: List[str]) -> float:
                     r = min(r, 0.5)
                 elif rest[:1] in SEP or rest.strip().startswith("the animation"):
                     r = max(r, 0.9)
-        short = min(qn, n, key=len)
-        if len(short) >= 3 and (qn in n or n in qn) and not re.search(re.escape(short) + r"\d", max(qn, n, key=len)):
+        short, long_ = min(qn, n, key=len), max(qn, n, key=len)
+        # 互相包含：短的至少占长的一半（只要求 3 个字时「Celaeno X Linnea」被认成过「el」）
+        if len(short) >= max(3, len(long_) // 2) and short in long_ and not re.search(re.escape(short) + r"\d", long_):
             r = max(r, 0.8)
         best = max(best, r)
     return best
@@ -216,6 +228,11 @@ class Adult:
         self.bgm_token = str(conf.get("bangumi_token") or "")
         self._state_lock = threading.RLock()
         self._h_lib_id: Optional[str] = None
+        self._hanime: tuple = (0.0, [])       # (拉取时间, [(规范化系列名, 日文原名)])
+        self._anidb: tuple = (0.0, {})        # (拉取时间, {规范化标题: 日文官方名})
+        self.flaresolverr = str(conf.get("flaresolverr_url") or "http://flaresolverr:8191").rstrip("/")
+        # AniDB 挡数据中心 IP：经插件访问 115 用的 NAS 家宽 SOCKS 隧道出去
+        self.anidb_proxy = str(conf.get("proxy_115") or "").replace("socks5h://", "socks5://")
         self.kick: Optional[Callable[[], None]] = None   # 插件注入：流水线快速跟踪
         self.mdc_kick: Optional[Callable[[], None]] = None   # 插件注入：MDC 快速跟踪（收件箱里有新 strm 时）
 
@@ -256,7 +273,7 @@ class Adult:
             self.kick()                        # 和影视一样：提交后 15 分钟内每 15 秒推进一次流水线（115 秒传几秒就完成）
         return ok, err
 
-    def finish(self, kind: str, t: dict, scope: Optional[str], h: str) -> List[str]:
+    def finish(self, kind: str, t: dict, scope: Optional[str], h: str) -> Optional[List[str]]:
         """流水线回调：本任务在 115 上的文件已就绪。AV → 写进 MDC 收件箱；里番 → 按 Bangumi 目录生成 strm。
         返回生成的 strm（OpenList 路径）；空 = 还没看到视频（Pipeline 会再等几轮，最后判 no-video）。"""
         d = t["dir"]
@@ -315,6 +332,8 @@ class Adult:
             key = next((k for k in downloaded if norm(k) == norm(series)), series)
             entry = self.new_entry(downloaded, key, series)
             lib = self.ensure_lib(entry, series)
+            if not entry.get("bgm"):
+                return None      # 不用发布标题建库目录（Emby 只能按名字乱认）：任务进待识别
             season = int(entry.get("season") or 1)
             have = self.existing_eps(lib)
             title = re.sub(r"\s*\[bangumiid=\d+\]$", "", lib).rsplit(" (", 1)[0]
@@ -694,9 +713,110 @@ class Adult:
             self._h_lib_id = next(f["ItemId"] for f in folders if f.get("Name") == "里番")
         return self._h_lib_id
 
+    ANIDB_TITLES = "https://anidb.net/api/anime-titles.xml.gz"
+
+    def _anidb_index(self) -> Dict[str, str]:
+        """AniDB 每日标题文件（官方提供，每天最多下载一次）-> {罗马音/英文/别名: 日文官方名}，存插件数据目录。
+        AniDB 前面是 Cloudflare：经 FlareSolverr（同一个家宽出口）拿浏览器 UA 和 cookie 再下载。"""
+        import gzip
+        from pathlib import Path
+        at, idx = self._anidb
+        if idx and time.time() - at < 86400:
+            return idx
+        f = Path("/config/plugins/Prowlarr115/anidb-titles.json")
+        try:
+            if f.exists() and time.time() - f.stat().st_mtime < 86400:
+                idx = json.loads(f.read_text())
+                self._anidb = (f.stat().st_mtime, idx)
+                return idx
+        except Exception:  # noqa: BLE001
+            pass
+        proxies = {"http": self.anidb_proxy, "https": self.anidb_proxy} if self.anidb_proxy else None
+        try:
+            body = {"cmd": "request.get", "url": "https://anidb.net/", "maxTimeout": 120000}
+            if self.anidb_proxy:
+                body["proxy"] = {"url": self.anidb_proxy}
+            sol = ((RequestUtils(content_type="application/json", timeout=150).post_res(f"{self.flaresolverr}/v1", json=body)
+                    .json() or {}).get("solution") or {})
+            headers = {"User-Agent": sol.get("userAgent") or UA,
+                       "Cookie": "; ".join(f"{c['name']}={c['value']}" for c in sol.get("cookies") or [])}
+            res = RequestUtils(headers=headers, proxies=proxies, timeout=120).get_res(self.ANIDB_TITLES)
+            if res is None or res.status_code != 200:
+                raise ClientError(f"AniDB 标题文件 {getattr(res, 'status_code', '无响应')}")
+            root = ET.fromstring(gzip.decompress(res.content))
+            idx = {}
+            for a in root.iter("anime"):
+                titles = [(t.get("{http://www.w3.org/XML/1998/namespace}lang"), t.get("type"), (t.text or "").strip()) for t in a]
+                ja = next((x for lang, typ, x in titles if lang == "ja" and typ == "official"), "") or \
+                    next((x for lang, _, x in titles if lang == "ja"), "")
+                if not ja:
+                    continue
+                for lang, _, x in titles:
+                    if lang in ("x-jat", "en") and x:
+                        idx.setdefault(norm(x), ja)
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(json.dumps(idx, ensure_ascii=False))
+            self._anidb = (time.time(), idx)
+            self.log(f"AniDB 标题索引已更新：{len(idx)} 个名字")
+        except Exception as e:  # noqa: BLE001
+            self.log(f"AniDB 标题索引更新失败：{e}")
+            self._anidb = (time.time() - 86400 + 3600, idx or {})   # 失败 1 小时后再试
+        return idx or {}
+
+    def anidb_jp(self, name: str) -> Optional[str]:
+        """罗马音/英文名 -> 日文官方名（AniDB）。完全相同优先，其次发布写的是简称（AniDB 名以它开头）。"""
+        idx = self._anidb_index()
+        n = norm(name)
+        if len(n) < 5 or not idx:
+            return None
+        if n in idx:
+            return idx[n]
+        if len(n) >= 6:
+            hits = {ja for k, ja in idx.items() if k.startswith(n)}
+            if len(hits) == 1:
+                return hits.pop()
+        return None
+
+    HANIME_DB = "https://guest.freeanimehentai.net/api/v11/search_hvs"
+
+    def hanime_jp(self, name: str) -> Optional[str]:
+        """罗马音系列名 -> 日文原名（hanime 公开数据库的 search_titles 里带日文名；每天最多拉一次）。
+        英文字幕组的发布只写罗马音（「Anehame」「Kaa-chan no Tomodachi ni Shikotteru…」），Bangumi 搜不到罗马音。"""
+        at, db = self._hanime
+        if time.time() - at > 86400 or not db:
+            try:
+                res = RequestUtils(headers={"User-Agent": UA, "Origin": "https://hanime.tv", "Referer": "https://hanime.tv/"},
+                                   timeout=60).get_res(self.HANIME_DB)
+                raw = (res.json() or {}).get("data") or [] if res is not None and res.status_code == 200 else []
+                rows = []
+                for r in raw:
+                    series = re.sub(r"\s+\d+$", "", str(r.get("name") or "").strip())
+                    m = re.search(r"[\u3040-\u30ff\u3400-\u9fff][\u3000-\u30ff\u3400-\u9fff\uff00-\uffef0-9０-９！？!?〜~・･ 　]*", r.get("search_titles") or "")
+                    if series and m:
+                        rows.append((norm(series), m.group(0).strip()))
+                if rows:
+                    self._hanime = (time.time(), rows)
+                    db = rows
+            except Exception as e:  # noqa: BLE001
+                self.log(f"hanime 数据库拉取失败：{e}")
+        n = norm(name)
+        if len(n) < 5:
+            return None
+        for sn, jp in db:
+            # 发布常写简称（「Anehame」= hanime「Anehame: Ore no Hatsukoi ga…」）：是 hanime 系列名的开头也算
+            if n == sn or (len(n) >= 6 and sn.startswith(n)) or (len(sn) >= 8 and sn in n):
+                return jp
+        return None
+
     def bgm_identify(self, *titles: str) -> Optional[dict]:
         """Bangumi 识别：有 bangumi_token 时直连 API（日文原名精确比较），否则经 Emby 的 Bangumi 插件 RemoteSearch
-        （以里番库为锚点，插件带老账号授权能搜到 NSFW；结果只有中文名，按繁简转换后比较）。"""
+        （以里番库为锚点，插件带老账号授权能搜到 NSFW；结果只有中文名，按繁简转换后比较），再退到 Bangumi 公开搜索。
+        只有罗马音的名字先经 hanime 数据库换成日文原名（Bangumi 不收罗马音）。"""
+        latin = [t for t in titles if t and not _KANA_KANJI.search(t)]
+        jp = [j for j in (self.anidb_jp(t) or self.hanime_jp(t) for t in latin) if j]
+        # 日文名的主标题也试一次：副标题各站写法常不同（AniDB「憧れのあの人と」vs Bangumi「憧れのあの女と」）
+        heads = [h for h in (re.split(r"\s*[～~〜:：(（「]\s*|\s+", j)[0] for j in jp) if len(h) >= 3]
+        titles = tuple(jp) + tuple(heads) + titles
         seen = set()
         for t in titles:
             t = re.sub(r"\s*\((?:19|20)\d\d\)\s*$", "", t or "").strip()
@@ -1074,9 +1194,40 @@ class Adult:
             self.save_data("hentai_catalog", cat)
         return added
 
+    def forget(self, series: str) -> bool:
+        """手动维护：从里番状态里去掉一个系列（作品已删除，留着会在识别、健康检查里反复出现）。"""
+        with self._state_lock:
+            h = self._h()
+            if h.get("downloaded", {}).pop(series, None) is None:
+                return False
+            self._h_save(h)
+        return True
+
+    def sync_task_libs(self) -> int:
+        """任务记录里的库目录（meta.lib）对齐系列当前的库目录（重新识别、迁目录之后）。返回改了几个。"""
+        downloaded = self._h().get("downloaded") or {}
+        by = {}
+        for k, e in downloaded.items():
+            for a in [k] + list(e.get("aliases") or []):
+                by[norm(a)] = e
+        n = 0
+        for th, tt in (self.p.load() or {}).items():
+            m = tt.get("meta") or {}
+            e = by.get(norm(m.get("series") or "")) if m.get("kind") == "hentai" else None
+            if e and e.get("bgm") and e.get("lib") and m.get("lib") != e["lib"]:
+                lib = e["lib"]
+                self.p.mutate(th, lambda c, lib=lib: c.setdefault("meta", {}).update(
+                    lib=lib, title=re.sub(r"\s*\[bangumiid=\d+\]$", "", lib)))
+                n += 1
+        return n
+
     def relib_unidentified(self, dry_run: bool = False) -> List[dict]:
         """手动维护：所有还没认出 Bangumi 的系列，用清洗过的系列名 + 发布标题里的日文原名重新识别，认出来就迁库目录。
         （早期按原始发布标题建的目录：「[RedgectX] Odette」「Choro Mesu Days - 01 (English subs)」，Emby 只能按名字乱认。）"""
+        if not dry_run:
+            fixed = self.sync_task_libs()
+            if fixed:
+                self.log(f"里番任务目录对齐：{fixed} 个")
         with self._state_lock:
             keys = [k for k, e in (self._h().get("downloaded") or {}).items() if not e.get("bgm")]
         out = []
@@ -1095,7 +1246,17 @@ class Adult:
             out.append({"series": key, **r})
         return out
 
-    def relib(self, series: str, names: List[str]) -> dict:
+    def bgm_subject(self, bid: int) -> Optional[dict]:
+        """按 Bangumi ID 取名字（手动指定作品时用）。"""
+        res = RequestUtils(headers={"User-Agent": "mediahub-prowlarr115/1.0"}, timeout=20).get_res(
+            f"https://api.bgm.tv/subject/{int(bid)}?responseGroup=small")
+        try:
+            d = res.json() if res is not None and res.status_code == 200 else None
+        except ValueError:
+            d = None
+        return {"id": int(bid), "name": d.get("name") or "", "name_cn": d.get("name_cn") or ""} if d and d.get("id") else None
+
+    def relib(self, series: str, names: List[str], bangumi_id: Optional[int] = None) -> dict:
         """系列重新识别 Bangumi（库目录名错了 / 当时没认出来）：用给的名字（日文原名最好）再查，查到就把 strm 目录迁过去。"""
         with self._state_lock:
             h = self._h()
@@ -1107,7 +1268,17 @@ class Adult:
             old = entry.get("lib") or entry["folder"]
             entry.pop("bgm", None)
             entry.pop("bgm_tried", None)
-            new = self.ensure_lib(entry, *[n for n in names if n], series_names(key)[0])
+            if bangumi_id:      # 人指定的作品：直接用，不再搜
+                bgm = self.bgm_subject(bangumi_id)
+                if not bgm:
+                    return {"ok": False, "error": f"Bangumi 取不到 {bangumi_id}"}
+                entry["bgm"], entry["bgm_tried"] = bgm, now()
+                new = self.lib_name(bgm, old)
+                if old != new and self.ol.get(f"{self.h_lib}/{old}"):
+                    self._move_lib(old, new)
+                entry["lib"] = new
+            else:
+                new = self.ensure_lib(entry, *[n for n in names if n], series_names(key)[0])
             cur = self._h()
             cur.setdefault("downloaded", {})[key] = entry
             self._h_save(cur)
@@ -1116,7 +1287,27 @@ class Adult:
                 self.emby.updated([f"{self.emby_root}/里番/{new}", f"{self.emby_root}/里番/{old}"])
             except Exception:  # noqa: BLE001
                 pass
-        return {"ok": bool(entry.get("bgm")), "old": old, "lib": new, "bgm": entry.get("bgm")}
+        retried = 0
+        if entry.get("bgm"):
+            # 这个系列等待识别的任务：重新生成 strm
+            alias = {norm(series), norm(key)} | {norm(a) for a in entry.get("aliases") or []}
+            title = re.sub(r"\s*\[bangumiid=\d+\]$", "", new)
+            for th, tt in (self.p.load() or {}).items():
+                m = tt.get("meta") or {}
+                if m.get("kind") != "hentai" or norm(m.get("series") or "") not in alias:
+                    continue
+
+                def upd(c: dict, waiting: bool = tt.get("status") == "needs-id") -> None:
+                    # 任务记录跟着改：刮削确认按 meta.lib 找 Emby 目录，标题给 App 显示
+                    c.setdefault("meta", {}).update(lib=new, title=title)
+                    if waiting:
+                        c["status"] = "uploaded"
+                self.p.mutate(th, upd)
+                if tt.get("status") == "needs-id":
+                    retried += 1
+            if retried and self.kick:
+                self.kick()
+        return {"ok": bool(entry.get("bgm")), "old": old, "lib": new, "bgm": entry.get("bgm"), "retried": retried}
 
     def hentai_submit(self, link: str, title: str, ep: Optional[int] = None) -> dict:
         """指定资源（MP 搜索结果或手挑的磁力）按系列入库。title 是发布标题或系列名。"""
