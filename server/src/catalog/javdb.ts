@@ -45,6 +45,10 @@ const LISTS: Record<string, (p: number) => string> = {
   u_monthly: () => "/rankings/movies?p=monthly&t=uncensored",
   u_latest: (p) => `/uncensored?page=${p}`,
 };
+// Tag name → its list page ("/tags?c4=15"), learnt from the detail pages that show the tag. Tag lists need
+// an account (logged out they come back empty), like the 無碼 section.
+const tagPages = new Map<string, string>();
+
 const NEEDS_LOGIN = new Set(["u_weekly", "u_monthly", "u_latest"]);
 
 // Every JavDB page: with the logged-in session when there is one; a redirect to /login with a session
@@ -67,6 +71,11 @@ async function list(q: ListQuery): Promise<Page<CatalogItem>> {
   let path: string;
   if (q.person) path = `/actors/${encodeURIComponent(q.person)}?sort_type=${PERSON_SORT[q.sort] ?? 0}&page=${q.page}`;
   else if (q.q) path = `/search?q=${encodeURIComponent(q.q)}&f=all&page=${q.page}`;
+  else if (q.tag) {
+    const tagPage = tagPages.get(q.tag);
+    if (!tagPage) throw Object.assign(new Error("先打开带这个标签的作品，再点标签"), { statusCode: 404 });
+    return page(await get(`${tagPage}${tagPage.includes("?") ? "&" : "?"}page=${q.page}`, 60 * 60_000, true), q.page);
+  }
   else path = (LISTS[q.sort] ?? LISTS.weekly)(q.page);
   const ranking = !q.person && !q.q && path.startsWith("/rankings");
   if (ranking && q.page > 1) return { items: [], total: 0, page: q.page, hasMore: false };
@@ -85,7 +94,12 @@ async function item(id: string): Promise<CatalogDetail | null> {
   const score = /([\d.]+)分,\s*由(\d+)人評價/.exec(blocks.get("評分") ?? "");
   const people = [...(blocks.get("演員") ?? "").matchAll(/<a class="actor-female" href="\/actors\/(\w+)">([^<]+)<\/a>/g)]
     .map((m) => ({ id: m[1], name: decode(m[2]).trim() }));
-  const tags = [...(blocks.get("類別") ?? "").matchAll(/<a[^>]*>([^<]+)<\/a>/g)].map((m) => decode(m[1]).trim());
+  const tags = [...(blocks.get("類別") ?? "").matchAll(/<a\b([^>]*)>([^<]+)<\/a>/g)].map((m) => {
+    const name = decode(m[2]).trim();
+    const href = /href="([^"]*)"/.exec(m[1])?.[1];
+    if (name && href?.startsWith("/tags")) tagPages.set(name, decode(href));
+    return name;
+  });
   const magnets = (html.match(/class="magnet-name"/g) ?? []).length;
   const title = decode(/<strong class="current-title">([^<]*)<\/strong>/.exec(html)?.[1] ?? "").trim();
   const cover = /<img class="video-cover"[^>]*src="([^"]+)"/.exec(html)?.[1];
@@ -139,7 +153,7 @@ export const javdb: CatalogProvider = {
     { id: "u_weekly", label: "无码周榜" }, { id: "u_monthly", label: "无码月榜" }, { id: "u_latest", label: "无码最新" }],
   personSorts: [{ id: "released", label: "发行" }, { id: "rating", label: "评分" }, { id: "hot", label: "热度" }, { id: "want", label: "想看" }, { id: "watched", label: "看过" }],
   personIndexSorts: [{ id: "hot", label: "有码" }, { id: "uncensored", label: "无码" }],
-  tagFilter: false,
+  tagFilter: true,          // tags from detail pages (their list pages are learnt there; need the account)
 
   async home(): Promise<HomeRow[]> {
     // 無碼 rows only with a live session (without one they would just be login errors).
