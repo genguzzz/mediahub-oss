@@ -97,7 +97,7 @@ export function proxied(url: string, ttlMs = 30 * 60_000): Promise<string> {
 
 export const decode = (s: string) => s.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ");
 export const text = (html: string) => decode(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
-export const img = (u?: string | null) => (u ? `/v1/img/ext?u=${encodeURIComponent(u)}` : null);
+export { extUrl as img } from "../imageUrls.ts";
 
 // Split a list page into the HTML of each item, starting at every match of `start`.
 export function chunks(html: string, start: RegExp): string[] {

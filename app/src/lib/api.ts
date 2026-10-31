@@ -63,9 +63,15 @@ export async function api<T>(path: string, opts: { method?: string; body?: unkno
 }
 
 // expo-image source for backend image routes ("/v1/img/...").
-export function img(path: string | null | undefined) {
+// Image sources the phone loads directly (server/src/imageUrls.ts) and the Referer each requires.
+const REFERER: [RegExp, string][] = [[/^https:\/\/[a-z0-9]+\.doubanio\.com\//, "https://movie.douban.com/"], [/^https:\/\/c\d\.jdbstatic\.com\//, "https://javdb.com/"]];
+
+export function img(path: string | null | undefined): { uri: string; headers?: Record<string, string> } | undefined {
   if (!path) return undefined;
-  if (/^https?:\/\//.test(path)) return { uri: path };
+  if (/^https?:\/\//.test(path)) {
+    const ref = REFERER.find(([rx]) => rx.test(path))?.[1];
+    return ref ? { uri: path, headers: { referer: ref } } : { uri: path };
+  }
   const { server, token } = getSettings();
   return { uri: server + path, headers: { authorization: `Bearer ${token}` } };
 }

@@ -68,7 +68,11 @@ async function item(id: string): Promise<CatalogDetail | null> {
   const magnets = (html.match(/class="magnet-name"/g) ?? []).length;
   const title = decode(/<strong class="current-title">([^<]*)<\/strong>/.exec(html)?.[1] ?? "").trim();
   const cover = /<img class="video-cover"[^>]*src="([^"]+)"/.exec(html)?.[1];
-  const previews = [...html.matchAll(/<a class="tile-item" href="([^"]+)"[^>]*>\s*<img src="([^"]+)"/g)].map((m) => ({ full: img(decode(m[1]))!, thumb: img(decode(m[2]))! }));
+  // Samples only: the same "tile-item" markup is used further down for related works (links to /v/…).
+  const gallery = /<div class="tile-images preview-images">([\s\S]*?)<\/article>/.exec(html)?.[1] ?? "";
+  const previews = [...gallery.matchAll(/<a class="tile-item" href="([^"]+)"[^>]*>\s*<img src="([^"]+)"/g)]
+    .map((m) => ({ full: img(decode(m[1])), thumb: img(decode(m[2])) }))
+    .filter((p): p is { full: string; thumb: string } => !!p.full && !!p.thumb);
   return {
     id, code, title: title || code || id, previews,
     poster: img(cover), posterCrop: "right", landscape: img(cover),

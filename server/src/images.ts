@@ -6,7 +6,10 @@ import path from "node:path";
 import { config } from "./config.ts";
 import { plugBytes } from "./mp.ts";
 import { proxiedRaw } from "./catalog/http.ts";
+import { EXT_HOSTS } from "./imageUrls.ts";
 import { errText, logger, once } from "./log.ts";
+
+export { extUrl, posterPath, tmdbPath } from "./imageUrls.ts";
 
 const log = logger("images");
 const SLOW_MS = 4000;
@@ -96,15 +99,6 @@ export function tmdbImage(size: string, file: string) {
   return cached(`tmdb:${size}:${file}`, () => fetchImage("tmdb", url, () => fetch(url, { signal: AbortSignal.timeout(20_000) })), 90 * 86400_000);
 }
 
-// "https://image.tmdb.org/t/p/original/abc.jpg" or "/abc.jpg" → "/v1/img/tmdb/w342/abc.jpg"
-export function tmdbPath(src: string | null | undefined, size = "w342"): string | null {
-  if (!src) return null;
-  const m = /([A-Za-z0-9_-]+\.(?:jpg|jpeg|png|webp))$/.exec(src);
-  return m ? `/v1/img/tmdb/${size}/${m[1]}` : null;
-}
-
-// Posters from Bangumi / Douban (discover lists) and hanime (里番 index). Douban refuses hotlinks without its Referer.
-const EXT_HOSTS = /^(lain\.bgm\.tv|[a-z0-9]+\.doubanio\.com|hanime-cdn\.com|assets-cdn\.jable\.tv|c\d\.jdbstatic\.com)$/;
 // JavDB images, like its pages, only answer through the home-broadband proxy.
 const PROXIED_HOSTS = /\.jdbstatic\.com$/;
 export function extImage(raw: string) {
@@ -127,13 +121,3 @@ export function extImage(raw: string) {
     })), 30 * 86400_000);
 }
 
-// Bangumi's "l" cover is the original scan (up to ~6000×8000, several MB); its resizer serves 400 px wide.
-const BGM_COVER = /^https?:\/\/lain\.bgm\.tv\/pic\/cover\/[lcm]\//;
-const sized = (src: string) => (BGM_COVER.test(src) ? src.replace(/^https?:\/\/lain\.bgm\.tv\/pic\/cover\/[lcm]\//, "https://lain.bgm.tv/r/400/pic/cover/l/") : src);
-
-// Any poster URL MP hands out → a backend image path.
-export function posterPath(src: string | null | undefined, size = "w342"): string | null {
-  if (!src) return null;
-  if (src.includes("image.tmdb.org") || src.startsWith("/")) return tmdbPath(src, size);
-  return `/v1/img/ext?u=${encodeURIComponent(sized(src))}`;
-}

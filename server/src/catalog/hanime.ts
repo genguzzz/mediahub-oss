@@ -5,7 +5,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.ts";
-import { extImage } from "../images.ts";
+import { extImage, extUrl } from "../images.ts";
 import type { CatalogDetail, CatalogItem, CatalogProvider, HomeRow, ListQuery, Page } from "./types.ts";
 import { errText, logger } from "../log.ts";
 
@@ -44,7 +44,7 @@ interface Entry {
 }
 
 const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
-const img = (u?: string) => (u ? `/v1/img/ext?u=${encodeURIComponent(u)}` : null);
+const img = (u?: string) => extUrl(u);
 
 // Lower bound of the Wilson interval: ranks 950 likes / 50 dislikes above 9 / 0.
 function wilson(up: number, down: number) {
