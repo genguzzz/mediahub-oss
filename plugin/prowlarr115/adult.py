@@ -1256,7 +1256,18 @@ class Adult:
             d = res.json() if res is not None and res.status_code == 200 else None
         except ValueError:
             d = None
-        return {"id": int(bid), "name": d.get("name") or "", "name_cn": d.get("name_cn") or ""} if d and d.get("id") else None
+        if d and d.get("id"):
+            return {"id": int(bid), "name": d.get("name") or "", "name_cn": d.get("name_cn") or ""}
+        # 公开接口不返回 R18 条目（404）：问 Emby 的 Bangumi 插件（带账号授权），按 ID 直接取
+        try:
+            res = self.emby.post("/Items/RemoteSearch/Series", {"SearchInfo": {"ProviderIds": {"Bangumi": str(int(bid))}},
+                                                                "ItemId": self.hentai_lib_id(), "SearchProviderName": "Bangumi"}) or []
+        except Exception as e:  # noqa: BLE001
+            self.log(f"Bangumi {bid} 经 Emby 取不到：{e}")
+            return None
+        hit = next((r for r in res if str((r.get("ProviderIds") or {}).get("Bangumi")) == str(int(bid))), None)
+        return {"id": int(bid), "name": hit.get("Name") or "", "name_cn": hit.get("Name") or "",
+                "date": (hit.get("PremiereDate") or "")[:10] or None} if hit else None
 
     def relib(self, series: str, names: List[str], bangumi_id: Optional[int] = None) -> dict:
         """系列重新识别 Bangumi（库目录名错了 / 当时没认出来）：用给的名字（日文原名最好）再查，查到就把 strm 目录迁过去。"""
