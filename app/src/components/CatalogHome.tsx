@@ -40,7 +40,7 @@ export function CatalogHome({ kind }: { kind: CatalogKind }) {
         <PersonRow persons={persons.data.items} onMore={() => router.push({ pathname: "/catalog/[p]/persons", params: { p } })} onOpen={(x) => list(x.name, { person: x.id })} />
       ) : null}
 
-      {home.error ? <ErrorBox text={home.error} onRetry={home.refresh} /> : null}
+      {home.error ? <ErrorBox text={home.error} code={home.errorCode} onRetry={home.refresh} /> : null}
       {!home.data && home.loading ? <View style={{ height: 240, justifyContent: "center" }}><Loading text={p === "hanime" ? "正在载入里番索引" : p === "emby-av" ? "正在读取媒体库" : `正在读取 ${info?.name ?? "索引"}`} /></View> : null}
       {home.data?.rows.filter((r) => r.items.length).map((r) => (
         <Row key={r.id} title={r.title} onMore={() => list(r.title, r.query)}>

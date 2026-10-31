@@ -61,10 +61,12 @@ app.addHook("preHandler", async (req, reply) => {
 });
 
 app.setErrorHandler((err, req, reply) => {
-  const e = err as Error & { statusCode?: number; issues?: unknown };
+  const e = err as Error & { statusCode?: number; issues?: unknown; code?: unknown };
   const status = err instanceof UpstreamError ? err.status : e.issues ? 400 : e.statusCode ?? 500;
-  req.log.warn({ err: e.message, status }, "error");
-  reply.code(status).send({ error: e.issues ? "参数不对" : e.message });
+  // `code`: a machine-readable reason the app acts on (e.g. login_required → a button to Settings).
+  const code = typeof e.code === "string" && /^[a-z_]+$/.test(e.code) ? e.code : undefined;
+  req.log.warn({ err: e.message, status, code }, "error");
+  reply.code(status).send({ error: e.issues ? "参数不对" : e.message, ...(code ? { code } : {}) });
 });
 
 app.get("/health", async () => ({ ok: true }));

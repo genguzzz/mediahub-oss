@@ -77,7 +77,7 @@ export default function CatalogList() {
           </Pressable>
         ) : null}
 
-        {list.error ? <ErrorBox text={list.error} onRetry={list.refresh} /> : null}
+        {list.error ? <ErrorBox text={list.error} code={list.errorCode} onRetry={list.refresh} /> : null}
         {!list.hasData && list.loading ? <Loading /> : null}
         {list.hasData && !list.items.length ? <EmptyState icon="search-outline" text={params.q ? "索引里没有这个名字，试试罗马音或日文原名" : "没有符合条件的作品"} /> : null}
         <Posters items={list.items.map((c) => catalogCard(c, () => open(c)))} />

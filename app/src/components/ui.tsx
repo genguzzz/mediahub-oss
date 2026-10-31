@@ -211,12 +211,17 @@ export function EmptyState({ icon = "file-tray-outline", text, action }: { icon?
   );
 }
 
-export function ErrorBox({ text, onRetry }: { text: string; onRetry?: () => void }) {
+// `code` "login_required": the source needs an account set up in Settings — offer that instead of 重试.
+export function ErrorBox({ text, onRetry, code }: { text: string; onRetry?: () => void; code?: string }) {
+  const router = useRouter();
+  const login = code === "login_required";
   return (
     <View style={{ margin: 16, padding: 14, borderRadius: radius.md, backgroundColor: colors.danger + "18", borderWidth: 1, borderColor: colors.danger + "44", flexDirection: "row", alignItems: "center", gap: 10 }}>
       <Ionicons name="alert-circle" size={20} color={colors.danger} />
       <Text style={{ flex: 1, color: colors.text, fontSize: 14 }}>{text}</Text>
-      {onRetry ? <Pressable hitSlop={8} onPress={() => { tap(); onRetry(); }}><Text style={{ color: colors.primary, fontWeight: "700" }}>重试</Text></Pressable> : null}
+      {login ? (
+        <Pressable hitSlop={8} onPress={() => { tap(); router.push("/settings"); }}><Text style={{ color: colors.primary, fontWeight: "700" }}>去设置登录</Text></Pressable>
+      ) : onRetry ? <Pressable hitSlop={8} onPress={() => { tap(); onRetry(); }}><Text style={{ color: colors.primary, fontWeight: "700" }}>重试</Text></Pressable> : null}
     </View>
   );
 }

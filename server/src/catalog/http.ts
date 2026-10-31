@@ -85,6 +85,7 @@ export async function proxiedRaw(url: string, headers: Record<string, string> = 
 /** The page needs a logged-in account (the site redirected to its login page). */
 export class LoginRequired extends Error {
   statusCode = 403;            // not 401: the app reads 401 as its own token being wrong
+  code = "login_required";     // the app shows "去设置登录" instead of 重试
   site: string;
   constructor(site: string) {
     super(`${site} 需要登录：设置 → ${site} 账号`);

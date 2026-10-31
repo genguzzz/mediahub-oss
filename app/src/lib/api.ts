@@ -10,9 +10,11 @@ export const appVersion = `${Application.nativeApplicationVersion ?? "dev"} (${A
 
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  code?: string;              // machine-readable reason from the backend (e.g. "login_required")
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -48,8 +50,9 @@ export async function api<T>(path: string, opts: { method?: string; body?: unkno
     }
     log.info("call", { path: path.split("?")[0], status: res.status, ms: Date.now() - t0, rid: id });
     if (!res.ok) {
-      const msg = (data && typeof data === "object" && "error" in data ? String((data as { error: unknown }).error) : "") || `服务器返回 ${res.status}`;
-      throw new ApiError(res.status === 401 ? "访问令牌不正确" : msg, res.status);
+      const body = data && typeof data === "object" ? (data as { error?: unknown; code?: unknown }) : {};
+      const msg = (body.error ? String(body.error) : "") || `服务器返回 ${res.status}`;
+      throw new ApiError(res.status === 401 ? "访问令牌不正确" : msg, res.status, typeof body.code === "string" ? body.code : undefined);
     }
     return data as T;
   } catch (e) {

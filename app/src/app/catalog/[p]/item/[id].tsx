@@ -48,7 +48,7 @@ export default function CatalogItemScreen() {
           ))}
           <View style={{ position: "absolute", left: 0, right: 0, top: heroH * 0.99, height: heroH * 0.02, backgroundColor: colors.bg }} />
         </View>
-        {q.error ? <ErrorBox text={q.error} onRetry={q.refresh} /> : null}
+        {q.error ? <ErrorBox text={q.error} code={q.errorCode} onRetry={q.refresh} /> : null}
         {!it && q.loading ? <Loading /> : null}
         {it ? (
           <View style={{ paddingHorizontal: 18, marginTop: -heroH * 0.32 }}>

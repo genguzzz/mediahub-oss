@@ -49,13 +49,16 @@ const NEEDS_LOGIN = new Set(["u_weekly", "u_monthly", "u_latest"]);
 
 // Every JavDB page: with the logged-in session when there is one; a redirect to /login with a session
 // means it expired (marked, then reported).
-async function get(path: string, ttlMs: number): Promise<string> {
+async function get(path: string, ttlMs: number, needsLogin = false): Promise<string> {
   const cookie = await javdbCookie();
+  if (needsLogin && !cookie) throw new LoginRequired("JavDB");
   try {
     return await proxied(BASE + path, ttlMs, cookie);
   } catch (e) {
-    if (e instanceof LoginRequired && cookie) await javdbExpired();
-    throw e;
+    // 無碼 pages answer a missing/expired session with a redirect to /login (lists, detail) or a bare 403 (rankings).
+    const denied = e instanceof LoginRequired || (needsLogin && e instanceof Error && /返回 403/.test(e.message));
+    if (denied && cookie) await javdbExpired();
+    throw denied ? new LoginRequired("JavDB") : e;
   }
 }
 const PERSON_SORT: Record<string, number> = { released: 0, rating: 1, hot: 2, want: 3, watched: 4 };
@@ -67,7 +70,7 @@ async function list(q: ListQuery): Promise<Page<CatalogItem>> {
   else path = (LISTS[q.sort] ?? LISTS.weekly)(q.page);
   const ranking = !q.person && !q.q && path.startsWith("/rankings");
   if (ranking && q.page > 1) return { items: [], total: 0, page: q.page, hasMore: false };
-  const html = await get(path, ranking || q.sort === "latest" || q.sort === "u_latest" ? 20 * 60_000 : 60 * 60_000);
+  const html = await get(path, ranking || q.sort === "latest" || q.sort === "u_latest" ? 20 * 60_000 : 60 * 60_000, NEEDS_LOGIN.has(q.sort));
   const r = page(html, q.page);
   return ranking ? { ...r, hasMore: false, total: r.items.length } : r;
 }

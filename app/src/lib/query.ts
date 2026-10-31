@@ -8,6 +8,7 @@ import { File, Paths } from "expo-file-system";
 interface Entry<T> {
   data?: T;
   error?: string;
+  errorCode?: string;       // ApiError.code, e.g. "login_required"
   loading: boolean;
   at: number;
   seq: number;
@@ -68,10 +69,11 @@ export async function load<T>(key: string, fn: () => Promise<T>): Promise<T | un
   set(key, { loading: true, seq });
   try {
     const data = await fn();
-    if (entries.get(key)?.seq === seq) set(key, { data, error: undefined, loading: false, at: Date.now() });
+    if (entries.get(key)?.seq === seq) set(key, { data, error: undefined, errorCode: undefined, loading: false, at: Date.now() });
     return data;
   } catch (e) {
-    if (entries.get(key)?.seq === seq) set(key, { error: e instanceof Error ? e.message : String(e), loading: false });
+    const code = (e as { code?: unknown })?.code;
+    if (entries.get(key)?.seq === seq) set(key, { error: e instanceof Error ? e.message : String(e), errorCode: typeof code === "string" ? code : undefined, loading: false });
     return undefined;
   }
 }
@@ -131,7 +133,7 @@ export function useQuery<T>(key: string | null, fn: () => Promise<T>, opts: { in
     return () => sub.remove();
   }, [key, k, refresh, stale]);
 
-  return { data: entry.data, error: entry.error, loading: entry.loading, refresh, at: entry.at };
+  return { data: entry.data, error: entry.error, errorCode: entry.errorCode, loading: entry.loading, refresh, at: entry.at };
 }
 
 interface Pages<T> {
@@ -200,6 +202,7 @@ export function usePaged<T>(
     total: q.data?.total,
     loading: q.loading,
     error: q.error,
+    errorCode: q.errorCode,
     moreError: moreEntry.error,
     refresh: q.refresh,
     more,
