@@ -10,6 +10,7 @@ import { errText, logger, once } from "./log.ts";
 
 const log = logger("images");
 const SLOW_MS = 4000;
+const LARGE_BYTES = 1_500_000;
 type Got = { body: Buffer; type: string } | null;
 
 // Fetch one upstream image and say what happened when it did not work (status, error, time) or was slow.
@@ -39,6 +40,8 @@ async function fetchImage(kind: string, url: string, run: () => Promise<{ ok: bo
       return null;
     }
     if (Date.now() - t0 > SLOW_MS) log.info({ kind, ...where, bytes: body.length, ms: Date.now() - t0 }, "image upstream slow");
+    // A poster wall of multi-MB originals is what makes the phone slow; the source should be asked for a smaller size.
+    if (body.length > LARGE_BYTES) log.info({ kind, ...where, bytes: body.length }, "image upstream large");
     return { body, type };
   } catch (e) {
     const skipped = once(`${kind}:${url}`);
@@ -124,9 +127,13 @@ export function extImage(raw: string) {
     })), 30 * 86400_000);
 }
 
+// Bangumi's "l" cover is the original scan (up to ~6000×8000, several MB); its resizer serves 400 px wide.
+const BGM_COVER = /^https?:\/\/lain\.bgm\.tv\/pic\/cover\/[lcm]\//;
+const sized = (src: string) => (BGM_COVER.test(src) ? src.replace(/^https?:\/\/lain\.bgm\.tv\/pic\/cover\/[lcm]\//, "https://lain.bgm.tv/r/400/pic/cover/l/") : src);
+
 // Any poster URL MP hands out → a backend image path.
 export function posterPath(src: string | null | undefined, size = "w342"): string | null {
   if (!src) return null;
   if (src.includes("image.tmdb.org") || src.startsWith("/")) return tmdbPath(src, size);
-  return `/v1/img/ext?u=${encodeURIComponent(src)}`;
+  return `/v1/img/ext?u=${encodeURIComponent(sized(src))}`;
 }
