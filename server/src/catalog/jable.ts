@@ -75,7 +75,8 @@ async function video(slug: string, ttlMs = 15 * 60_000): Promise<VideoPage | nul
     title: m ? full.slice(m[0].length) : full, code: (m?.[1] ?? slug.replace(/-c$/, "")).toUpperCase(), cover: og("image") || null,
     hls: /hlsUrl\s*=\s*'([^']+)'/.exec(html)?.[1] ?? null,
     people: [...html.matchAll(/<a class="model" href="https:\/\/jable\.tv\/models\/([^/"]+)\/">[\s\S]*?(?:data-original-title|title)="([^"]+)"/g)].map((x) => ({ id: x[1], name: decode(x[2]) })),
-    tags: [...html.matchAll(/href="https:\/\/jable\.tv\/(tags|categories)\/([^/"]+)\/"[^>]*>([^<]+)</g)].map((x) => {
+    // Only the work's own tag block (<h5 class="tags …">); the page also lists every tag in its menus.
+    tags: [...(/<h5 class="tags[^"]*">([\s\S]*?)<\/h5>/.exec(html)?.[1] ?? "").matchAll(/href="https:\/\/jable\.tv\/(tags|categories)\/([^/"]+)\/"[^>]*>([^<]+)</g)].map((x) => {
       const name = decode(x[3]).trim();
       if (name) tagPages.set(name, `/${x[1]}/${x[2]}/`);
       return name;
