@@ -78,13 +78,25 @@ export function flare(url: string, ttlMs = 30 * 60_000): Promise<string> {
 
 const agent = PROXY ? new ProxyAgent(PROXY) : new Agent();
 
-export async function proxiedRaw(url: string, headers: Record<string, string> = {}) {
-  return ufetch(url, { dispatcher: agent, headers: { "user-agent": UA, "accept-language": "zh-CN,zh;q=0.9", ...headers }, signal: AbortSignal.timeout(25_000) });
+export async function proxiedRaw(url: string, headers: Record<string, string> = {}, init: { method?: string; body?: string; redirect?: "follow" | "manual" } = {}) {
+  return ufetch(url, { dispatcher: agent, ...init, headers: { "user-agent": UA, "accept-language": "zh-CN,zh;q=0.9", ...headers }, signal: AbortSignal.timeout(25_000) });
 }
 
-export function proxied(url: string, ttlMs = 30 * 60_000): Promise<string> {
-  return remember(`proxy:${url}`, ttlMs, () => timed("proxy", url, async () => {
-    const res = await proxiedRaw(url);
+/** The page needs a logged-in account (the site redirected to its login page). */
+export class LoginRequired extends Error {
+  statusCode = 403;            // not 401: the app reads 401 as its own token being wrong
+  site: string;
+  constructor(site: string) {
+    super(`${site} 需要登录：设置 → ${site} 账号`);
+    this.site = site;
+  }
+}
+
+// `cookie`: a logged-in session (JavDB); pages fetched with and without it are cached apart.
+export function proxied(url: string, ttlMs = 30 * 60_000, cookie = ""): Promise<string> {
+  return remember(`proxy:${cookie ? "auth:" : ""}${url}`, ttlMs, () => timed("proxy", url, async () => {
+    const res = await proxiedRaw(url, cookie ? { cookie } : {});
+    if (res.url && new URL(res.url).pathname === "/login") throw new LoginRequired("JavDB");
     if (res.status === 404) return "";
     if (!res.ok) throw new Error(`页面返回 ${res.status}`);
     const text = await res.text();

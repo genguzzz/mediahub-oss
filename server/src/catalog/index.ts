@@ -6,12 +6,27 @@ import { embyCatalog, embyStreams, hentaiLibrary, type EmbyGet } from "./emby.ts
 import { hanime, titlesOf } from "./hanime.ts";
 import { jable, jableStreams } from "./jable.ts";
 import { javdb } from "./javdb.ts";
+import { javdbLogin, javdbLoginStart, javdbLogout, javdbStatus } from "./javdbSession.ts";
 import type { CatalogDetail, CatalogItem, CatalogProvider, StreamProvider, StreamSource } from "./types.ts";
 import { errText, logger } from "../log.ts";
 
 const log = logger("catalog");
 
 export function registerCatalog(app: FastifyInstance, embyGet: EmbyGet) {
+  // JavDB account (Settings → JavDB 账号): status, a fresh captcha, log in with what the owner typed, log out.
+  app.get("/v1/javdb/session", async () => javdbStatus());
+  app.post("/v1/javdb/session/start", async () => javdbLoginStart());
+  app.post("/v1/javdb/session", async (req) => {
+    const b = z.object({ id: z.string().max(40), email: z.string().min(1).max(200), password: z.string().min(1).max(200), captcha: z.string().min(1).max(20) }).parse(req.body);
+    const r = await javdbLogin(b);
+    req.log.info({ ok: r.ok }, "javdb login");
+    return r;
+  });
+  app.delete("/v1/javdb/session", async () => {
+    await javdbLogout();
+    return { ok: true };
+  });
+
   const catalogs: CatalogProvider[] = [javdb, jable, embyCatalog(embyGet), hanime];
   const hentaiLib = hentaiLibrary(embyGet);
   const streams: StreamProvider[] = [embyStreams(embyGet, hentaiLib), jableStreams];

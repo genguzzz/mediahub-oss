@@ -3,6 +3,7 @@ import { Pressable, ScrollView, Switch, Text, TextInput, View } from "react-nati
 import { Ionicons } from "@expo/vector-icons";
 import * as Application from "expo-application";
 import { useRouter } from "expo-router";
+import { JavdbAccount } from "@/components/JavdbAccount";
 import { Card, PillButton, Row, Screen, SectionTitle, Segmented, TopBar, confirm, styles, tap, toast, toastError } from "@/components/ui";
 import { api, appVersion, type Overview } from "@/lib/api";
 import { embyApi, login, logout } from "@/lib/emby";
@@ -154,6 +155,13 @@ export default function SettingsScreen() {
           <TextInput value={tok} onChangeText={setTok} placeholder="访问令牌" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} secureTextEntry style={input} />
           <PillButton label="保存并测试连接" icon="link" loading={busy === "test"} onPress={saveServer} />
         </Card>
+
+        {s.showAdult ? (
+          <>
+            <SectionTitle title="JavDB 账号" />
+            <JavdbAccount />
+          </>
+        ) : null}
 
         <SectionTitle title="搜索" />
         <Card>
