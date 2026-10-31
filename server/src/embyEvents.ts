@@ -4,9 +4,10 @@
 // item ids to the plugin (/hub/emby/changed), which confirms waiting ingest tasks and identifies new 里番 right away
 // instead of polling every few minutes.
 import { config } from "./config.ts";
+import { logger } from "./log.ts";
 import { plug } from "./mp.ts";
 
-type Log = { info: (o: object, m?: string) => void; warn: (o: object, m?: string) => void };
+const log = logger("emby-events");
 
 const AUTH = 'MediaBrowser Client="MediaHubServer", Device="server", DeviceId="mediahub-server", Version="1.0"';
 const DEBOUNCE_MS = 3000;
@@ -14,7 +15,7 @@ const KEEPALIVE_MS = 30_000;
 
 export const embyEvents = { connected: false, since: 0, events: 0, forwarded: 0, lastEvent: 0, lastError: "" };
 
-export function startEmbyEvents(log: Log): void {
+export function startEmbyEvents(): void {
   if (!config.emby.user || !config.emby.url) return;
   const base = config.emby.url.replace(/\/+$/, "");
   let backoff = 5000;

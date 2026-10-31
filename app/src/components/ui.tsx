@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react
 import { ActivityIndicator, Alert, Animated, Modal, Pressable, RefreshControl, ScrollView, Text, View, type RefreshControlProps, type TextProps, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
+import { imageLog } from "@/lib/imageLog";
 import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
@@ -195,7 +196,7 @@ export function Poster({ source, width, ratio = 1.5, style, icon = "film-outline
   return (
     <View style={[{ width, height: width * ratio, borderRadius: 10, overflow: "hidden", backgroundColor: colors.cardMuted, alignItems: "center", justifyContent: "center" }, style]}>
       <Ionicons name={icon} size={width * 0.3} color={colors.textFaint} style={{ position: "absolute" }} />
-      {source ? <Image source={source} style={{ width: "100%", height: "100%" }} contentFit="cover" transition={150} cachePolicy="disk" recyclingKey={source.uri} /> : null}
+      {source ? <Image source={source} style={{ width: "100%", height: "100%" }} contentFit="cover" transition={150} cachePolicy="disk" recyclingKey={source.uri} {...imageLog(source.uri, "poster")} /> : null}
     </View>
   );
 }

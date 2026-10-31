@@ -5,6 +5,7 @@ import { Pressable, ScrollView, Text, useWindowDimensions, View } from "react-na
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import type { SheetAction } from "./ActionSheet";
+import { imageLog } from "@/lib/imageLog";
 import { openPeek } from "@/lib/peek";
 import { setSettings, useSettings } from "@/lib/settings";
 import { colors, radius, shadow } from "@/lib/theme";
@@ -36,11 +37,11 @@ export interface CardData {
 
 const peek = (c: CardData) => () => { tap(); openPeek(c); };
 
-export function Img({ source, style, icon = "film-outline", iconSize = 28, right }: { source: Src; style: object; icon?: keyof typeof Ionicons.glyphMap; iconSize?: number; right?: boolean }) {
+export function Img({ source, style, icon = "film-outline", iconSize = 28, right, where = "img" }: { source: Src; style: object; icon?: keyof typeof Ionicons.glyphMap; iconSize?: number; right?: boolean; where?: string }) {
   return (
     <View style={[{ backgroundColor: colors.cardMuted, overflow: "hidden", alignItems: "center", justifyContent: "center" }, style]}>
       <Ionicons name={icon} size={iconSize} color={colors.textFaint} style={{ position: "absolute" }} />
-      {source ? <Image source={source} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} contentFit="cover" contentPosition={right ? "right" : "center"} transition={180} cachePolicy="disk" /> : null}
+      {source ? <Image source={source} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} contentFit="cover" contentPosition={right ? "right" : "center"} transition={180} cachePolicy="disk" {...imageLog(source.uri, where)} /> : null}
     </View>
   );
 }

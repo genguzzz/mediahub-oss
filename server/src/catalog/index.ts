@@ -7,6 +7,9 @@ import { hanime, titlesOf } from "./hanime.ts";
 import { jable, jableStreams } from "./jable.ts";
 import { javdb } from "./javdb.ts";
 import type { CatalogDetail, CatalogItem, CatalogProvider, StreamProvider, StreamSource } from "./types.ts";
+import { errText, logger } from "../log.ts";
+
+const log = logger("catalog");
 
 export function registerCatalog(app: FastifyInstance, embyGet: EmbyGet) {
   const catalogs: CatalogProvider[] = [javdb, jable, embyCatalog(embyGet), hanime];
@@ -21,7 +24,7 @@ export function registerCatalog(app: FastifyInstance, embyGet: EmbyGet) {
   // Mark 里番 index entries that are in the library (AV entries come from the library already).
   async function owned<T extends CatalogItem>(c: CatalogProvider, items: T[]): Promise<T[]> {
     if (c.id !== "hanime") return items;
-    const match = await hentaiLib.matcher().catch(() => null);
+    const match = await hentaiLib.matcher().catch((e: unknown) => { log.warn({ err: errText(e) }, "里番 library match failed"); return null; });
     return match ? items.map((i) => ({ ...i, inLibrary: !!match(titlesOf(i.id)) })) : items;
   }
 

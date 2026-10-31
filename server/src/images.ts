@@ -6,6 +6,46 @@ import path from "node:path";
 import { config } from "./config.ts";
 import { plugBytes } from "./mp.ts";
 import { proxiedRaw } from "./catalog/http.ts";
+import { errText, logger, once } from "./log.ts";
+
+const log = logger("images");
+const SLOW_MS = 4000;
+type Got = { body: Buffer; type: string } | null;
+
+// Fetch one upstream image and say what happened when it did not work (status, error, time) or was slow.
+// Failures are not cached, so the next request retries; the same image is logged once per 10 minutes.
+async function fetchImage(kind: string, url: string, run: () => Promise<{ ok: boolean; status: number; headers: { get(n: string): string | null }; arrayBuffer(): Promise<ArrayBuffer> }>): Promise<Got> {
+  const t0 = Date.now();
+  const where = (() => {
+    try {
+      const u = new URL(url);
+      return { host: u.hostname, path: u.pathname.slice(0, 120) };
+    } catch {
+      return { host: "", path: url.slice(0, 120) };
+    }
+  })();
+  try {
+    const res = await run();
+    const ms = Date.now() - t0;
+    if (!res.ok) {
+      const skipped = once(`${kind}:${url}`);
+      if (skipped !== null) log.warn({ kind, ...where, status: res.status, ms, repeats: skipped }, "image upstream failed");
+      return null;
+    }
+    const body = Buffer.from(await res.arrayBuffer());
+    const type = res.headers.get("content-type") ?? "image/jpeg";
+    if (!body.length || !type.startsWith("image/")) {
+      log.warn({ kind, ...where, type, bytes: body.length, ms }, "image upstream returned no image");
+      return null;
+    }
+    if (Date.now() - t0 > SLOW_MS) log.info({ kind, ...where, bytes: body.length, ms: Date.now() - t0 }, "image upstream slow");
+    return { body, type };
+  } catch (e) {
+    const skipped = once(`${kind}:${url}`);
+    if (skipped !== null) log.warn({ kind, ...where, err: errText(e), ms: Date.now() - t0, repeats: skipped }, "image upstream failed");
+    return null;
+  }
+}
 
 const inflight = new Map<string, Promise<{ body: Buffer; type: string } | null>>();
 
@@ -40,15 +80,17 @@ async function cached(key: string, fetcher: () => Promise<{ body: Buffer; type: 
 
 export function embyImage(id: string, type: string, w: number, tag: string) {
   // With a tag the image is immutable; without one refresh daily.
-  return cached(`emby:${id}:${type}:${w}:${tag}`, () => plugBytes("/hub/emby/image", { id, type, w, tag }), tag ? 30 * 86400_000 : 86400_000);
+  return cached(`emby:${id}:${type}:${w}:${tag}`, async () => {
+    const t0 = Date.now();
+    const got = await plugBytes("/hub/emby/image", { id, type, w, tag });
+    if (!got && once(`emby:${id}:${type}`) !== null) log.warn({ kind: "emby", id, type, ms: Date.now() - t0 }, "image upstream failed");
+    return got;
+  }, tag ? 30 * 86400_000 : 86400_000);
 }
 
 export function tmdbImage(size: string, file: string) {
-  return cached(`tmdb:${size}:${file}`, async () => {
-    const res = await fetch(`https://image.tmdb.org/t/p/${size}/${file}`, { signal: AbortSignal.timeout(20_000) }).catch(() => null);
-    if (!res?.ok) return null;
-    return { body: Buffer.from(await res.arrayBuffer()), type: res.headers.get("content-type") ?? "image/jpeg" };
-  }, 90 * 86400_000);
+  const url = `https://image.tmdb.org/t/p/${size}/${file}`;
+  return cached(`tmdb:${size}:${file}`, () => fetchImage("tmdb", url, () => fetch(url, { signal: AbortSignal.timeout(20_000) })), 90 * 86400_000);
 }
 
 // "https://image.tmdb.org/t/p/original/abc.jpg" or "/abc.jpg" → "/v1/img/tmdb/w342/abc.jpg"
@@ -69,17 +111,17 @@ export function extImage(raw: string) {
   } catch {
     return Promise.resolve(null);
   }
-  if (!EXT_HOSTS.test(u.hostname)) return Promise.resolve(null);
-  return cached(`ext:${u}`, async () => {
-    const res = PROXIED_HOSTS.test(u.hostname)
-      ? await proxiedRaw(u.toString(), { referer: "https://javdb.com/" }).catch(() => null)
-      : await fetch(u, {
-        headers: { "user-agent": "Mozilla/5.0", ...(u.hostname.endsWith("doubanio.com") ? { referer: "https://movie.douban.com/" } : {}) },
-        signal: AbortSignal.timeout(20_000),
-      }).catch(() => null);
-    if (!res?.ok) return null;
-    return { body: Buffer.from(await res.arrayBuffer()), type: res.headers.get("content-type") ?? "image/jpeg" };
-  }, 30 * 86400_000);
+  if (!EXT_HOSTS.test(u.hostname)) {
+    if (once(`ext-host:${u.hostname}`) !== null) log.warn({ host: u.hostname }, "image host not allowed");
+    return Promise.resolve(null);
+  }
+  const proxied = PROXIED_HOSTS.test(u.hostname);
+  return cached(`ext:${u}`, () => fetchImage(proxied ? "ext-proxied" : "ext", u.toString(), () => proxied
+    ? proxiedRaw(u.toString(), { referer: "https://javdb.com/" })
+    : fetch(u, {
+      headers: { "user-agent": "Mozilla/5.0", ...(u.hostname.endsWith("doubanio.com") ? { referer: "https://movie.douban.com/" } : {}) },
+      signal: AbortSignal.timeout(20_000),
+    })), 30 * 86400_000);
 }
 
 // Any poster URL MP hands out → a backend image path.

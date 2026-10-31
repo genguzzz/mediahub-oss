@@ -24,6 +24,13 @@ remote() {
   ssh "$DEPLOY_HOST" "T=\$($cmd); curl -sS --noproxy '*' -m 180 -X $method -H \"$hdr \$T\" -H 'content-type: application/json' \
     $( [ -n "$body" ] && printf -- "--data-binary %q" "$body" ) $(printf %q "$url") | python3 -m json.tool --no-ensure-ascii 2>/dev/null || true"
 }
+# rawget <auth> <url> [curl -w format]: no JSON formatting (text, images).
+rawget() {
+  local cmd hdr
+  case "$1" in app) cmd="$APP_TOKEN_CMD" ;; admin) cmd="$ADMIN_TOKEN_CMD" ;; esac
+  # shellcheck disable=SC2029
+  ssh "$DEPLOY_HOST" "T=\$($cmd); curl -sS --noproxy '*' -m 180 -H \"authorization: Bearer \$T\" ${3:+-o /dev/null -w $(printf %q "$3")} $(printf %q "$2")"
+}
 v1() { remote app "$1" "$SERVER_LOCAL_URL$2" "${3:-}"; }
 adm() { remote admin "$1" "$SERVER_LOCAL_URL$2" "${3:-}"; }
 hub() { remote mp "$1" "$MP_URL/api/v1/plugin/$PLUGIN$2" "${3:-}"; }
@@ -50,6 +57,9 @@ case "$cmd" in
   feedback) adm GET /admin/feedback ;;
   feedback-done) v1 POST "/v1/feedback/$1" "{\"status\":\"done\",\"note\":\"${2:-}\"}" ;;
   logs) adm GET /admin/logs ;;
+  log) rawget admin "$SERVER_LOCAL_URL/admin/logs/$1?tail=${3:-400}${2:+&grep=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$2")}" ;;
+  img) rawget app "$SERVER_LOCAL_URL$1" '%{http_code} %{content_type} %{size_download} bytes %{time_total}s\n' ;;
+  srvlog) ssh "$DEPLOY_HOST" "journalctl -u ${SERVER_UNIT:-mediahub} --since $(printf %q "${2:-1 hour ago}") --no-pager -o cat | grep -F -- $(printf %q "${1:-\"level\"}") | tail -n 200" ;;
   events) adm GET "/admin/events?day=${1:-$(date +%F)}" ;;
   subs) mp GET /subscribe/ ;;
   sub) v1 GET "/v1/subscriptions/$1" ;;

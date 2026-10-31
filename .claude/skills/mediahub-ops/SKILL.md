@@ -24,6 +24,9 @@ ops.sh emby-events                Emby push listener status (connected, events, 
 ops.sh feedback                   user feedback reports with Emby snapshots
 ops.sh feedback-done <id> [note]  mark a report handled (shown in the app)
 ops.sh logs | events [YYYY-MM-DD] uploaded app logs / usage events
+ops.sh log <id> [grep] [tail]     one uploaded app log (e.g. `log 752269c1 img`)
+ops.sh srvlog [pattern] [since]   server log lines (journald JSON), e.g. `srvlog '"mod":"images"' '2 hours ago'`
+ops.sh img <path>                 fetch one backend image: status, type, bytes, time
 ops.sh subs | sub <id>            MP subscriptions / one subscription's per-episode state
 ops.sh blacklist                  releases the pipeline will not pick again
 ops.sh policy [set '<json>']      selection policy (merge update)
@@ -39,6 +42,12 @@ ops.sh v1|admin|hub|mp <METHOD> <path> [json]   raw call (backend /v1, /admin, p
 3. **概览 shows 需要处理** → `health`, act with `fix` or on the task; never add a periodic job to "auto-fix" a finding (CLAUDE.md, Design rules).
 4. **Feedback** → `feedback`; the Emby snapshot (path, provider ids, images, streams) usually shows the cause; fix, then `feedback-done <id> "what was done"`.
 5. **Subscription not progressing** → `sub <id>`: per-episode state, Bangumi vs TMDb episode counts.
+
+6. **Images do not load** → app log `log <id> img` (`failed` / `slow`, with the backend path), then `srvlog '"img res"'` and `srvlog '"mod":"images"'` (upstream status / error / time), then `img <path>`. Both sides log a failure or a load over 3–5 s, once per URL per window.
+
+## Logging
+
+Server: one logger (`server/src/log.ts`, Fastify's, JSON to journald). Modules use `logger("<mod>")`, so every line has `mod`; request handlers use `req.log`, which carries `rid`. The app logs the same `rid` on every API call (`app/src/lib/log.ts`, tag per module, uploaded from Settings → 上传日志). The plugin uses MoviePilot's logger with the `【Prowlarr115】` prefix. Log where an error is swallowed, log slow upstream calls, never log tokens.
 
 ## Gotchas
 

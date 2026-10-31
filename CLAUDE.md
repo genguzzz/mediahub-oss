@@ -11,6 +11,7 @@ iPhone client for a home media stack: an Emby client with its own player, plus s
 - **No special-case or fallback layers.** No hidden retries, sweeps or "just in case" jobs that redo work silently. If something can fail, surface it (task state, notification, health check) and give the user an action.
 - **Scheduled jobs are low-frequency, read-only scanners.** They report problems to 概览 → 健康检查 (`/v1/health`, every 6 h); they do not fix things on their own. Stats refresh only on demand (≥ 10 min apart).
 - **One pipeline for every kind of media.** 影视, AV and 里番 share submit / 115 / stall handling / NAS buffer / reselect / blacklist / events; only the ingest and scrape steps differ.
+- **Failures leave a log line.** Server modules log through `server/src/log.ts` (`logger("<mod>")`), the app through `app/src/lib/log.ts`; a swallowed error (`.catch(() => null)`) logs what failed and why, slow upstream calls are logged, repeats are collapsed, tokens never appear. How to read them: the `mediahub-ops` skill, Logging.
 - **Every fact in one place.** Rules here, details in `docs/`, operations in the `mediahub-ops` skill. Update the doc in the same change.
 
 ## Public repo, private instance

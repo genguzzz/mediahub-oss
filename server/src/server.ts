@@ -10,6 +10,7 @@ import { mp, mpRaw, plug, plugBytes, UpstreamError } from "./mp.ts";
 import { listUpdates, manifestResponse, storeUpdate } from "./updates.ts";
 import { registerCatalog } from "./catalog/index.ts";
 import { embyEvents, startEmbyEvents } from "./embyEvents.ts";
+import { initLog } from "./log.ts";
 
 const app = Fastify({
   // JSON lines to journald: `journalctl -u mediahub -o cat | grep <rid>`
@@ -22,6 +23,8 @@ const app = Fastify({
   requestIdLogLabel: "rid",
   disableRequestLogging: true,
 });
+
+initLog(app.log);
 
 await app.register(multipart, { limits: { fileSize: 60 * 1024 * 1024, files: 1 } });
 
@@ -37,8 +40,12 @@ app.addHook("onRequest", async (req, reply) => {
   reply.header("x-request-id", req.id);
   if (!req.url.startsWith("/v1/img/")) req.log.info({ method: req.method, url: req.url, appVersion: req.headers["x-app-version"] }, "req");
 });
+// Images are not logged one by one (a poster wall is hundreds); a failed or slow one is, with its URL.
+const SLOW_IMG_MS = 3000;
 app.addHook("onResponse", async (req, reply) => {
-  if (!req.url.startsWith("/v1/img/") || reply.statusCode >= 400) req.log.info({ status: reply.statusCode, ms: Math.round(reply.elapsedTime) }, "res");
+  const ms = Math.round(reply.elapsedTime);
+  if (!req.url.startsWith("/v1/img/")) req.log.info({ status: reply.statusCode, ms }, "res");
+  else if (reply.statusCode >= 400 || ms > SLOW_IMG_MS) req.log.warn({ status: reply.statusCode, ms, url: req.url.slice(0, 240) }, "img res");
 });
 
 function tokenOk(req: FastifyRequest, expected: string): boolean {
@@ -214,7 +221,7 @@ app.get("/v1/overview", async () => {
 });
 
 // Emby push listener (see embyEvents.ts): status for troubleshooting.
-startEmbyEvents(app.log);
+startEmbyEvents();
 app.get("/admin/emby/events", async () => embyEvents);
 
 // ---------- health check (概览 需要处理) ----------
@@ -1093,6 +1100,17 @@ app.get("/admin/logs", async () => {
   const names = (await readdir(dir).catch(() => [] as string[])).filter((n) => n.endsWith(".json"));
   const out: { id: string; at?: string }[] = await Promise.all(names.map(async (n) => ({ id: n.slice(0, -5), ...(JSON.parse(await readFile(path.join(dir, n), "utf8")) as { at?: string }) })));
   return out.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 30);
+});
+
+// One uploaded log as text; ?grep= keeps matching lines (case-insensitive), ?tail= the last N.
+app.get<{ Params: { id: string } }>("/admin/logs/:id", async (req, reply) => {
+  const id = z.string().regex(/^[\w-]{4,40}$/).parse(req.params.id);
+  const q = z.object({ grep: z.string().max(200).optional(), tail: z.coerce.number().int().min(1).max(20000).default(400) }).parse(req.query);
+  const text = await readFile(path.join(config.dataDir, "logs", `${id}.log`), "utf8").catch(() => null);
+  if (text === null) throw Object.assign(new Error("没有这个日志"), { statusCode: 404 });
+  const needle = q.grep?.toLowerCase();
+  const lines = text.split("\n").filter((l) => l && (!needle || l.toLowerCase().includes(needle)));
+  return reply.type("text/plain; charset=utf-8").send(lines.slice(-q.tail).join("\n") + "\n");
 });
 
 // ---------- app logs (Settings → 上传日志) ----------

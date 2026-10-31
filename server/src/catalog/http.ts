@@ -5,6 +5,24 @@
 // - proxied(): JavDB blocks some countries; set INDEX_PROXY to a proxy with a suitable exit
 //   (e.g. home broadband) and pages and images go through it. Unset = direct.
 import { Agent, fetch as ufetch, ProxyAgent } from "undici";
+import { errText, logger } from "../log.ts";
+
+const log = logger("catalog-http");
+const SLOW_MS = 8000;
+// Page loads: one line when a page fails or is slow (successful fast loads stay quiet).
+async function timed<T>(via: string, url: string, run: () => Promise<T>): Promise<T> {
+  const t0 = Date.now();
+  const where = url.replace(/^https?:\/\//, "").slice(0, 160);
+  try {
+    const v = await run();
+    const ms = Date.now() - t0;
+    if (ms > SLOW_MS) log.info({ via, url: where, ms }, "page slow");
+    return v;
+  } catch (e) {
+    log.warn({ via, url: where, ms: Date.now() - t0, err: errText(e) }, "page failed");
+    throw e;
+  }
+}
 
 const FLARE = process.env.FLARESOLVERR_URL ?? "http://127.0.0.1:8191/v1";
 const PROXY = process.env.INDEX_PROXY ?? "";
@@ -41,7 +59,7 @@ async function flareCall(body: Record<string, unknown>, timeoutMs = 75_000) {
 }
 
 export function flare(url: string, ttlMs = 30 * 60_000): Promise<string> {
-  return remember(`flare:${url}`, ttlMs, () => slot(async (session) => {
+  return remember(`flare:${url}`, ttlMs, () => timed("flaresolverr", url, () => slot(async (session) => {
     if (!created.has(session)) {
       await flareCall({ cmd: "sessions.destroy", session }).catch(() => null);
       await flareCall({ cmd: "sessions.create", session });
@@ -55,7 +73,7 @@ export function flare(url: string, ttlMs = 30 * 60_000): Promise<string> {
     if (d.solution.status === 404) return "";
     if (d.solution.status >= 400) throw new Error(`页面返回 ${d.solution.status}`);
     return d.solution.response;
-  }));
+  })));
 }
 
 const agent = PROXY ? new ProxyAgent(PROXY) : new Agent();
@@ -65,14 +83,14 @@ export async function proxiedRaw(url: string, headers: Record<string, string> = 
 }
 
 export function proxied(url: string, ttlMs = 30 * 60_000): Promise<string> {
-  return remember(`proxy:${url}`, ttlMs, async () => {
+  return remember(`proxy:${url}`, ttlMs, () => timed("proxy", url, async () => {
     const res = await proxiedRaw(url);
     if (res.status === 404) return "";
     if (!res.ok) throw new Error(`页面返回 ${res.status}`);
     const text = await res.text();
     if (text.includes("Due to copyright restrictions")) throw new Error("索引站拒绝了当前出口地区");
     return text;
-  });
+  }));
 }
 
 // ---- tiny HTML helpers (the pages are server-rendered and stable enough for regexes) ----

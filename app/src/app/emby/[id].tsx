@@ -3,6 +3,7 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Image } from "expo-image";
+import { imageLog } from "@/lib/imageLog";
 import * as WebBrowser from "expo-web-browser";
 import { ExternalLinks, ExtrasRow, MediaInfo, MetaChips, PeopleRow, SimilarRow } from "@/components/embyDetail";
 import { HeroBack, HeroBackdrop, HeroHeader } from "@/components/DetailHero";
@@ -130,7 +131,7 @@ export default function EmbyItemScreen() {
         {it ? (
           <View>
             <HeroHeader poster={posterOf(it, 400)}>
-                {logo ? <Image source={logo} style={{ width: "100%", height: 56, marginBottom: 6 }} contentFit="contain" contentPosition="left" transition={180} /> : null}
+                {logo ? <Image source={logo} style={{ width: "100%", height: 56, marginBottom: 6 }} contentFit="contain" contentPosition="left" transition={180} {...imageLog(logo.uri, "logo")} /> : null}
                 <CopyText style={logo ? { fontSize: 15, fontWeight: "700", color: colors.textSoft } : { fontSize: 24, fontWeight: "800", color: colors.text, lineHeight: 29 }} numberOfLines={3}>{(it.Type === "Episode" ? it.SeriesName : it.Name) ?? ""}</CopyText>
                 {it.Taglines?.[0] ? <Text style={{ fontSize: 13, fontStyle: "italic", color: colors.textSoft, marginTop: 3 }} numberOfLines={2}>{it.Taglines[0]}</Text> : null}
                 {it.Type === "Episode" ? <Text style={[styles.body, { marginTop: 2 }]}>S{it.ParentIndexNumber}E{it.IndexNumber} · {it.Name}</Text> : null}

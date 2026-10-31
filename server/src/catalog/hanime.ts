@@ -7,6 +7,9 @@ import path from "node:path";
 import { config } from "../config.ts";
 import { extImage } from "../images.ts";
 import type { CatalogDetail, CatalogItem, CatalogProvider, HomeRow, ListQuery, Page } from "./types.ts";
+import { errText, logger } from "../log.ts";
+
+const log = logger("hanime");
 
 const DB_URL = "https://guest.freeanimehentai.net/api/v11/search_hvs";
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
@@ -130,7 +133,7 @@ async function load() {
   if (!db || Date.now() - db.at > REFRESH_MS) {
     loading ??= download().finally(() => (loading = null));
     if (!db) await loading;
-    else loading.catch(() => {});
+    else loading.catch((e: unknown) => log.warn({ err: errText(e) }, "hanime index refresh failed"));
   }
   return db!;
 }

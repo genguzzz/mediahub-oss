@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Img } from "./media";
 import { tap } from "./ui";
 import { img } from "@/lib/api";
+import { imageLog } from "@/lib/imageLog";
 import { colors, radius } from "@/lib/theme";
 
 export function Previews({ items }: { items: { thumb: string; full: string }[] }) {
@@ -22,7 +23,7 @@ export function Previews({ items }: { items: { thumb: string; full: string }[] }
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
         {items.map((p, i) => (
           <Pressable key={p.thumb} onPress={() => { tap(); setPage(i); setOpen(i); }}>
-            <Img source={img(p.thumb)} icon="image-outline" style={{ width: 150, height: 94, borderRadius: radius.md }} />
+            <Img source={img(p.thumb)} icon="image-outline" where="still-thumb" style={{ width: 150, height: 94, borderRadius: radius.md }} />
           </Pressable>
         ))}
       </ScrollView>
@@ -40,7 +41,7 @@ export function Previews({ items }: { items: { thumb: string; full: string }[] }
             onMomentumScrollEnd={(e) => setPage(Math.round(e.nativeEvent.contentOffset.x / width))}
             renderItem={({ item }) => (
               <Pressable onPress={() => setOpen(null)} style={{ width, height, justifyContent: "center" }}>
-                <Image source={img(item.full) ?? undefined} style={{ width, height: height * 0.8 }} contentFit="contain" cachePolicy="disk" />
+                <Image source={img(item.full) ?? undefined} style={{ width, height: height * 0.8 }} contentFit="contain" cachePolicy="disk" {...imageLog(img(item.full)?.uri, "still-full")} />
               </Pressable>
             )}
           />
