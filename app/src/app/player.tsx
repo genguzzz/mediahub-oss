@@ -479,7 +479,8 @@ export default function PlayerScreen() {
   // (plus a little room so the back button is never under it). Top bar hugs the top edge.
   const L = insets.left ? insets.left + 6 : 20;
   const R = insets.right ? insets.right + 6 : 20;
-  const TOP = insets.top ? insets.top : 6;
+  // Portrait: the island is centred, so the bar can sit up beside it (the buttons are at the sides).
+  const TOP = insets.top ? Math.max(insets.top - 18, 6) : 2;
 
   return (
     <View style={{ flex: 1, backgroundColor: "#000" }} onLayout={(e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width)}>
@@ -611,9 +612,10 @@ export default function PlayerScreen() {
           </Animated.View>
         ) : (
           <>
-            <Animated.View style={[{ position: "absolute", top: TOP, left: L, right: R, flexDirection: "row", alignItems: "center", gap: 18 }, topStyle]}>
+            {/* box-none + a pass-through title: a swipe down that starts on the bar still closes the player */}
+            <Animated.View pointerEvents="box-none" style={[{ position: "absolute", top: TOP, left: L, right: R, flexDirection: "row", alignItems: "center", gap: 18 }, topStyle]}>
               <Btn name="chevron-down" onPress={close} label="关闭" size={26} />
-              <View style={{ flex: 1 }}>
+              <View style={{ flex: 1 }} pointerEvents="none">
                 <Text style={{ color: "#fff", fontSize: 17, fontWeight: "700" }} numberOfLines={1}>{title}</Text>
                 <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 }}>
                   <Text style={{ color: "#ccc", fontSize: 12, flexShrink: 1 }} numberOfLines={1}>{subtitle}</Text>
