@@ -1,10 +1,11 @@
-// Sample screenshots of a work: a thumbnail strip that opens a full-screen pager.
+// Sample screenshots of a work: a thumbnail strip that opens a full-screen pager. Stills come in both
+// orientations (DMM's first sample is the portrait cover, many samples are vertical): thumbnails share one
+// height and take their width from the image once it loads; the pager shows each whole (contain).
 import { useRef, useState } from "react";
 import { FlatList, Modal, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { Img } from "./media";
 import { tap } from "./ui";
 import { img } from "@/lib/api";
 import { imageLog } from "@/lib/imageLog";
@@ -21,11 +22,7 @@ export function Previews({ items }: { items: { thumb: string; full: string }[] }
     <View style={{ marginTop: 18 }}>
       <Text style={{ fontSize: 16, fontWeight: "800", color: colors.text, marginBottom: 10 }}>剧照 · {items.length}</Text>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-        {items.map((p, i) => (
-          <Pressable key={p.thumb} onPress={() => { tap(); setPage(i); setOpen(i); }}>
-            <Img source={img(p.thumb)} icon="image-outline" where="still-thumb" style={{ width: 150, height: 94, borderRadius: radius.md }} />
-          </Pressable>
-        ))}
+        {items.map((p, i) => <Thumb key={p.thumb} uri={p.thumb} onPress={() => { tap(); setPage(i); setOpen(i); }} />)}
       </ScrollView>
       <Modal visible={open !== null} transparent animationType="fade" onRequestClose={() => setOpen(null)} statusBarTranslucent>
         <View style={{ flex: 1, backgroundColor: "#000" }}>
@@ -56,3 +53,29 @@ export function Previews({ items }: { items: { thumb: string; full: string }[] }
     </View>
   );
 }
+
+const THUMB_H = 100;
+
+function Thumb({ uri, onPress }: { uri: string; onPress: () => void }) {
+  const [ratio, setRatio] = useState(1.6);
+  const src = img(uri);
+  const log = imageLog(src?.uri, "still-thumb");
+  return (
+    <Pressable onPress={onPress} style={{ width: Math.round(THUMB_H * ratio), height: THUMB_H, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.cardMuted }}>
+      <Image
+        source={src}
+        style={{ width: "100%", height: "100%" }}
+        contentFit="cover"
+        cachePolicy="disk"
+        transition={150}
+        {...log}
+        onLoad={(e) => {
+          log.onLoad(e);
+          const { width: w, height: h } = e.source;
+          if (w && h) setRatio(Math.min(2, Math.max(0.6, w / h)));
+        }}
+      />
+    </Pressable>
+  );
+}
+

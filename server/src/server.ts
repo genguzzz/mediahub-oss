@@ -474,6 +474,17 @@ function recBrief(m: MpRec) {
   return { ...brief(m), poster: posterPath(m.poster_path), source: m.media_source ?? "", sourceId: m.media_id ?? "" };
 }
 
+// A Bangumi / Douban entry without a poster (new 番 not yet illustrated on Bangumi) takes the poster of the
+// TMDb work it opens, which the detail page shows anyway; it then also opens without resolving again.
+async function withTmdbPoster<T extends ReturnType<typeof recBrief>>(i: T): Promise<T> {
+  if (i.poster || i.tmdbid || !i.title) return i;
+  const hit = await resolveTmdb(i.title, i.year, i.type).catch((e: unknown) => {
+    app.log.warn({ title: i.title, err: e instanceof Error ? e.message : String(e) }, "discover poster resolve failed");
+    return null;
+  });
+  return hit ? { ...i, tmdbid: hit.tmdb_id ?? null, poster: posterPath(hit.poster_path) } : i;
+}
+
 app.get("/v1/discover", async () => ({ sections: Object.entries(DISCOVER).map(([id, d]) => ({ id, title: d.title, group: d.group, ranked: !!d.ranked })) }));
 
 app.get<{ Params: { id: string } }>("/v1/discover/:id", async (req) => {
@@ -482,7 +493,7 @@ app.get<{ Params: { id: string } }>("/v1/discover/:id", async (req) => {
   const { page } = z.object({ page: z.coerce.number().int().min(1).max(20).default(1) }).parse(req.query);
   if (d.max && page > d.max) return { title: d.title, ranked: !!d.ranked, items: [] };
   const list = await remember(`disc:${req.params.id}:${page}`, 30 * 60_000, () => mp<MpRec[]>("GET", d.path, { query: { ...d.query, page, count: 30 }, timeoutMs: 40_000 }));
-  const items = (list ?? []).filter((m) => m.type === "电影" || m.type === "电视剧").map(recBrief);
+  const items = await Promise.all((list ?? []).filter((m) => m.type === "电影" || m.type === "电视剧").map(recBrief).map(withTmdbPoster));
   const lib = await libraryOf(items);
   return { title: d.title, ranked: !!d.ranked, items: items.map((i) => ({ ...i, library: i.tmdbid ? lib[`${i.type}:${i.tmdbid}`] ?? null : null })) };
 });
@@ -550,13 +561,19 @@ app.get<{ Params: { type: string; id: string } }>("/v1/media/:type/:id/related",
   };
 });
 
-// Bangumi / Douban entries carry no TMDb id: find the TMDb item by title, type and year.
+// Bangumi / Douban entries carry no TMDb id: find the TMDb item by title, type and year (cached a week).
+async function resolveTmdb(title: string, year: string, type: Kind): Promise<MpMedia | null> {
+  return remember(`resolve:${type}:${title}:${year}`, 7 * 86400_000, async () => {
+    const list = await mp<MpMedia[]>("GET", "/media/search", { query: { title, type: "media", page: 1, count: 20 }, timeoutMs: 30_000 });
+    const cands = (list ?? []).filter((m) => m.tmdb_id && kindOf(m.type) === type);
+    const y = Number(year) || 0;
+    return cands.find((m) => !y || Math.abs(Number(m.year) - y) <= 1) ?? cands[0] ?? null;
+  });
+}
+
 app.get("/v1/media/resolve", async (req) => {
   const q = z.object({ title: z.string().min(1).max(200), year: z.string().max(8).default(""), type: z.enum(["movie", "tv"]).default("tv") }).parse(req.query);
-  const list = await mp<MpMedia[]>("GET", "/media/search", { query: { title: q.title, type: "media", page: 1, count: 20 }, timeoutMs: 30_000 });
-  const cands = (list ?? []).filter((m) => m.tmdb_id && kindOf(m.type) === q.type);
-  const y = Number(q.year) || 0;
-  const pick = cands.find((m) => !y || Math.abs(Number(m.year) - y) <= 1) ?? cands[0];
+  const pick = await resolveTmdb(q.title, q.year, q.type);
   if (!pick) throw Object.assign(new Error("TMDb 里没找到对应条目"), { statusCode: 404 });
   return { tmdbid: pick.tmdb_id, type: kindOf(pick.type), title: pick.title };
 });
