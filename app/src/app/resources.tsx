@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FlatList, Linking, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
@@ -42,7 +42,27 @@ export default function ResourcesScreen() {
     ? { tmdbid, type, season }
     : { tmdbid: mode === "raw" ? tmdbid : undefined, type, season: mode === "raw" ? season : undefined, keyword, keywords, sources: picked };
   const key = `res:${JSON.stringify(body)}`;
-  const q = useQuery(waiting ? null : key, () => api<SearchResult>("/v1/search", { body, timeoutMs: 160_000 }), { staleMs: 15 * 60_000 });
+  // Smart search is one MoviePilot call. Source searches go out one request per source (「全部已启用索引器」 =
+  // one per enabled Prowlarr indexer) and fill the list as each answers, instead of waiting for the slowest.
+  const smartQ = useQuery(mode === "smart" && !waiting ? key : null, () => api<SearchResult>("/v1/search", { body, timeoutMs: 160_000 }), { staleMs: 15 * 60_000 });
+  const allSources = useQuery(mode !== "smart" ? "sources" : null, () => api<{ sources: Source[] }>("/v1/sources"), { staleMs: 10 * 60_000 });
+  const expanded = useMemo(() => {
+    if (mode === "smart") return null;
+    if (!picked.includes("prowlarr")) return picked;
+    if (!allSources.data) return null;
+    const idx = allSources.data.sources.filter((x) => x.kind === "prowlarr" && x.enabled && x.prowlarrEnabled !== false).map((x) => x.id);
+    return [...new Set([...picked.filter((x) => x !== "prowlarr"), ...idx])];
+  }, [mode, picked, allSources.data]);
+  const streamQ = useStreamSearch(mode !== "smart" && !waiting ? key : null, body, expanded);
+  const q = mode === "smart" ? { ...smartQ, progress: null as null | { done: number; total: number } } : streamQ;
+  const [kwText, setKwText] = useState<string | null>(null);
+  const editKeyword = () => {
+    const v = (kwText ?? "").trim();
+    if (!v) return;
+    setChosen([v, ...keywords.slice(1).filter((k) => k !== v)]);
+    setKwText(null);
+    if (mode === "smart") setMode("raw");
+  };
 
   // ---- filters ----
   const [src, setSrc] = useState<string | null>(null);
@@ -88,9 +108,25 @@ export default function ResourcesScreen() {
           <Chip label="按来源搜索" active={mode === "raw"} onPress={() => setMode("raw")} />
         </View>
       ) : null}
+      {/* The keyword itself is editable here; more keywords and the sources are in the sheet. */}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginHorizontal: 16, marginBottom: 6, paddingHorizontal: 12, height: 42, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.card }}>
+        <Ionicons name="search" size={16} color={colors.textFaint} />
+        <TextInput
+          value={kwText ?? keyword}
+          onChangeText={setKwText}
+          onSubmitEditing={editKeyword}
+          returnKeyType="search"
+          autoCorrect={false}
+          autoCapitalize="none"
+          clearButtonMode="while-editing"
+          placeholder="关键词"
+          placeholderTextColor={colors.textFaint}
+          style={{ flex: 1, fontSize: 15, color: colors.text }}
+        />
+      </View>
       {mode !== "smart" ? (
         <Pressable onPress={() => { tap(); setSourceSheet(true); }} style={{ marginHorizontal: 16, marginBottom: 8 }}>
-          <Text style={styles.faint} numberOfLines={1}>关键词「{keywords.join(" / ")}」· 来源 {picked.length} 个 · 点这里修改</Text>
+          <Text style={styles.faint} numberOfLines={1}>{keywords.length > 1 ? `另有 ${keywords.length - 1} 个关键词 · ` : ""}来源 {picked.length} 个{q.progress && q.progress.done < q.progress.total ? ` · ${q.progress.done}/${q.progress.total} 个来源已返回` : ""} · 点这里修改</Text>
         </Pressable>
       ) : null}
 
@@ -128,7 +164,7 @@ export default function ResourcesScreen() {
           <>
             {q.error ? <ErrorBox text={q.error} onRetry={q.refresh} /> : null}
             {q.data?.error ? <ErrorBox text={`部分来源出错：${q.data.error}`} /> : null}
-            {q.loading && !q.data ? <Loading text={mode === "smart" ? "MoviePilot 正在按多个关键词搜索，通常 10–40 秒" : "正在搜索所选来源"} /> : null}
+            {q.loading && !q.data ? <Loading text={mode === "smart" ? "MoviePilot 正在按多个关键词搜索，通常 10–40 秒" : q.progress ? `正在搜索 ${q.progress.total} 个来源，先返回的先显示` : "正在搜索所选来源"} /> : null}
             {q.data ? (
               <Text style={[styles.faint, { marginBottom: 4 }]}>
                 {q.data.mode === "smart" ? "智能搜索" : "按来源"} · {q.data.results.length} 条，显示 {list.length} 条 · {q.data.elapsed} 秒
@@ -374,3 +410,60 @@ function SourceSheet({ visible, onClose, picked, keywords, names, showAdult, onA
     </Sheet>
   );
 }
+
+// Source search, one request per source, merged as they answer (de-duplicated by magnet); the chips'
+// counts come from the merged list. `refresh` runs it again.
+function useStreamSearch(key: string | null, body: Record<string, unknown>, sources: string[] | null) {
+  const [nonce, setNonce] = useState(0);
+  const [st, setSt] = useState<{ run: string; data: SearchResult | null; done: number; total: number } | null>(null);
+  const bodyRef = useRef(body);
+  useEffect(() => { bodyRef.current = body; });
+  const run = key && sources ? `${key}#${sources.join(",")}#${nonce}` : null;
+  useEffect(() => {
+    if (!run || !sources?.length) return;
+    let alive = true;
+    const t0 = Date.now();
+    const seen = new Set<string>();
+    const errors: string[] = [];
+    let merged: SearchResult | null = null;
+    let done = 0;
+    const count = (rs: Resource[], f: (r: Resource) => string | undefined): [string, number][] => {
+      const m = new Map<string, number>();
+      for (const r of rs) { const k = f(r); if (k) m.set(k, (m.get(k) ?? 0) + 1); }
+      return [...m.entries()].sort((a, b) => b[1] - a[1]);
+    };
+    for (const one of sources) {
+      void api<SearchResult>("/v1/search", { body: { ...bodyRef.current, sources: [one] }, timeoutMs: 160_000 })
+        .then((r) => {
+          const add = r.results.filter((x) => { const k = x.magnet || x.id; if (seen.has(k)) return false; seen.add(k); return true; });
+          const prev: SearchResult | null = merged;
+          merged = { ...(prev ?? r), results: [...(prev?.results ?? []), ...add] };
+          if (r.error) errors.push(r.error);
+        })
+        .catch((e: unknown) => { errors.push(`${one}：${e instanceof Error ? e.message : String(e)}`); })
+        .finally(() => {
+          done++;
+          if (!alive) return;
+          const m: SearchResult | null = merged;
+          setSt({
+            run,
+            done,
+            total: sources.length,
+            data: m ? { ...m, sources: count(m.results, (x) => x.source), groups: count(m.results, (x) => x.group || undefined), elapsed: Math.round((Date.now() - t0) / 100) / 10, error: errors.join("；") || null } : null,
+          });
+        });
+    }
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run]);
+  const cur = st && st.run === run ? st : null;
+  const failedAll = cur && cur.done === cur.total && !cur.data;
+  return {
+    data: cur?.data ?? undefined,
+    loading: !!run && (!cur || cur.done < cur.total),
+    error: failedAll ? "所有来源都没有返回结果" : undefined,
+    refresh: () => setNonce((n) => n + 1),
+    progress: run && sources ? { done: cur?.done ?? 0, total: sources.length } : null,
+  };
+}
+
