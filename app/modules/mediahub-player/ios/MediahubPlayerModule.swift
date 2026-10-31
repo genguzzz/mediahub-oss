@@ -97,7 +97,7 @@ public class MediahubPlayerModule: Module {
     AsyncFunction("capabilities") { () -> [String: Any] in
       let d = MainActor.assumeIsolated { AetherEngine.displayCapabilities }
       return [
-        "module": 5,
+        "module": 6,   // 6: fitMode prop
         "ssdp": true,
         "prewarm": true,
         "startupEvents": true,
@@ -159,6 +159,9 @@ public class MediahubPlayerModule: Module {
       }
       Prop("subtitleScale") { (view: MediahubPlayerView, scale: Double) in
         view.subtitleScale = CGFloat(scale)
+      }
+      Prop("fitMode") { (view: MediahubPlayerView, mode: String) in
+        view.fitMode = mode
       }
       Prop("autoPiP") { (view: MediahubPlayerView, on: Bool) in
         view.autoPiP = on

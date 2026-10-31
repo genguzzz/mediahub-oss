@@ -18,6 +18,7 @@ export interface Settings {
   style: StyleId;        // colour style, see theme.ts STYLES
   layout: "grid" | "list"; // poster lists: two-column waterfall or large-poster list
   subtitleScale: number; // player subtitle size multiplier
+  fitMode: "fit" | "fill" | "stretch"; // player picture: aspect fit / aspect fill / scale fill
   sources: string[] | null; // sources pre-selected for 按来源搜索 (null = built-in default)
   emby: EmbyAccount;
   castTv: { name: string; location: string } | null; // last DLNA renderer used for casting
@@ -42,7 +43,7 @@ const store = Platform.OS === "web"
 const randomId = () => `mh-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 
 let state: Settings = {
-  server: DEFAULT_SERVER, token: "", showAdult: false, notify: true, theme: "system", style: "cinema", layout: "grid", subtitleScale: 1, sources: null, castTv: null,
+  server: DEFAULT_SERVER, token: "", showAdult: false, notify: true, theme: "system", style: "cinema", layout: "grid", subtitleScale: 1, fitMode: "fit", sources: null, castTv: null,
   emby: { server: "", username: "", token: "", userId: "", deviceId: randomId() },
 };
 let loaded = false;

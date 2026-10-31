@@ -29,6 +29,7 @@ export interface PlayerViewProps extends ViewProps {
   paused?: boolean;
   rate?: number;
   subtitleScale?: number;
+  fitMode?: "fit" | "fill" | "stretch";   // module ≥ 6: aspect fit / aspect fill / scale fill
   autoPiP?: boolean;                  // runtime 3+
   itemId?: string;                    // runtime 3+, for restoring a detached PiP window
   nowPlaying?: { title: string; subtitle?: string; artwork?: string } | null; // runtime 3+

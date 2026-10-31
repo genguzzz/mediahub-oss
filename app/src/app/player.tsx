@@ -59,6 +59,9 @@ export default function PlayerScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const subtitleScale = useSettings((s) => s.subtitleScale);
+  const fitMode = useSettings((s) => s.fitMode ?? "fit");
+  const [fitHud, setFitHud] = useState<string | null>(null);
+  const fitHudTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [itemId, setItemId] = useState(params.id);
   const [fromStart, setFromStart] = useState(params.resume === "0");
   const item = useQuery(itemId && !web ? `emby:item:${itemId}` : null, () => embyApi.item(itemId!), { staleMs: 5 * 60_000 });
@@ -361,6 +364,17 @@ export default function PlayerScreen() {
     }
   };
 
+  const FIT_LABEL: Record<"fit" | "fill" | "stretch", string> = { fit: "适应（完整画面）", fill: "填充（裁切边缘）", stretch: "拉伸（铺满）" };
+  function setFit(m: "fit" | "fill" | "stretch") {
+    tap();
+    setSettings({ fitMode: m });
+    track("player_fit", { mode: m });
+    setFitHud(FIT_LABEL[m]);
+    if (fitHudTimer.current) clearTimeout(fitHudTimer.current);
+    fitHudTimer.current = setTimeout(() => setFitHud(null), 1400);
+  }
+  const cycleFit = () => { kick(); setFit(fitMode === "fit" ? "fill" : fitMode === "fill" ? "stretch" : "fit"); };
+
   const close = () => {
     tap();
     // With an open small window the video keeps playing after the screen closes.
@@ -458,7 +472,13 @@ export default function PlayerScreen() {
       setGestureHud(null);
       panMode.current = null;
     });
-  const surfaceGesture = Gesture.Race(pan, longPress, Gesture.Exclusive(doubleTap, singleTap));
+  // Pinch out = 填充 (aspect fill), pinch in = 适应 (aspect fit), like VidHub / YouTube.
+  const pinch = Gesture.Pinch().runOnJS(true).onEnd((e) => {
+    if (locked || !caps || caps.module < 6) return;
+    if (e.scale > 1.12 && fitMode !== "fill") setFit("fill");
+    else if (e.scale < 0.9 && fitMode !== "fit") setFit("fit");
+  });
+  const surfaceGesture = Gesture.Race(pinch, pan, longPress, Gesture.Exclusive(doubleTap, singleTap));
   /* eslint-enable react-hooks/refs */
 
   const nowPlaying = useMemo(() => (title ? { title, subtitle, artwork } : null), [title, subtitle, artwork]);
@@ -496,6 +516,7 @@ export default function PlayerScreen() {
             paused={paused}
             rate={boost ? 2 : rate}
             subtitleScale={subtitleScale}
+            fitMode={fitMode}
             autoPiP
             itemId={web ? undefined : itemId}
             nowPlaying={nowPlaying}
@@ -587,6 +608,11 @@ export default function PlayerScreen() {
               <Text style={{ color: "#fff", fontWeight: "700" }}>2 倍速播放中</Text>
             </Animated.View>
           ) : null}
+          {fitHud ? (
+            <Animated.View entering={FadeIn.duration(140)} exiting={FadeOut.duration(200)} pointerEvents="none" style={{ position: "absolute", top: "42%", alignSelf: "center", backgroundColor: "rgba(0,0,0,0.6)", paddingHorizontal: 16, height: 36, borderRadius: 18, justifyContent: "center" }}>
+              <Text style={{ color: "#fff", fontSize: 14, fontWeight: "700" }}>{fitHud}</Text>
+            </Animated.View>
+          ) : null}
           {gestureHud ? (
             <Animated.View entering={FadeIn.duration(140)} exiting={FadeOut.duration(220)} pointerEvents="none" style={{ position: "absolute", top: "40%", alignSelf: "center", flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: "rgba(0,0,0,0.6)", paddingHorizontal: 16, height: 44, borderRadius: 22 }}>
               <Ionicons name={gestureHud.kind === "brightness" ? "sunny" : gestureHud.value < 0.01 ? "volume-mute" : "volume-high"} size={18} color="#fff" />
@@ -625,6 +651,7 @@ export default function PlayerScreen() {
                   {curAudio?.isAtmos ? <Badge text="Atmos" /> : null}
                 </View>
               </View>
+              {caps && caps.module >= 6 ? <Btn name={fitMode === "fit" ? "scan-outline" : fitMode === "fill" ? "expand-outline" : "resize-outline"} label="画面比例" onPress={cycleFit} /> : null}
               <Btn name="tv-outline" label="投屏" onPress={() => { kick(); setSheet("cast"); }} />
               {has("airplay") ? <AirPlayButton tint="#ffffff" style={{ width: 28, height: 28 }} /> : null}
               {caps?.pip ? <Btn name={pipActive ? "contract-outline" : "browsers-outline"} label="小窗" onPress={togglePiP} /> : null}

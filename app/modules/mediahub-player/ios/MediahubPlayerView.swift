@@ -38,6 +38,18 @@ final class MediahubPlayerView: ExpoView {
   var subtitleScale: CGFloat = 1 {
     didSet { renderSubtitles(at: lastSourceTime, force: true) }
   }
+  // Picture fit (VidHub-style): "fit" = aspect fit (whole picture, bars), "fill" = aspect fill (covers the
+  // screen, crops the overflow), "stretch" = scale fill (fills both axes, distorts). Applied live.
+  var fitMode: String = "fit" {
+    didSet { if fitMode != oldValue { engine?.videoGravity = gravity; renderSubtitles(at: lastSourceTime, force: true) } }
+  }
+  private var gravity: AVLayerVideoGravity {
+    switch fitMode {
+    case "fill": return .resizeAspectFill
+    case "stretch": return .resize
+    default: return .resizeAspect
+    }
+  }
   var autoPiP = true {
     didSet { pip?.canStartPictureInPictureAutomaticallyFromInline = autoPiP }
   }
@@ -227,7 +239,7 @@ final class MediahubPlayerView: ExpoView {
     if let engine { return engine }
     do {
       let e = try AetherEngine()
-      e.videoGravity = .resizeAspect
+      e.videoGravity = gravity
       e.backgroundPlaybackEnabled = true
       // Lock screen / Control Center transport for both routes (read when a host is created).
       e.ownsVideoNowPlayingSession = true
@@ -560,16 +572,21 @@ final class MediahubPlayerView: ExpoView {
   }
 
   // Bitmap cues (PGS / DVB / VobSub) are positioned on the video canvas; map that canvas onto
-  // the aspect-fit video rect inside this view.
+  // the video rect inside this view under the current fit mode.
   private func showImage(_ image: SubtitleImage) {
     let canvas = image.canvasSize.width > 0 ? image.canvasSize : CGSize(width: 1920, height: 1080)
-    let scale = min(bounds.width / canvas.width, bounds.height / canvas.height)
-    let video = CGRect(x: (bounds.width - canvas.width * scale) / 2, y: (bounds.height - canvas.height * scale) / 2,
-                       width: canvas.width * scale, height: canvas.height * scale)
+    let fx = bounds.width / canvas.width, fy = bounds.height / canvas.height
+    let (sx, sy): (CGFloat, CGFloat) = fitMode == "stretch" ? (fx, fy) : fitMode == "fill" ? (max(fx, fy), max(fx, fy)) : (min(fx, fy), min(fx, fy))
+    let video = CGRect(x: (bounds.width - canvas.width * sx) / 2, y: (bounds.height - canvas.height * sy) / 2,
+                       width: canvas.width * sx, height: canvas.height * sy)
     let p = image.position
     subtitleImage.image = UIImage(cgImage: image.cgImage)
-    subtitleImage.frame = CGRect(x: video.minX + p.minX * scale, y: video.minY + p.minY * scale,
-                                 width: p.width * scale * subtitleScale, height: p.height * scale * subtitleScale)
+    // Keep cues on screen when "fill" crops the canvas.
+    var frame = CGRect(x: video.minX + p.minX * sx, y: video.minY + p.minY * sy,
+                       width: p.width * sx * subtitleScale, height: p.height * sy * subtitleScale)
+    frame.origin.y = min(max(frame.minY, safeAreaInsets.top), bounds.height - max(safeAreaInsets.bottom, 12) - frame.height)
+    frame.origin.x = min(max(frame.minX, 0), bounds.width - frame.width)
+    subtitleImage.frame = frame
     subtitleImage.isHidden = false
   }
 }
