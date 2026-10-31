@@ -5,7 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Previews } from "@/components/Previews";
-import { Img, MiniTag, PosterTile, Row } from "@/components/media";
+import { Img, MiniTag, PosterTile, Row, useCover } from "@/components/media";
 import { Card, Chip, CopyText, SourceLink, ErrorBox, Loading, PillButton, Pull, Row as InfoRow, styles, tap } from "@/components/ui";
 import { img } from "@/lib/api";
 import { catalogApi, catalogCard, compact, usePlaySource, type StreamSource } from "@/lib/catalog";
@@ -23,6 +23,8 @@ export default function CatalogItemScreen() {
   const providers = useQuery("catalog:providers", catalogApi.providers, { staleMs: 60 * 60_000 });
   const tagFilter = !!providers.data?.providers.find((x) => x.id === p)?.tagFilter;
   const it = q.data?.item;
+  const cover = useCover(img(it?.poster)?.uri, it?.posterCrop === "right", it?.posterAspect);
+  const coverW = cover.aspect && cover.aspect > 1 ? 150 : 104;
   const kind = q.data?.kind;
   const library = q.data?.library ?? null;
   // Online sources (Jable…) need page loads on the server: fetched after the detail is shown.
@@ -52,7 +54,7 @@ export default function CatalogItemScreen() {
           <View style={{ paddingHorizontal: 18, marginTop: -heroH * 0.32 }}>
             <View style={{ flexDirection: "row", gap: 14, alignItems: "flex-end" }}>
               <View style={{ borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: colors.border }}>
-                <Img source={img(it.poster)} right={it.posterCrop === "right"} style={{ width: 104, height: 104 / (it.posterAspect ?? 2 / 3) }} />
+                <Img source={img(it.poster)} right={cover.right} onSize={cover.onSize} style={{ width: coverW, height: coverW / (cover.aspect ?? 2 / 3) }} />
               </View>
               <View style={{ flex: 1, paddingBottom: 4 }}>
                 {it.code ? <CopyText style={{ fontSize: 13, fontWeight: "800", color: colors.primary, letterSpacing: 0.5 }}>{it.code}</CopyText> : null}

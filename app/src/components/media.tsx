@@ -1,6 +1,6 @@
 // Poster layouts shared by the library, discover and search screens. Every poster is 2:3 and every
 // landscape card 16:9, so rows and columns line up whatever the source images are.
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
@@ -37,12 +37,33 @@ export interface CardData {
 
 const peek = (c: CardData) => () => { tap(); openPeek(c); };
 
-export function Img({ source, style, icon = "film-outline", iconSize = 28, right, where = "img", label }: { source: Src; style: object; icon?: keyof typeof Ionicons.glyphMap; iconSize?: number; right?: boolean; where?: string; label?: string }) {
+// A DVD jacket (front + back side by side, ~1.49:1) shows its right half — the front — on a 2:3 card. Some
+// sources mix in plain 16:9 stills (JavDB's 无码 covers are 960×540) where half a picture is wrong: those
+// show whole on a 16:9 card. Which one an image is shows only once it loads; the answer is kept per URL.
+const STILL_RATIO = 1.6;
+const stills = new Map<string, boolean>();
+
+export function useCover(uri: string | undefined, jacket: boolean | undefined, aspect: number | undefined) {
+  const [still, setStill] = useState(() => !!uri && stills.get(uri) === true);
+  const onSize = jacket && uri
+    ? (w: number, h: number) => {
+      const s = w / h >= STILL_RATIO;
+      if (stills.size > 2000) stills.clear();
+      stills.set(uri, s);
+      if (s !== still) setStill(s);
+    }
+    : undefined;
+  return { right: !!jacket && !still, aspect: still ? 16 / 9 : aspect, onSize };
+}
+
+export function Img({ source, style, icon = "film-outline", iconSize = 28, right, where = "img", label, onSize }: { source: Src; style: object; icon?: keyof typeof Ionicons.glyphMap; iconSize?: number; right?: boolean; where?: string; label?: string; onSize?: (w: number, h: number) => void }) {
   if (!source) logMissing(where, label);
+  const log = source ? imageLog(source.uri, where) : null;
   return (
     <View style={[{ backgroundColor: colors.cardMuted, overflow: "hidden", alignItems: "center", justifyContent: "center" }, style]}>
       <Ionicons name={icon} size={iconSize} color={colors.textFaint} style={{ position: "absolute" }} />
-      {source ? <Image source={source} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} contentFit="cover" contentPosition={right ? "right" : "center"} transition={180} cachePolicy="disk" {...imageLog(source.uri, where)} /> : null}
+      {source ? <Image source={source} style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }} contentFit="cover" contentPosition={right ? "right" : "center"} transition={180} cachePolicy="disk" {...log}
+        onLoad={(e) => { log?.onLoad(e); if (onSize && e.source.width && e.source.height) onSize(e.source.width, e.source.height); }} /> : null}
     </View>
   );
 }
@@ -94,10 +115,11 @@ function estimate(c: CardData, w: number) {
 }
 
 function GridCard({ c, w }: { c: CardData; w: number }) {
+  const cover = useCover(c.poster?.uri, c.posterRight, c.aspect);
   return (
     <Pressable onPress={() => { tap(); c.onPress(); }} onLongPress={peek(c)} delayLongPress={350} style={({ pressed }) => ({ width: w, marginBottom: 16, opacity: pressed ? 0.85 : 1 })}>
       <View style={{ borderRadius: radius.md, overflow: "hidden", ...shadow() }}>
-        <Img label={c.title} where="card" source={c.poster} right={c.posterRight} style={{ width: w, height: w / (c.aspect ?? 2 / 3) }} iconSize={w * 0.2} />
+        <Img label={c.title} where="card" source={c.poster} right={cover.right} onSize={cover.onSize} style={{ width: w, height: w / (cover.aspect ?? 2 / 3) }} iconSize={w * 0.2} />
         <Overlays c={c} />
       </View>
       <Text style={{ fontSize: 14, fontWeight: "700", color: colors.text, marginTop: 8, lineHeight: 19 }} numberOfLines={2}>{c.title}</Text>
@@ -136,7 +158,8 @@ export function Waterfall({ items, padding = 16, gap = 12 }: { items: CardData[]
 // ---------- list: large poster with details ----------
 
 export function ListCard({ c }: { c: CardData }) {
-  const w = 112;
+  const cover = useCover(c.poster?.uri, c.posterRight, c.aspect);
+  const w = cover.aspect && cover.aspect > 1 ? 150 : 112;
   return (
     <Pressable
       onPress={() => { tap(); c.onPress(); }}
@@ -145,7 +168,7 @@ export function ListCard({ c }: { c: CardData }) {
       style={({ pressed }) => ({ flexDirection: "row", gap: 14, padding: 12, borderRadius: radius.lg, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, opacity: pressed ? 0.88 : 1, ...shadow() })}
     >
       <View style={{ borderRadius: radius.md, overflow: "hidden" }}>
-        <Img label={c.title} where="card" source={c.poster} right={c.posterRight} style={{ width: w, height: w / (c.aspect ?? 2 / 3) }} />
+        <Img label={c.title} where="card" source={c.poster} right={cover.right} onSize={cover.onSize} style={{ width: w, height: w / (cover.aspect ?? 2 / 3) }} />
         <Overlays c={{ ...c, rating: undefined }} />
       </View>
       <View style={{ flex: 1, paddingVertical: 2 }}>
@@ -212,10 +235,11 @@ export function Row({ title, onMore, children }: { title: string; onMore?: () =>
 }
 
 export function PosterTile({ c, w = 118 }: { c: CardData; w?: number }) {
+  const cover = useCover(c.poster?.uri, c.posterRight, c.aspect);
   return (
     <Pressable onPress={() => { tap(); c.onPress(); }} onLongPress={peek(c)} delayLongPress={350} style={({ pressed }) => ({ width: w, opacity: pressed ? 0.85 : 1 })}>
       <View style={{ borderRadius: radius.md, overflow: "hidden", ...shadow() }}>
-        <Img label={c.title} where="card" source={c.poster} right={c.posterRight} style={{ width: w, height: w / (c.aspect ?? 2 / 3) }} />
+        <Img label={c.title} where="card" source={c.poster} right={cover.right} onSize={cover.onSize} style={{ width: w, height: w / (cover.aspect ?? 2 / 3) }} />
         <Overlays c={c} />
       </View>
       <Text style={{ fontSize: 13, fontWeight: "700", color: colors.text, marginTop: 7 }} numberOfLines={1}>{c.title}</Text>
