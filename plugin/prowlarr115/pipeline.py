@@ -852,14 +852,29 @@ class Pipeline:
                 self.event(h, "offline", "115 离线下载完成")
             ready.append(h)
 
+    round_started: Optional[float] = None     # a tracking round in progress (health reports one stuck > 15 min)
+
     def run(self) -> None:
+        self.round_started = now()
+        try:
+            self._run()
+        finally:
+            self.round_started = None
+
+    def _run(self) -> None:
         tasks = self.load()
         active = {h: t for h, t in tasks.items()
                   if t.get("status") in ("downloading", "buffer", "uploaded") or (t.get("status") == "done" and not t.get("emby"))}
         if not active:
             return
         pending = {h: t for h, t in active.items() if t["status"] == "downloading"}
-        tl = self.c115.tasks() if pending else {}
+        # The 115 list failing (the NAS tunnel stalls now and then) must not hold back the rest of the round:
+        # downloaded / buffered tasks only need OpenList and Emby. Their 115 progress waits for the next round.
+        try:
+            tl = self.c115.tasks() if pending else {}
+        except Exception as e:  # noqa: BLE001
+            self.log(f"读取 115 离线列表失败，本轮跳过 115 进度：{e}")
+            tl, pending = {}, {}
         ready = []
         for h, t in pending.items():
             info = tl.get(h)

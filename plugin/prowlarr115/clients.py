@@ -9,6 +9,7 @@
 import re
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from typing import Any, Dict, List, Optional
 
 from app.sdk.network import RequestUtils
@@ -169,9 +170,18 @@ class Cloud115:
         self.cookie = cookie.strip()
         self.proxies = {"http": proxy, "https": proxy} if proxy else None
 
+    # Through the SOCKS tunnel the TLS handshake can stall with no timeout in effect: one such call held the
+    # tracking round for 11 hours (2026-10-31), so every 115 call gets a hard deadline on top of `timeout`.
+    DEADLINE = 90
+    _pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="p115-api")
+
     def _req(self, url: str, data: Optional[dict] = None) -> dict:
         ru = RequestUtils(headers={"Cookie": self.cookie, "User-Agent": UA}, proxies=self.proxies, timeout=60)
-        res = ru.post_res(url, data=data) if data is not None else ru.get_res(url)
+        fut = self._pool.submit(lambda: ru.post_res(url, data=data) if data is not None else ru.get_res(url))
+        try:
+            res = fut.result(timeout=self.DEADLINE)
+        except FutureTimeout as err:
+            raise ClientError(f"115 请求 {self.DEADLINE} 秒没有完成（经 NAS 出口）：{url[:60]}") from err
         if res is None:
             raise ClientError(f"115 无响应：{url[:60]}")
         try:

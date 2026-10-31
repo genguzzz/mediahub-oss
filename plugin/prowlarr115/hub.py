@@ -155,6 +155,7 @@ class Hub:
             ("/hub/health/fix", self.health_fix, "POST", "处理一条健康检查问题：{key, id}（里番按 bangumiid 识别 / 核对刮削）"),
             ("/hub/emby/confirm", self.emby_confirm, "POST", "立即核对所有等待刮削的任务（Emby 推送没覆盖到的，比如推送上线前入库的）"),
             ("/hub/emby/changed", self.emby_changed, "POST", "Emby 条目变化推送（后端转发 LibraryChanged）：{ids:[..]}，立刻核对等待刮削的任务、识别新里番"),
+            ("/hub/debug/threads", self.debug_threads, "GET", "诊断：插件线程当前的调用栈（某一轮卡住时看卡在哪）"),
             ("/hub/emby/activity", self.emby_activity, "GET", "Emby 正在跑的计划任务（扫描/刮削进度）和最近活动"),
             ("/hub/subs/list", self.subs_list, "GET", "视频同目录（含 Subs/ 子目录）的字幕文件：url=strm 里的 OpenList 链接或 115 路径"),
             ("/hub/subs/file", self.subs_file, "GET", "读一个字幕文件（≤20MB）：path=115 路径"),
@@ -1237,6 +1238,12 @@ class Hub:
         add("failed", "失败的任务", [row(h, t, t.get("status") or "") for h, t in sorted(tasks.items(), key=lambda kv: -(kv[1].get("added") or 0))
                                     if t.get("status") in self.FAILED_ST and now_ - (t.get("added") or 0) < 14 * 86400],
             severity="error", hint="近 14 天；在任务详情里换资源或重试")
+        # A tracking round that does not end blocks every later round (they skip while it holds the lock).
+        started = getattr(p, "round_started", None)
+        if started and now_ - started > 15 * 60:
+            add("stuck", "下载跟踪卡住", [{"id": "track", "title": f"一轮跟踪已运行 {int((now_ - started) / 60)} 分钟",
+                                         "detail": self._stuck_frame()}],
+                severity="error", hint="卡住期间所有下载完成的任务都不会继续；看 /hub/debug/threads，必要时重启 MoviePilot")
         a = self.p._adult
         if a:
             st = (a.get_data("av") or {}).get("stubbed") or {}
@@ -1283,6 +1290,33 @@ class Hub:
         if key == "unconfirmed":
             return {"ok": True, "confirmed": self.p._confirm_waiting(None, only=iid)}
         return {"ok": False, "error": "这类问题没有一键处理"}
+
+    @staticmethod
+    def _stuck_frame() -> str:
+        """The deepest plugin frame of the thread running the tracking round (pipeline.run)."""
+        import sys as _sys
+        import traceback as _tb
+        for frame in _sys._current_frames().values():
+            stack = _tb.extract_stack(frame)
+            if any(f.name == "_run" and f.filename.endswith("pipeline.py") for f in stack):
+                mine = [f for f in stack if "prowlarr115" in (f.filename or "")]
+                f = mine[-1] if mine else stack[-1]
+                return f"{f.filename.rsplit('/', 1)[-1]}:{f.lineno} {f.name}（最底层：{stack[-1].name}）"
+        return ""
+
+    def debug_threads(self) -> Dict[str, Any]:
+        """每个与本插件相关的线程（及持有跟踪锁的）在做什么：线程名 + 调用栈最后几帧。只读。"""
+        import sys as _sys
+        import traceback as _tb
+        names = {t.ident: t.name for t in threading.enumerate()}
+        out = []
+        for ident, frame in _sys._current_frames().items():
+            stack = _tb.extract_stack(frame)
+            if not any("prowlarr115" in (f.filename or "") for f in stack):
+                continue
+            out.append({"thread": names.get(ident, str(ident)),
+                        "stack": [f"{f.filename.rsplit('/', 1)[-1]}:{f.lineno} {f.name} | {(f.line or '')[:120]}" for f in stack[-40:]]})
+        return {"ok": True, "threads": out}
 
     def emby_confirm(self) -> Dict[str, Any]:
         return {"ok": True, "confirmed": self.p._confirm_waiting(None)}
