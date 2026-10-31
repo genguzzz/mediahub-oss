@@ -2,7 +2,7 @@
 // rated…), a tag strip where the provider filters by tag and, for AV, the actress index. AV has
 // several providers (JavDB rankings, Jable hot lists, the own library); a switch picks one.
 import { useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { useRouter } from "expo-router";
 import { Img, PosterTile, Row } from "./media";
 import { Chip, ChipRow, ErrorBox, Loading, Pull, Segmented, TAB_BAR_SPACE, styles, tap } from "./ui";
@@ -17,6 +17,9 @@ export function CatalogHome({ kind }: { kind: CatalogKind }) {
   const p = kind === "av" ? avProvider : PROVIDER_FOR[kind];
   const router = useRouter();
   const open = useOpenCatalog(p);
+  // landscape covers (Jable) get two tiles per screen width; portrait covers keep the narrow tile
+  const { width } = useWindowDimensions();
+  const wideW = Math.floor((width - 16 * 2 - 12) / 2);
   const providers = useQuery("catalog:providers", catalogApi.providers, { staleMs: 60 * 60_000 });
   const info = providers.data?.providers.find((x) => x.id === p);
   const home = useQuery(`catalog:${p}:home`, () => catalogApi.home(p), { staleMs: 10 * 60_000 });
@@ -44,7 +47,7 @@ export function CatalogHome({ kind }: { kind: CatalogKind }) {
       {!home.data && home.loading ? <View style={{ height: 240, justifyContent: "center" }}><Loading text={p === "hanime" ? "正在载入里番索引" : p === "emby-av" ? "正在读取媒体库" : `正在读取 ${info?.name ?? "索引"}`} /></View> : null}
       {home.data?.rows.filter((r) => r.items.length).map((r) => (
         <Row key={r.id} title={r.title} onMore={() => list(r.title, r.query)}>
-          {r.items.map((c) => <PosterTile key={c.id} c={{ ...catalogCard(c, () => open(c)), overview: undefined }} />)}
+          {r.items.map((c) => <PosterTile key={c.id} w={(c.posterAspect ?? 0) > 1 ? wideW : undefined} c={{ ...catalogCard(c, () => open(c)), overview: undefined }} />)}
         </Row>
       ))}
       {home.data && !home.data.rows.some((r) => r.items.length) ? (

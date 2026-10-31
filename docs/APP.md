@@ -5,7 +5,7 @@ How the Expo app is organised and the UI rules every screen follows.
 ## App conventions
 
 - Tabs (`src/app/(tabs)`): 媒体库 (Emby home) · 发现 (TMDb / 豆瓣 index tabs + search) · 入库 · 管理 (媒体库 delete + 下载器 panel `components/Downloads.tsx`) · 概览, system tab bar (`NativeTabs`). Everything else opens from the left drawer (`components/Drawer.tsx`: libraries, favourites, subscriptions, history, settings; menu button in `TabHeader` or swipe from the left edge) or is a stack route with `TopBar`; settings is a modal, the player a full-screen modal.
-- Posters: always 2:3, landscape cards 16:9 (`components/media.tsx`). Lists use `Posters` = two-column waterfall or large-poster list (Settings → 海报排列, `LayoutToggle` in headers).
+- Posters: always 2:3, landscape cards 16:9 (`components/media.tsx`). Lists use `Posters` = two-column waterfall or large-poster list (Settings → 海报排列, `LayoutToggle` in headers). Home rows (`CatalogHome`): portrait tiles 118 pt; sources with landscape covers (`posterAspect` > 1, e.g. Jable) get two tiles per screen width.
 - Pull-to-refresh: use `<Pull onRefresh>` (spins only for the user's pull; polling must not show the spinner).
 - Data: `useQuery(key, fn, {interval, staleMs})` from `lib/query.ts` — shared cache by key (persisted, so a cold start offline shows the last lists), refetches on focus when stale, polls only while focused and the app is active. `mutate`/`invalidate` after actions.
 - Theme: three styles (影院 default / 海盐 / 绯红) × light/dark in `lib/theme.ts`; `colors` is a mutable palette swapped by `applyTheme`; read it during render, never at module scope.
