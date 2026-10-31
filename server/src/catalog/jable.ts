@@ -1,4 +1,5 @@
-// Jable.TV: hot lists (today / week / month / all time), latest uploads, the actress index and
+// Jable.TV: hot lists (today / week / month / all time), latest uploads, the 無碼 category (latest / hot;
+// JavDB keeps its uncensored section behind a login, Jable does not), the actress index and
 // per-actress lists, search; and an online stream source: a 番号 maps to /videos/<code>/ (or
 // <code>-c with Chinese subtitles), whose page carries a time-limited HLS URL (AES-128, CDN open,
 // played by the phone directly). Pages load through FlareSolverr (Cloudflare challenge), using
@@ -10,6 +11,8 @@ import type { CatalogDetail, CatalogItem, CatalogProvider, HomeRow, ListQuery, P
 const BASE = "https://jable.tv";
 const CODE = /^([A-Z0-9]{2,10}-\d{2,6}[A-Z]?)\s*/i;
 // Only titles that explicitly describe minors are dropped (owner's call: no other filtering).
+// Sponsored entries Jable mixes into category lists ("[廣告] …").
+const AD = /^\s*\[(廣告|广告)\]/;
 export const REJECT = /ロリ|ショタ|幼女|幼[児少稚齢]|小学|中学|JS|JC|未成年|女子校生|女子[●〇]生/i;
 
 const block = (path: string, id: string, params: Record<string, string | number>) =>
@@ -19,7 +22,7 @@ function card(h: string): CatalogItem | null {
   const slug = /href="https:\/\/jable\.tv\/videos\/([^/"]+)\/"/.exec(h)?.[1];
   if (!slug) return null;
   const full = decode(/<h6 class="title"><a[^>]*>([^<]*)<\/a>/.exec(h)?.[1] ?? "").trim();
-  if (REJECT.test(full)) return null;
+  if (REJECT.test(full) || AD.test(full)) return null;
   const m = CODE.exec(full);
   const sub = /<p class="sub-title">([\s\S]*?)<\/p>/.exec(h)?.[1] ?? "";
   const nums = sub.split(/<svg/).slice(1).map((part) => num(text(`<svg${part}`)));
@@ -46,6 +49,7 @@ async function list(q: ListQuery): Promise<Page<CatalogItem>> {
   if (q.person) url = block(`/models/${encodeURIComponent(q.person)}/`, "list_videos_common_videos_list", { sort_by: PERSON_SORT[q.sort] ?? "post_date", from: q.page });
   else if (q.q) url = block(`/search/${encodeURIComponent(q.q)}/`, "list_videos_videos_list_search_result", { q: q.q, sort_by: "post_date_and_popularity", from_videos: q.page, from: q.page });
   else if (q.sort === "latest") url = block("/latest-updates/", "list_videos_latest_videos_list", { sort_by: "post_date", from: q.page });
+  else if (q.sort === "uncensored" || q.sort === "uncensored_hot") url = block("/categories/uncensored/", "list_videos_common_videos_list", { sort_by: q.sort === "uncensored" ? "post_date" : HOT.month, from: q.page });
   else url = block("/hot/", "list_videos_common_videos_list", { sort_by: HOT[q.sort] ?? HOT.week, from: q.page });
   return page(await flare(url, q.sort === "latest" || q.sort === "today" ? 20 * 60_000 : 60 * 60_000), q.page);
 }
@@ -87,13 +91,13 @@ export const jable: CatalogProvider = {
   name: "Jable",
   kind: "av",
   note: "Jable 热门与新片（可在线播放）",
-  sorts: [{ id: "week", label: "本周热门" }, { id: "today", label: "今日热门" }, { id: "month", label: "本月热门" }, { id: "all", label: "总榜" }, { id: "latest", label: "最新上架" }],
+  sorts: [{ id: "week", label: "本周热门" }, { id: "today", label: "今日热门" }, { id: "month", label: "本月热门" }, { id: "all", label: "总榜" }, { id: "latest", label: "最新上架" }, { id: "uncensored", label: "无码最新" }, { id: "uncensored_hot", label: "无码热门" }],
   personSorts: [{ id: "released", label: "最新" }, { id: "views", label: "播放" }, { id: "favs", label: "收藏" }],
   personIndexSorts: [{ id: "hot", label: "人气" }, { id: "count", label: "作品数" }, { id: "recent", label: "最近更新" }, { id: "name", label: "名字" }],
   tagFilter: false,
 
   async home(): Promise<HomeRow[]> {
-    const rows = [["week", "本周热门"], ["today", "今日热门"], ["latest", "最新上架"], ["month", "本月热门"]] as const;
+    const rows = [["week", "本周热门"], ["today", "今日热门"], ["latest", "最新上架"], ["uncensored", "无码最新"], ["month", "本月热门"]] as const;
     const got = await Promise.all(rows.map(([sort]) => list({ sort, page: 1, size: 24 }).catch(() => null)));
     return rows.map(([sort, title], i) => ({ id: sort, title, query: { sort }, items: got[i]?.items ?? [] }));
   },
