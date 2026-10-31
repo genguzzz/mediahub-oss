@@ -872,12 +872,13 @@ function Ripple({ side, onDone }: { side: "left" | "right"; onDone: () => void }
 }
 
 // Player buttons on glass (VidHub-style): iOS 26 Liquid Glass where the system has it, a dark translucent
-// circle elsewhere. The press feedback is our own scale (the glass itself does not take touches).
+// circle elsewhere. "clear" glass with no tint, like the system media controls ("regular" + a dark tint
+// read as opaque grey discs). The press feedback is our own scale (the glass itself does not take touches).
 const GLASS = isLiquidGlassAvailable();
 function GlassCircle({ size, children }: { size: number; children: ReactNode }) {
   const shape = { width: size, height: size, borderRadius: size / 2, alignItems: "center" as const, justifyContent: "center" as const };
   return GLASS
-    ? <GlassView pointerEvents="none" glassEffectStyle="regular" tintColor="rgba(0,0,0,0.12)" style={shape}>{children}</GlassView>
+    ? <GlassView pointerEvents="none" glassEffectStyle="clear" style={shape}>{children}</GlassView>
     : <View pointerEvents="none" style={[shape, { backgroundColor: "rgba(0,0,0,0.42)", borderWidth: 1, borderColor: "rgba(255,255,255,0.16)" }]}>{children}</View>;
 }
 
