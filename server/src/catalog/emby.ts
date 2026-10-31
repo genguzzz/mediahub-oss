@@ -20,7 +20,9 @@ function poster(i: Item) {
   return tag ? `/v1/img/emby/${i.Id}?type=Primary&w=400&tag=${tag}` : null;
 }
 
-export function embyCatalog(embyGet: EmbyGet, libName = "AV"): CatalogProvider {
+export type EmbyAvCatalog = CatalogProvider & { findCode(code: string): Promise<Item | undefined> };
+
+export function embyCatalog(embyGet: EmbyGet, libName = "AV"): EmbyAvCatalog {
   let cache: { at: number; items: Item[] } | null = null;
 
   async function libId(): Promise<string | null> {
@@ -90,6 +92,12 @@ export function embyCatalog(embyGet: EmbyGet, libName = "AV"): CatalogProvider {
   }
 
   return {
+    // Library check on a JavDB/Jable detail: from the in-memory AV index (5-min cache) instead of two Emby
+    // round-trips (libraries, then a search) on every open — they cost ~0.55 s even with the page cached.
+    async findCode(code: string) {
+      const c = code.toUpperCase();
+      return (await all()).find((i) => (i.Name ?? "").toUpperCase().startsWith(c));
+    },
     id: "emby-av",
     name: "媒体库 AV",
     kind: "av",
@@ -188,8 +196,7 @@ export function hentaiLibrary(embyGet: EmbyGet) {
 
 // Works already in Emby play from Emby: AV by 番号 in the AV library, 里番 by title + part in the
 // 里番 library.
-export function embyStreams(embyGet: EmbyGet, hentai: ReturnType<typeof hentaiLibrary>): StreamProvider {
-  const views = async () => (await embyGet<{ Name: string; ItemId: string }[]>("/Library/VirtualFolders")) ?? [];
+export function embyStreams(embyGet: EmbyGet, hentai: ReturnType<typeof hentaiLibrary>, av: EmbyAvCatalog): StreamProvider {
   return {
     id: "emby",
     name: "Emby 媒体库",
@@ -197,9 +204,8 @@ export function embyStreams(embyGet: EmbyGet, hentai: ReturnType<typeof hentaiLi
     async find(item: CatalogDetail, kind: CatalogKind): Promise<StreamSource[]> {
       if (kind === "av") {
         if (!item.code) return [];
-        const lib = (await views()).find((v) => v.Name === "AV")?.ItemId;
-        const r = await embyGet<{ Items: Item[] }>("/Items", { Recursive: "true", ParentId: lib, IncludeItemTypes: "Movie", SearchTerm: item.code, Limit: 5 });
-        return (r?.Items ?? []).filter((i) => (i.Name ?? "").toUpperCase().startsWith(item.code!)).map((i) => ({ provider: "emby", label: "Emby 媒体库", note: "原画直连", embyId: i.Id }));
+        const i = await av.findCode(item.code);
+        return i ? [{ provider: "emby", label: "Emby 媒体库", note: "原画直连", embyId: i.Id }] : [];
       }
       const seriesId = (await hentai.matcher())(item.aliases ?? normTitle(item.title));
       if (!seriesId) return [];

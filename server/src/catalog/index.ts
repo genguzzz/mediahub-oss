@@ -27,9 +27,10 @@ export function registerCatalog(app: FastifyInstance, embyGet: EmbyGet) {
     return { ok: true };
   });
 
-  const catalogs: CatalogProvider[] = [javdb, jable, embyCatalog(embyGet), hanime];
+  const embyAv = embyCatalog(embyGet);
+  const catalogs: CatalogProvider[] = [javdb, jable, embyAv, hanime];
   const hentaiLib = hentaiLibrary(embyGet);
-  const streams: StreamProvider[] = [embyStreams(embyGet, hentaiLib), jableStreams];
+  const streams: StreamProvider[] = [embyStreams(embyGet, hentaiLib, embyAv), jableStreams];
 
   // Keep the web home rows warm: a cold Jable home is ~5 FlareSolverr page loads.
   const warm = () => { for (const c of [javdb, jable]) c.home().catch((e: Error) => app.log.warn({ p: c.id, err: e.message }, "catalog warm failed")); };

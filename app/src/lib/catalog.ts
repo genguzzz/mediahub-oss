@@ -4,6 +4,7 @@ import { useRouter } from "expo-router";
 import type { CardData } from "@/components/media";
 import { toastError } from "@/components/ui";
 import { api, img } from "./api";
+import { mutate } from "./query";
 import { colors } from "./theme";
 import { track } from "./track";
 
@@ -94,9 +95,20 @@ export function compact(n: number) {
   return String(n);
 }
 
+// Opening a detail from a card: the card already has the poster, code, title, date and rating, so they go
+// into the detail's cache as a provisional entry and the page renders at once; the real detail (fetched
+// immediately — a provisional entry is never fresh) fills in the rest.
+export function primeDetail(provider: string, c: CatalogItem) {
+  mutate<{ item: CatalogDetail; kind?: CatalogKind; library: LibraryHit | null; moreStreams: boolean }>(`catalog:${provider}:item:${c.id}`,
+    (d) => d ?? { item: { ...c, overview: "", facts: [], episodes: [], keyword: c.code ?? c.title }, library: null, moreStreams: false });
+}
+
 export function useOpenCatalog(provider: string) {
   const router = useRouter();
-  return (c: CatalogItem) => router.push({ pathname: "/catalog/[p]/item/[id]", params: { p: provider, id: c.id } });
+  return (c: CatalogItem) => {
+    primeDetail(provider, c);
+    router.push({ pathname: "/catalog/[p]/item/[id]", params: { p: provider, id: c.id } });
+  };
 }
 
 // Online sources are resolved by the player itself (links expire, so right before playing).

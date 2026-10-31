@@ -57,7 +57,7 @@ async function list(q: ListQuery): Promise<Page<CatalogItem>> {
 interface VideoPage { title: string; code: string; cover: string | null; hls: string | null; people: { id: string; name: string }[]; tags: string[]; views: number; note: string }
 
 async function video(slug: string, ttlMs = 15 * 60_000): Promise<VideoPage | null> {
-  const html = await flare(`${BASE}/videos/${encodeURIComponent(slug)}/?lang=jp`, ttlMs);
+  const html = await flare(`${BASE}/videos/${encodeURIComponent(slug)}/?lang=jp`, ttlMs, true);
   if (!html || /<title>404/.test(html)) return null;
   const og = (p: string) => decode(new RegExp(`<meta property="og:${p}" content="([^"]*)"`).exec(html)?.[1] ?? "");
   const full = og("title");

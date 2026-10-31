@@ -41,9 +41,12 @@ function remember(key: string, ttlMs: number, fn: () => Promise<string>): Promis
 
 const free = ["mediahub-1", "mediahub-2", "mediahub-3"];
 const created = new Set<string>();
+// Waiting requests: `urgent` ones (a work's page — playback sources, resolving a stream — that someone is
+// looking at) go ahead of list loads, which take 15–80 s each through the challenge and include the
+// 25-minute home warm-up; in arrival order they kept a detail's 在线播放 waiting up to 105 s.
 const waiting: ((s: string) => void)[] = [];
-async function slot<T>(fn: (session: string) => Promise<T>): Promise<T> {
-  const session = free.shift() ?? (await new Promise<string>((r) => waiting.push(r)));
+async function slot<T>(fn: (session: string) => Promise<T>, urgent = false): Promise<T> {
+  const session = free.shift() ?? (await new Promise<string>((r) => (urgent ? waiting.unshift(r) : waiting.push(r))));
   try {
     return await fn(session);
   } finally {
@@ -58,7 +61,7 @@ async function flareCall(body: Record<string, unknown>, timeoutMs = 75_000) {
   return (await res.json()) as { status?: string; message?: string; solution?: { status: number; response: string } };
 }
 
-export function flare(url: string, ttlMs = 30 * 60_000): Promise<string> {
+export function flare(url: string, ttlMs = 30 * 60_000, urgent = false): Promise<string> {
   return remember(`flare:${url}`, ttlMs, () => timed("flaresolverr", url, () => slot(async (session) => {
     if (!created.has(session)) {
       await flareCall({ cmd: "sessions.destroy", session }).catch(() => null);
@@ -73,7 +76,7 @@ export function flare(url: string, ttlMs = 30 * 60_000): Promise<string> {
     if (d.solution.status === 404) return "";
     if (d.solution.status >= 400) throw new Error(`页面返回 ${d.solution.status}`);
     return d.solution.response;
-  })));
+  }, urgent)));
 }
 
 const agent = PROXY ? new ProxyAgent(PROXY) : new Agent();

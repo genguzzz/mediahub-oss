@@ -8,7 +8,7 @@ import { Previews } from "@/components/Previews";
 import { Img, MiniTag, PosterTile, Row, useCover } from "@/components/media";
 import { Card, Chip, CopyText, SourceLink, ErrorBox, Loading, PillButton, Pull, Row as InfoRow, styles, tap } from "@/components/ui";
 import { img } from "@/lib/api";
-import { catalogApi, catalogCard, compact, usePlaySource, type StreamSource } from "@/lib/catalog";
+import { catalogApi, catalogCard, compact, primeDetail, usePlaySource, type StreamSource } from "@/lib/catalog";
 import { useQuery } from "@/lib/query";
 import { colors, radius } from "@/lib/theme";
 import { track } from "@/lib/track";
@@ -73,6 +73,8 @@ export default function CatalogItemScreen() {
               </View>
             </View>
 
+            {!kind && q.loading ? <Loading text="正在读取详情" /> : null}
+
             {library ? (
               <PillButton icon={library.folder ? "folder-open-outline" : "play"} label={library.folder ? "去 Emby 查看" : "去 Emby 播放"} onPress={() => play.library(library)} style={{ marginTop: 18 }} />
             ) : null}
@@ -126,7 +128,7 @@ export default function CatalogItemScreen() {
         {it && it.episodes.length > 1 ? (
           <Row title={`本系列 · ${it.episodes.length} 部`}>
             {it.episodes.map((e) => (
-              <PosterTile key={e.id} c={{ ...catalogCard(e, () => e.id !== it.id && router.push({ pathname: "/catalog/[p]/item/[id]", params: { p, id: e.id } })), badge: e.id === it.id ? { text: "当前", color: colors.primary } : e.inLibrary ? { text: "已入库", color: colors.success } : undefined }} />
+              <PosterTile key={e.id} c={{ ...catalogCard(e, () => { if (e.id !== it.id) { primeDetail(p, e); router.push({ pathname: "/catalog/[p]/item/[id]", params: { p, id: e.id } }); } }), badge: e.id === it.id ? { text: "当前", color: colors.primary } : e.inLibrary ? { text: "已入库", color: colors.success } : undefined }} />
             ))}
           </Row>
         ) : null}
