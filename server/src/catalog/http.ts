@@ -1,8 +1,11 @@
 // Page fetchers for web catalogs, with a small in-memory cache:
 // - flare(): Jable sits behind a Cloudflare challenge; FlareSolverr (Docker, default
-//   127.0.0.1:8191) loads the page in a real browser (~8–25 s; more when the server is busy). Reusing
-//   its clearance cookie for plain HTTP requests does not work: Cloudflare also checks the client's
-//   TLS fingerprint and answers 403 (tested 2026-11-01).
+//   127.0.0.1:8191) passes it in a real browser (~8–25 s, more on a busy 2-core server). Its answer
+//   carries the clearance cookie and the browser's user agent; while that clearance holds, pages are
+//   plain HTTP requests with it (~0.3 s). Cloudflare binds the clearance to the client IP: FlareSolverr's
+//   Docker network is IPv4-only, so these requests go out over IPv4 too (over the host's IPv6 they were
+//   challenged again). When Cloudflare challenges anyway, the clearance is dropped and the next page goes
+//   through FlareSolverr, which renews it.
 // - proxied(): JavDB blocks some countries; set INDEX_PROXY to a proxy with a suitable exit
 //   (e.g. home broadband) and pages and images go through it. Unset = direct.
 import { Agent, fetch as ufetch, ProxyAgent } from "undici";
@@ -64,8 +67,40 @@ async function flareCall(body: Record<string, unknown>, timeoutMs = 75_000) {
   return (await res.json()) as { status?: string; message?: string; solution?: { status: number; response: string; userAgent?: string; cookies?: { name: string; value: string; domain?: string; expires?: number }[] } };
 }
 
+// Clearance per site from FlareSolverr's last answer: its cookies and user agent.
+const clearance = new Map<string, { cookie: string; ua: string; until: number }>();
+const ipv4 = new Agent({ connect: { family: 4 } });
+
+function keepClearance(url: string, sol: { userAgent?: string; cookies?: { name: string; value: string; expires?: number }[] }) {
+  const cf = sol.cookies?.find((c) => c.name === "cf_clearance");
+  if (!cf || !sol.userAgent) return;
+  const until = cf.expires && cf.expires > 0 ? Math.min(cf.expires * 1000, Date.now() + 6 * 3600_000) : Date.now() + 30 * 60_000;
+  clearance.set(new URL(url).host, { cookie: (sol.cookies ?? []).map((c) => `${c.name}=${c.value}`).join("; "), ua: sol.userAgent, until });
+}
+
+// A page with the kept clearance: its text, "" for 404, or null when there is none or Cloudflare
+// challenged again (the clearance is dropped; the caller goes through FlareSolverr, which renews it).
+async function withClearance(url: string): Promise<string | null> {
+  const host = new URL(url).host;
+  const c = clearance.get(host);
+  if (!c || Date.now() > c.until) return null;
+  const res = await ufetch(url, { dispatcher: ipv4, headers: { "user-agent": c.ua, cookie: c.cookie, "accept-language": "zh-CN,zh;q=0.9", accept: "text/html,application/xhtml+xml,*/*;q=0.8" }, signal: AbortSignal.timeout(20_000) });
+  const text = await res.text();
+  if (res.status === 403 || res.status === 503 || /<title>Just a moment|cf-chl-/.test(text)) {
+    clearance.delete(host);
+    log.info({ host, status: res.status }, "clearance no longer accepted, renewing through FlareSolverr");
+    return null;
+  }
+  if (res.status === 404) return "";
+  if (!res.ok) throw new Error(`页面返回 ${res.status}`);
+  return text;
+}
+
 export function flare(url: string, ttlMs = 30 * 60_000, urgent = false): Promise<string> {
-  return remember(`flare:${url}`, ttlMs, () => viaBrowser(url, urgent));
+  return remember(`flare:${url}`, ttlMs, async () => {
+    const fast = await timed("cf-clearance", url, () => withClearance(url)).catch(() => null);
+    return fast !== null ? fast : viaBrowser(url, urgent);
+  });
 }
 
 function viaBrowser(url: string, urgent: boolean): Promise<string> {
@@ -80,6 +115,7 @@ function viaBrowser(url: string, urgent: boolean): Promise<string> {
       created.delete(session); // a broken browser session: start a fresh one next time
       throw new Error(`FlareSolverr：${d.message ?? "无响应"}`);
     }
+    keepClearance(url, d.solution);
     if (d.solution.status === 404) return "";
     if (d.solution.status >= 400) throw new Error(`页面返回 ${d.solution.status}`);
     return d.solution.response;
