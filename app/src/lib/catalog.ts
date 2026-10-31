@@ -34,6 +34,7 @@ export interface CatalogDetail extends CatalogItem {
   sourceUrl?: string;
   sourceName?: string;
   previews?: { thumb: string; full: string }[];
+  storyboard?: { url: string; cols: number; rows: number; count: number };   // hanime: frames sprite instead of stills
   overview: string;
   originalTitle?: string;
   brand?: string;

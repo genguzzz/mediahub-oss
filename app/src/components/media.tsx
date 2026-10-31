@@ -234,8 +234,10 @@ export function Row({ title, onMore, children }: { title: string; onMore?: () =>
   );
 }
 
-export function PosterTile({ c, w = 118 }: { c: CardData; w?: number }) {
+export function PosterTile({ c, w: width }: { c: CardData; w?: number }) {
   const cover = useCover(c.poster?.uri, c.posterRight, c.aspect);
+  // Landscape covers (Jable stills, JavDB 无码) get a wider card: two per screen instead of three slivers.
+  const w = width ?? ((cover.aspect ?? 0) > 1 ? 172 : 118);
   return (
     <Pressable onPress={() => { tap(); c.onPress(); }} onLongPress={peek(c)} delayLongPress={350} style={({ pressed }) => ({ width: w, opacity: pressed ? 0.85 : 1 })}>
       <View style={{ borderRadius: radius.md, overflow: "hidden", ...shadow() }}>

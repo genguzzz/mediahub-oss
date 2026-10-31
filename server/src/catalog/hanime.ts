@@ -153,6 +153,30 @@ const SORTS: Record<string, (a: Entry, b: Entry) => number> = {
   likes: (a, b) => b.likes - a.likes,
 };
 
+// hanime has no stills; its video page carries the player's storyboard (one sprite, 5 × 36 frames of 160×90
+// across the episode). The page loads directly in well under a second; the result is kept for a week.
+const boards = new Map<string, { at: number; v: CatalogDetail["storyboard"] | null }>();
+async function storyboardOf(slug: string): Promise<CatalogDetail["storyboard"] | null> {
+  const hit = boards.get(slug);
+  if (hit && Date.now() - hit.at < 7 * 86400_000) return hit.v;
+  let v: CatalogDetail["storyboard"] | null = null;
+  try {
+    const res = await fetch(`https://hanime.tv/videos/hentai/${encodeURIComponent(slug)}`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) });
+    const html = (await res.text()).replace(/&quot;/g, '"');
+    const num = (k: string) => Number(new RegExp(`"${k}":\\[0,(\\d+)\\]`).exec(html)?.[1] ?? 0);
+    const url = /"storyboard_url":\[0,"(https:\/\/[^"]+)"\]/.exec(html)?.[1];
+    if (url && num("storyboard_columns") && num("storyboard_rows")) {
+      v = { url: extUrl(url) ?? url, cols: num("storyboard_columns"), rows: num("storyboard_rows"), count: num("storyboard_tile_count") || num("storyboard_columns") * num("storyboard_rows") };
+    }
+  } catch (err) {
+    log.warn({ slug, err: errText(err) }, "hanime storyboard failed");
+    return null;                   // not cached: try again next open
+  }
+  if (boards.size > 2000) boards.clear();
+  boards.set(slug, { at: Date.now(), v });
+  return v;
+}
+
 export const hanime: CatalogProvider = {
   id: "hanime",
   name: "hanime 索引",
@@ -190,7 +214,9 @@ export const hanime: CatalogProvider = {
     const e = items.find((x) => x.id === id);
     if (!e) return null;
     const total = e.likes + e.dislikes;
+    const storyboard = await storyboardOf(e.slug);
     return {
+      storyboard: storyboard ?? undefined,
       ...card(e),
       tags: e.tags.filter((t) => t !== "hd").map(zh),
       overview: e.overview,

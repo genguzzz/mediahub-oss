@@ -35,6 +35,9 @@ export interface CatalogDetail extends CatalogItem {
   sourceUrl?: string;         // the work's page at the index source (opened as H5 in the app)
   sourceName?: string;
   previews?: { thumb: string; full: string }[]; // sample screenshots
+  // A sprite of evenly spaced frames (hanime's scrub preview): cols × rows tiles, `count` used. The app cuts
+  // a dozen frames out of it for the stills strip.
+  storyboard?: { url: string; cols: number; rows: number; count: number };
   refs?: Record<string, string>; // ids this work has at stream providers (jable slug, …)
 }
 

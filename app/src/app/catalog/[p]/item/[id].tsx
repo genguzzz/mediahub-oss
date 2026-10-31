@@ -111,7 +111,7 @@ export default function CatalogItemScreen() {
 
             {it.overview ? <CopyText style={[styles.body, { marginTop: 16 }]}>{it.overview}</CopyText> : null}
 
-            {it.previews?.length ? <Previews items={it.previews} /> : null}
+            {it.previews?.length ? <Previews items={it.previews} /> : it.storyboard ? <Previews storyboard={it.storyboard} /> : null}
 
             {it.facts.length ? (
               <View style={{ marginTop: 16 }}>
