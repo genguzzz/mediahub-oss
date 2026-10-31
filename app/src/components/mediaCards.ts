@@ -27,8 +27,9 @@ export function useOpenMedia() {
   };
 }
 
-export function mediaCard(m: MediaBrief, open: () => void): CardData {
+export function mediaCard(m: MediaBrief, open: () => void, rank?: number): CardData {
   return {
+    rank,
     key: `${m.type}:${m.tmdbid ?? m.title}`,
     title: m.title,
     subtitle: [m.year, m.type === "movie" ? "电影" : "剧集"].filter(Boolean).join(" · "),

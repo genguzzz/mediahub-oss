@@ -113,10 +113,32 @@ export interface Subscription {
 }
 
 export interface MediaDetail {
-  media: MediaBrief & { genres: string[]; status: string; seasons: number | null; episodes: number | null; date: string; lastAir: string; country: string[]; names?: SearchName[] };
+  media: MediaBrief & {
+    genres: string[]; status: string; seasons: number | null; episodes: number | null; date: string; lastAir: string; country: string[]; names?: SearchName[];
+    genreList?: Named[]; networks?: Named[]; companies?: Named[]; people?: TmdbCredit[]; imdb?: string; tagline?: string; runtime?: number | null; votes?: number;
+  };
   seasons: { season: number; name: string; episodes: number; airDate: string; poster: string | null }[];
   library: { ok: boolean; found: boolean; id?: string; name?: string; path?: string; lib?: string; added?: string; seasons?: Record<string, number[]>; numbering?: "tvdb" | "tmdb" } | null;
   subscriptions: Subscription[];
+}
+
+// ---------- TMDb metadata browsing (发现) ----------
+
+export interface Named { id: number; name: string }
+/** One person on a work's page: cast (with the character) first, then creators and directors. */
+export interface TmdbCredit { id: number; name: string; role: string; kind: "cast" | "crew"; photo: string | null }
+/** A work from TMDb lists (discover, person credits, collection parts); opens /media/[type]/[id]. */
+export interface TmdbWork extends MediaBrief { date: string; votes: number; source: string; sourceId: string }
+export interface PersonWork extends TmdbWork { roles: string[]; dept: string[]; episodes: number; minor: boolean }
+export interface TmdbPerson {
+  id: number; name: string; aka: string[]; birthday: string; deathday: string; place: string; dept: string; bio: string;
+  photo: string | null; imdb: string; works: PersonWork[];
+}
+export interface PersonHit { id: number; name: string; original: string; photo: string | null; dept: string }
+export interface MediaRelated {
+  recommendations: (MediaBrief & { source: string; sourceId: string })[];
+  keywords: Named[];
+  collection: { id: number; name: string; poster: string | null; parts: TmdbWork[] } | null;
 }
 
 // A search keyword for a work, in the order the backend recommends (see searchNames on the server).

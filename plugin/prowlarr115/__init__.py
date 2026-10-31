@@ -334,7 +334,7 @@ class Prowlarr115(_PluginBase):
     plugin_desc = ("未认证也能用：多关键词资源源 + 下载直接 115 离线（失败转 NAS 缓冲）+ strm 入 Emby + 刮削确认通知 + 批量入库 API；"
                    "AV（番号 → 115 → MDC 刮削）和里番（追更目录 + sukebei RSS → 115 → Bangumi）也在这里。")
     plugin_icon = "https://raw.githubusercontent.com/Prowlarr/Prowlarr/develop/Logo/256.png"
-    plugin_version = "2.32.6"
+    plugin_version = "2.33.0"
     plugin_label = "资源搜索,下载器"
     plugin_author = "mediahub"
     author_url = ""

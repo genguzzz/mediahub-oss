@@ -104,7 +104,18 @@ interface MpMedia {
   hk_title?: string | null;
   tw_title?: string | null;
   original_language?: string;
+  imdb_id?: string | null;
+  tagline?: string | null;
+  actors?: MpPerson[];
+  directors?: MpPerson[];
+  created_by?: MpPerson[];
+  networks?: { id: number; name: string }[];
+  production_companies?: { id: number; name: string }[];
+  runtime?: number | null;
+  vote_count?: number;
 }
+
+interface MpPerson { id: number; name: string; original_name?: string; character?: string | null; job?: string | null; profile_path?: string | null }
 
 // Search keywords for one work, best first: the language of the work's region (origin country, else
 // original language) leads — CN → Chinese, JP → Japanese (+ romaji), KR → Korean, US/GB → English…;
@@ -311,10 +322,18 @@ app.get("/v1/stats/days", async () => {
 
 app.get("/v1/media/search", async (req) => {
   const q = z.object({ q: z.string().min(1), page: z.coerce.number().int().min(1).default(1) }).parse(req.query);
-  const list = await mp<MpMedia[]>("GET", "/media/search", { query: { title: q.q, type: "media", page: q.page, count: 20 }, timeoutMs: 30_000 });
+  // People on the first page only (an actor or director's name opens their works timeline).
+  type MpPersonHit = { source?: string; id: number; name: string; original_name?: string; profile_path?: string | null; known_for_department?: string; popularity?: number };
+  const [list, persons] = await Promise.all([
+    mp<MpMedia[]>("GET", "/media/search", { query: { title: q.q, type: "media", page: q.page, count: 20 }, timeoutMs: 30_000 }),
+    q.page === 1 ? mp<MpPersonHit[]>("GET", "/media/search", { query: { title: q.q, type: "person", page: 1, count: 10 }, timeoutMs: 30_000 }).catch(() => [] as MpPersonHit[]) : Promise.resolve([] as MpPersonHit[]),
+  ]);
   const items = (list ?? []).filter((m) => m.tmdb_id && (m.type === "电影" || m.type === "电视剧")).map(brief);
   const lib = await libraryOf(items);
-  return { items: items.map((i) => ({ ...i, library: lib[`${i.type}:${i.tmdbid}`] ?? null })) };
+  const people = (persons ?? []).filter((p) => p.source === "themoviedb" && p.id && (p.popularity ?? 0) >= 0.5)
+    .sort((a, b) => (b.popularity ?? 0) - (a.popularity ?? 0)).slice(0, 10)
+    .map((p) => ({ id: p.id, name: p.name, original: p.original_name && p.original_name !== p.name ? p.original_name : "", photo: tmdbPath(p.profile_path ?? null, "w185"), dept: p.known_for_department ?? "" }));
+  return { items: items.map((i) => ({ ...i, library: lib[`${i.type}:${i.tmdbid}`] ?? null })), people };
 });
 
 interface MpSeason { season_number: number; name?: string; episode_count?: number; air_date?: string; poster_path?: string; overview?: string }
@@ -358,6 +377,21 @@ function sub(s: MpSub) {
   };
 }
 
+// Cast in billing order, then creators and directors (one entry per person; TV directors are per episode, keep a few).
+function people(d: MpMedia) {
+  const seen = new Set<number>();
+  const out: { id: number; name: string; role: string; kind: "cast" | "crew"; photo: string | null }[] = [];
+  const add = (p: MpPerson, role: string, kind: "cast" | "crew") => {
+    if (!p?.id || seen.has(p.id)) return;
+    seen.add(p.id);
+    out.push({ id: p.id, name: p.name || p.original_name || "", role, kind, photo: tmdbPath(p.profile_path ?? null, "w185") });
+  };
+  (d.actors ?? []).slice(0, 30).forEach((p) => add(p, p.character ?? "", "cast"));
+  (d.created_by ?? []).forEach((p) => add(p, "主创", "crew"));
+  (d.directors ?? []).slice(0, 4).forEach((p) => add(p, "导演", "crew"));
+  return out;
+}
+
 app.get<{ Params: { type: string; id: string } }>("/v1/media/:type/:id", async (req) => {
   const type = kindOf(req.params.type);
   const id = z.coerce.number().int().positive().parse(req.params.id);
@@ -375,6 +409,14 @@ app.get<{ Params: { type: string; id: string } }>("/v1/media/:type/:id", async (
     media: {
       ...brief(detail),
       genres: (detail.genres ?? []).map((g) => g.name),
+      genreList: detail.genres ?? [],
+      networks: (detail.networks ?? []).map((n) => ({ id: n.id, name: n.name })),
+      companies: (detail.production_companies ?? []).slice(0, 6).map((c) => ({ id: c.id, name: c.name })),
+      people: people(detail),
+      imdb: detail.imdb_id ?? "",
+      tagline: detail.tagline ?? "",
+      runtime: detail.runtime ?? null,
+      votes: detail.vote_count ?? 0,
       status: detail.status ?? "",
       seasons: detail.number_of_seasons ?? null,
       episodes: detail.number_of_episodes ?? null,
@@ -397,14 +439,26 @@ app.get<{ Params: { type: string; id: string } }>("/v1/media/:type/:id", async (
 
 // ---------- discover (MP recommend lists) ----------
 
-const DISCOVER: Record<string, { path: string; title: string }> = {
-  trending: { path: "/recommend/tmdb_trending", title: "本周趋势" },
-  movies: { path: "/recommend/tmdb_movies", title: "热门电影" },
-  tvs: { path: "/recommend/tmdb_tvs", title: "热门剧集" },
-  bangumi: { path: "/recommend/bangumi_calendar", title: "本季新番" },
-  douban_tv: { path: "/recommend/douban_tv_hot", title: "豆瓣热门剧集" },
-  douban_movie: { path: "/recommend/douban_movie_hot", title: "豆瓣热门电影" },
-  douban_anime: { path: "/recommend/douban_tv_animation", title: "豆瓣热门动画" },
+// Two indexes, shown as two tabs in 发现: TMDb (trending, popular, top rated by genre; Bangumi's season calendar
+// sits here because it opens TMDb works) and Douban (rankings and what is hot in China). `ranked` lists keep
+// their order and show the position; `max` caps paging (Top250 = 9 pages of 30).
+interface Section { path: string; title: string; group: "tmdb" | "douban"; query?: Record<string, string | number>; ranked?: boolean; max?: number }
+const DISCOVER: Record<string, Section> = {
+  trending: { path: "/recommend/tmdb_trending", title: "本周趋势", group: "tmdb" },
+  bangumi: { path: "/recommend/bangumi_calendar", title: "本季新番", group: "tmdb", max: 1 },
+  tvs: { path: "/recommend/tmdb_tvs", title: "热门剧集", group: "tmdb" },
+  movies: { path: "/recommend/tmdb_movies", title: "热门电影", group: "tmdb" },
+  top_movies: { path: "/recommend/tmdb_movies", title: "高分电影", group: "tmdb", query: { sort_by: "vote_average.desc", vote_count: 3000 }, ranked: true },
+  top_tvs: { path: "/recommend/tmdb_tvs", title: "高分剧集", group: "tmdb", query: { sort_by: "vote_average.desc", vote_count: 1500 }, ranked: true },
+  top_anime: { path: "/recommend/tmdb_tvs", title: "高分动画", group: "tmdb", query: { with_genres: 16, sort_by: "vote_average.desc", vote_count: 500 }, ranked: true },
+  douban_top250: { path: "/recommend/douban_movie_top250", title: "豆瓣电影 Top250", group: "douban", ranked: true, max: 9 },
+  douban_weekly_cn: { path: "/recommend/douban_tv_weekly_chinese", title: "华语口碑剧集榜", group: "douban", ranked: true, max: 1 },
+  douban_weekly_global: { path: "/recommend/douban_tv_weekly_global", title: "全球口碑剧集榜", group: "douban", ranked: true, max: 1 },
+  douban_top_movies: { path: "/recommend/douban_movies", title: "豆瓣高分电影", group: "douban", query: { sort: "S" }, ranked: true },
+  douban_tv: { path: "/recommend/douban_tv_hot", title: "热门剧集", group: "douban" },
+  douban_movie: { path: "/recommend/douban_movie_hot", title: "热门电影", group: "douban" },
+  douban_anime: { path: "/recommend/douban_tv_animation", title: "热门动画", group: "douban" },
+  douban_showing: { path: "/recommend/douban_showing", title: "正在上映", group: "douban" },
 };
 
 interface MpRec extends MpMedia { media_source?: string; media_id?: string; bangumi_id?: number | null; douban_id?: string | null }
@@ -413,16 +467,80 @@ function recBrief(m: MpRec) {
   return { ...brief(m), poster: posterPath(m.poster_path), source: m.media_source ?? "", sourceId: m.media_id ?? "" };
 }
 
-app.get("/v1/discover", async () => ({ sections: Object.entries(DISCOVER).map(([id, d]) => ({ id, title: d.title })) }));
+app.get("/v1/discover", async () => ({ sections: Object.entries(DISCOVER).map(([id, d]) => ({ id, title: d.title, group: d.group, ranked: !!d.ranked })) }));
 
 app.get<{ Params: { id: string } }>("/v1/discover/:id", async (req) => {
   const d = DISCOVER[req.params.id];
   if (!d) throw Object.assign(new Error("没有这个榜单"), { statusCode: 404 });
   const { page } = z.object({ page: z.coerce.number().int().min(1).max(20).default(1) }).parse(req.query);
-  const list = await remember(`disc:${req.params.id}:${page}`, 30 * 60_000, () => mp<MpRec[]>("GET", d.path, { query: { page, count: 30 }, timeoutMs: 40_000 }));
+  if (d.max && page > d.max) return { title: d.title, ranked: !!d.ranked, items: [] };
+  const list = await remember(`disc:${req.params.id}:${page}`, 30 * 60_000, () => mp<MpRec[]>("GET", d.path, { query: { ...d.query, page, count: 30 }, timeoutMs: 40_000 }));
   const items = (list ?? []).filter((m) => m.type === "电影" || m.type === "电视剧").map(recBrief);
   const lib = await libraryOf(items);
-  return { title: d.title, items: items.map((i) => ({ ...i, library: i.tmdbid ? lib[`${i.type}:${i.tmdbid}`] ?? null : null })) };
+  return { title: d.title, ranked: !!d.ranked, items: items.map((i) => ({ ...i, library: i.tmdbid ? lib[`${i.type}:${i.tmdbid}`] ?? null : null })) };
+});
+
+// ---------- TMDb metadata browsing (发现: person → works timeline; genre / network / company / keyword lists) ----------
+
+interface TmdbBrief { tmdbid: number; type: Kind; title: string; originalTitle: string; year: string; date: string; poster: string | null; vote: number; votes: number; overview: string }
+const tmdbItem = (b: TmdbBrief) => ({ ...b, poster: tmdbPath(b.poster), source: "themoviedb", sourceId: String(b.tmdbid) });
+async function withLib<T extends { tmdbid: number | null; type: Kind }>(items: T[]) {
+  const lib = await libraryOf(items);
+  return items.map((i) => ({ ...i, library: i.tmdbid ? lib[`${i.type}:${i.tmdbid}`] ?? null : null }));
+}
+
+app.get<{ Params: { id: string } }>("/v1/tmdb/person/:id", async (req) => {
+  const id = z.coerce.number().int().positive().parse(req.params.id);
+  const p = await remember(`person:${id}`, 6 * 3600_000, () =>
+    plug<{ ok: boolean; error?: string; photo: string | null; works: (TmdbBrief & { roles: string[]; dept: string[]; episodes: number; minor: boolean })[] }>("GET", "/hub/tmdb/person", { query: { id }, timeoutMs: 40_000 }));
+  if (!p.ok) throw Object.assign(new Error(p.error || "TMDb 人物读取失败"), { statusCode: 502 });
+  return { ...p, photo: tmdbPath(p.photo, "w500"), works: await withLib(p.works.map((w) => ({ ...tmdbItem(w), roles: w.roles, dept: w.dept, episodes: w.episodes, minor: w.minor }))) };
+});
+
+const DiscoverQuery = z.object({
+  type: z.enum(["movie", "tv"]).default("tv"),
+  page: z.coerce.number().int().min(1).max(20).default(1),
+  with_genres: z.string().max(40).optional(),
+  with_networks: z.string().max(40).optional(),
+  with_companies: z.string().max(40).optional(),
+  with_keywords: z.string().max(40).optional(),
+  sort_by: z.enum(["popularity.desc", "vote_average.desc", "primary_release_date.desc", "first_air_date.desc"]).default("popularity.desc"),
+});
+
+app.get("/v1/tmdb/discover", async (req) => {
+  const q = DiscoverQuery.parse(req.query);
+  // Top rated needs a floor on votes, or one-vote titles lead the list.
+  // Newest first stops at today (unreleased placeholders otherwise lead).
+  const today = new Date().toISOString().slice(0, 10);
+  const query = {
+    ...q,
+    ...(q.sort_by === "vote_average.desc" ? { "vote_count.gte": q.type === "movie" ? 500 : 200 } : {}),
+    ...(q.sort_by === "primary_release_date.desc" ? { "primary_release_date.lte": today, "vote_count.gte": 5 } : {}),
+    ...(q.sort_by === "first_air_date.desc" ? { "first_air_date.lte": today, "vote_count.gte": 5 } : {}),
+  };
+  const r = await remember(`tdisc:${JSON.stringify(query)}`, 30 * 60_000, () =>
+    plug<{ ok: boolean; error?: string; items: TmdbBrief[] }>("GET", "/hub/tmdb/discover", { query, timeoutMs: 40_000 }));
+  if (!r.ok) throw Object.assign(new Error(r.error || "TMDb 发现失败"), { statusCode: 502 });
+  return { items: await withLib(r.items.map(tmdbItem)) };
+});
+
+// Related to one work, loaded after the detail: recommendations, its collection (movies) and keywords.
+app.get<{ Params: { type: string; id: string } }>("/v1/media/:type/:id/related", async (req) => {
+  const type = kindOf(req.params.type);
+  const id = z.coerce.number().int().positive().parse(req.params.id);
+  const [rec, extra] = await Promise.all([
+    remember(`rec:${type}:${id}`, 6 * 3600_000, () => mp<MpRec[]>("GET", `/tmdb/recommend/${id}/${encodeURIComponent(TYPE_NAME[type])}`, { timeoutMs: 30_000 })).catch(() => [] as MpRec[]),
+    remember(`extra:${type}:${id}`, 6 * 3600_000, () =>
+      plug<{ ok: boolean; keywords: { id: number; name: string }[]; collection: { id: number; name: string; poster: string | null; parts: TmdbBrief[] } | null }>("GET", "/hub/tmdb/extra", { query: { type, tmdbid: id }, timeoutMs: 30_000 }))
+      .catch(() => ({ ok: false, keywords: [], collection: null })),
+  ]);
+  const recs = await withLib((rec ?? []).filter((m) => m.tmdb_id).map(recBrief));
+  const col = extra.collection;
+  return {
+    recommendations: recs,
+    keywords: extra.keywords ?? [],
+    collection: col ? { id: col.id, name: col.name, poster: tmdbPath(col.poster), parts: await withLib(col.parts.map(tmdbItem)) } : null,
+  };
 });
 
 // Bangumi / Douban entries carry no TMDb id: find the TMDb item by title, type and year.

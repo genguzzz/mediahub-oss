@@ -22,6 +22,7 @@ export interface CardData {
   aspect?: number;        // poster width / height when the source isn't 2:3 (shown at its own shape)
   badge?: { text: string; color: string };
   rating?: number;
+  rank?: number;         // position in a ranking (Top250, 口碑榜, 高分)
   progress?: number;     // 0..1 watched
   played?: boolean;
   unplayed?: number;     // unwatched episodes
@@ -56,6 +57,11 @@ function Overlays({ c }: { c: CardData }) {
         <View style={{ position: "absolute", top: 8, right: 8, backgroundColor: "rgba(0,0,0,0.62)", borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, flexDirection: "row", alignItems: "center", gap: 2 }}>
           <Ionicons name="star" size={9} color="#F5C451" />
           <Text style={{ color: "#fff", fontSize: 10, fontWeight: "700" }}>{c.rating.toFixed(1)}</Text>
+        </View>
+      ) : null}
+      {c.rank ? (
+        <View style={{ position: "absolute", left: 0, bottom: 0, minWidth: 30, paddingHorizontal: 7, paddingVertical: 3, borderTopRightRadius: 10, backgroundColor: c.rank <= 3 ? "#E8B04B" : "rgba(0,0,0,0.7)" }}>
+          <Text style={{ color: c.rank <= 3 ? "#1A1206" : "#fff", fontSize: c.rank < 100 ? 16 : 13, fontWeight: "900", textAlign: "center" }}>{c.rank}</Text>
         </View>
       ) : null}
       {c.played ? (

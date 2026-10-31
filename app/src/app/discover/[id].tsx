@@ -6,9 +6,9 @@ import { api } from "@/lib/api";
 import { useAutoMore, usePaged } from "@/lib/query";
 import { mediaCard, useOpenMedia, type DiscoverItem } from "@/components/mediaCards";
 
-// One discover list in full (waterfall or list); scrolling to the end appends the next page.
+// One discover list in full (waterfall or list); scrolling to the end appends the next page. Rankings show the position.
 export default function DiscoverList() {
-  const { id, title } = useLocalSearchParams<{ id: string; title?: string }>();
+  const { id, title, ranked } = useLocalSearchParams<{ id: string; title?: string; ranked?: string }>();
   const open = useOpenMedia();
   const q = usePaged(
     `discover:${id}:pages`,
@@ -26,7 +26,7 @@ export default function DiscoverList() {
       >
         {q.error ? <ErrorBox text={q.error} onRetry={q.refresh} /> : null}
         {!q.hasData && q.loading ? <Loading /> : null}
-        <Posters items={q.items.map((m) => mediaCard(m, () => void open(m)))} />
+        <Posters items={q.items.map((m, i) => mediaCard(m, () => void open(m), ranked ? i + 1 : undefined))} />
         <MoreFooter show={q.hasMore} error={q.moreError} onRetry={() => void q.more()} />
       </ScrollView>
     </Screen>

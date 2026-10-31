@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
 import { HeroBack, HeroBackdrop, HeroHeader } from "@/components/DetailHero";
-import { Card, CopyText, SourceLink, ErrorBox, Loading, PillButton, ProgressBar, SectionTitle, Tag, TopBar, confirm, styles, toast, toastError, Pull } from "@/components/ui";
+import { RelatedRows, TmdbMetaChips, TmdbPeopleRow, useRelated } from "@/components/tmdbDetail";
+import { Card, Chip, CopyText, SourceLink, ErrorBox, Loading, PillButton, ProgressBar, SectionTitle, Tag, TopBar, confirm, styles, toast, toastError, Pull } from "@/components/ui";
 import { api, img, type MediaDetail } from "@/lib/api";
 import { ranges } from "@/lib/format";
 import { load, useQuery } from "@/lib/query";
@@ -13,6 +15,7 @@ export default function MediaScreen() {
   const router = useRouter();
   const key = `media:${type}:${id}`;
   const { data, error, loading, refresh } = useQuery(key, () => api<MediaDetail>(`/v1/media/${type}/${id}`), { staleMs: 60_000 });
+  const related = useRelated(String(type), String(id));
   const [busy, setBusy] = useState<string | null>(null);
   const m = data?.media;
   const lib = data?.library?.found ? data.library : null;
@@ -81,7 +84,7 @@ export default function MediaScreen() {
       {error ? <ErrorBox text={error} onRetry={refresh} /> : null}
       {!m && loading ? <Loading /> : null}
       {m ? (
-        <ScrollView contentContainerStyle={{ paddingBottom: 60 }} refreshControl={<Pull onRefresh={refresh} />}>
+        <ScrollView contentContainerStyle={{ paddingBottom: 60 }} refreshControl={<Pull onRefresh={() => { void refresh(); void related.refresh(); }} />}>
           <HeroBackdrop source={img(m.backdrop ?? m.poster)} />
           <HeroHeader poster={img(m.poster)}>
             <View style={{ gap: 6 }}>
@@ -96,8 +99,14 @@ export default function MediaScreen() {
             </View>
           </HeroHeader>
           <View style={{ paddingHorizontal: 16, marginTop: 16 }}>
+            {m.tagline ? <Text style={[styles.body, { fontStyle: "italic", color: colors.textSoft, marginBottom: 8 }]}>{m.tagline}</Text> : null}
             <CopyText label="简介" style={styles.body} numberOfLines={6}>{m.overview || "没有简介"}</CopyText>
             <SourceLink name="TMDb" url={`https://www.themoviedb.org/${m.type === "movie" ? "movie" : "tv"}/${id}`} style={{ marginTop: 14 }} />
+            <View style={{ flexDirection: "row", gap: 8, marginTop: 10 }}>
+              {m.imdb ? <Chip icon="open-outline" label="IMDb" onPress={() => void WebBrowser.openBrowserAsync(`https://www.imdb.com/title/${m.imdb}/`)} /> : null}
+              <Chip icon="open-outline" label="豆瓣" onPress={() => void WebBrowser.openBrowserAsync(`https://search.douban.com/movie/subject_search?search_text=${encodeURIComponent(m.title)}`)} />
+            </View>
+            <TmdbMetaChips m={m} keywords={related.data?.keywords ?? []} />
 
             <SectionTitle title="Emby 媒体库" />
             <Card>
@@ -160,6 +169,8 @@ export default function MediaScreen() {
               </>
             )}
           </View>
+          <TmdbPeopleRow people={m.people ?? []} />
+          <RelatedRows related={related.data} selfId={Number(id)} />
         </ScrollView>
       ) : null}
       <HeroBack />

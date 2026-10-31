@@ -14,10 +14,11 @@ from typing import Any, Dict, List, Optional
 from app.sdk.logging import logger
 from app.sdk.network import RequestUtils
 
-from fastapi import Body
+from fastapi import Body, Request
 from fastapi.responses import Response
 
 from . import batch as batch_mod
+from . import tmdb as tmdb_mod
 from .adult import CAT_ANIME, CAT_REAL
 from .adult import magnet as adult_magnet
 from .adult import VIDEO as VIDEO_EXT
@@ -126,6 +127,9 @@ class Hub:
             ("/hub/search", self.search, "POST", "资源搜索：{tmdbid,type,season} 智能（MP 识别+过滤）或 {keyword,sources} 指定来源"),
             ("/hub/library", self.library, "POST", "批量查是否已入库：{items:[{tmdbid,type}]}"),
             ("/hub/library/item", self.library_item, "GET", "某作品在 Emby 里的条目和已有集：tmdbid,type"),
+            ("/hub/tmdb/person", self.tmdb_person, "GET", "TMDb 人物：资料 + 全部作品（演员和幕后，带角色/职务，新的在前）：id"),
+            ("/hub/tmdb/discover", self.tmdb_discover, "GET", "TMDb 按条件发现：type, page, with_networks/with_companies/with_keywords/with_genres, sort_by, vote_count.gte"),
+            ("/hub/tmdb/extra", self.tmdb_extra, "GET", "作品关键词 + 电影所属合集：type, tmdbid"),
             ("/hub/pipeline", self.pipeline, "GET", "入库全流程：任务阶段 + 实时 115/qB 进度 + AV 刮削"),
             ("/hub/task/events", self.task_events, "GET", "某任务的事件日志：hash（按步骤分组）"),
             ("/hub/task/files", self.task_files, "GET", "某任务的文件和下载细节：hash（缓冲=qB 每个文件进度；115=任务状态、做种、速度）"),
@@ -465,6 +469,29 @@ class Hub:
                         out[f"{'movie' if typ == 'Movie' else 'tv'}:{tid}"] = {"id": e["Id"], "name": e.get("Name"), "lib": lib,
                                                                               "count": e.get("ChildCount")}
         return out
+
+    # ---------- TMDb metadata for 发现 (person, discover by network/company/keyword, keywords, collection) ----------
+
+    def tmdb_person(self, id: int) -> Dict[str, Any]:  # noqa: A002
+        try:
+            return {"ok": True, **tmdb_mod.person(int(id))}
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": f"TMDb 人物读取失败：{err}"}
+
+    def tmdb_discover(self, request: Request) -> Dict[str, Any]:
+        q = dict(request.query_params)
+        kind = "movie" if q.pop("type", "tv") == "movie" else "tv"
+        page = max(1, min(int(q.pop("page", 1) or 1), 20))
+        try:
+            return {"ok": True, "items": tmdb_mod.discover(kind, q, page)}
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": f"TMDb 发现失败：{err}", "items": []}
+
+    def tmdb_extra(self, tmdbid: int, type: str = "tv") -> Dict[str, Any]:  # noqa: A002
+        try:
+            return {"ok": True, **tmdb_mod.extra("movie" if type == "movie" else "tv", int(tmdbid))}
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": f"TMDb 关键词/合集读取失败：{err}", "keywords": [], "collection": None}
 
     def library_item(self, tmdbid: int, type: str = "tv") -> Dict[str, Any]:  # noqa: A002
         p = self.p._pipe
