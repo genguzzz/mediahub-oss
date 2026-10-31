@@ -1,7 +1,8 @@
 // Page fetchers for web catalogs, with a small in-memory cache:
 // - flare(): Jable sits behind a Cloudflare challenge; FlareSolverr (Docker, default
-//   127.0.0.1:8191) loads the page in a real browser. Three long-lived FlareSolverr sessions keep
-//   the clearance cookie: the first page of a session takes ~15 s, later ones 1-4 s.
+//   127.0.0.1:8191) loads the page in a real browser (~8–25 s; more when the server is busy). Reusing
+//   its clearance cookie for plain HTTP requests does not work: Cloudflare also checks the client's
+//   TLS fingerprint and answers 403 (tested 2026-11-01).
 // - proxied(): JavDB blocks some countries; set INDEX_PROXY to a proxy with a suitable exit
 //   (e.g. home broadband) and pages and images go through it. Unset = direct.
 import { Agent, fetch as ufetch, ProxyAgent } from "undici";
@@ -39,7 +40,9 @@ function remember(key: string, ttlMs: number, fn: () => Promise<string>): Promis
   return value;
 }
 
-const free = ["mediahub-1", "mediahub-2", "mediahub-3"];
+// Two browser sessions: each is a headless Chrome (~0.7 GB, a core while loading); three on a 2-core
+// server pushed the load past 7 and made pages time out.
+const free = ["mediahub-1", "mediahub-2"];
 const created = new Set<string>();
 // Waiting requests: `urgent` ones (a work's page — playback sources, resolving a stream — that someone is
 // looking at) go ahead of list loads, which take 15–80 s each through the challenge and include the
@@ -58,11 +61,15 @@ async function slot<T>(fn: (session: string) => Promise<T>, urgent = false): Pro
 
 async function flareCall(body: Record<string, unknown>, timeoutMs = 75_000) {
   const res = await fetch(FLARE, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
-  return (await res.json()) as { status?: string; message?: string; solution?: { status: number; response: string } };
+  return (await res.json()) as { status?: string; message?: string; solution?: { status: number; response: string; userAgent?: string; cookies?: { name: string; value: string; domain?: string; expires?: number }[] } };
 }
 
 export function flare(url: string, ttlMs = 30 * 60_000, urgent = false): Promise<string> {
-  return remember(`flare:${url}`, ttlMs, () => timed("flaresolverr", url, () => slot(async (session) => {
+  return remember(`flare:${url}`, ttlMs, () => viaBrowser(url, urgent));
+}
+
+function viaBrowser(url: string, urgent: boolean): Promise<string> {
+  return timed("flaresolverr", url, () => slot(async (session) => {
     if (!created.has(session)) {
       await flareCall({ cmd: "sessions.destroy", session }).catch(() => null);
       await flareCall({ cmd: "sessions.create", session });
@@ -76,7 +83,7 @@ export function flare(url: string, ttlMs = 30 * 60_000, urgent = false): Promise
     if (d.solution.status === 404) return "";
     if (d.solution.status >= 400) throw new Error(`页面返回 ${d.solution.status}`);
     return d.solution.response;
-  }, urgent)));
+  }, urgent));
 }
 
 const agent = PROXY ? new ProxyAgent(PROXY) : new Agent();

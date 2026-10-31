@@ -33,7 +33,9 @@ export function registerCatalog(app: FastifyInstance, embyGet: EmbyGet) {
   const streams: StreamProvider[] = [embyStreams(embyGet, hentaiLib, embyAv), jableStreams];
 
   // Keep the web home rows warm: a cold Jable home is ~5 FlareSolverr page loads.
-  const warm = () => { for (const c of [javdb, jable]) c.home().catch((e: Error) => app.log.warn({ p: c.id, err: e.message }, "catalog warm failed")); };
+  // JavDB only (plain HTTP through the home proxy). Jable lists go through Cloudflare and load when opened:
+  // warming them every 25 min held the browser sessions with loads that mostly timed out.
+  const warm = () => { for (const c of [javdb]) c.home().catch((e: Error) => app.log.warn({ p: c.id, err: e.message }, "catalog warm failed")); };
   setTimeout(warm, 5_000);
   setInterval(warm, 25 * 60_000).unref();
 
