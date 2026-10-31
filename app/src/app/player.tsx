@@ -98,7 +98,10 @@ export default function PlayerScreen() {
   const tl = useRef<PlayTimeline | null>(null); // startup timeline of the current play (lib/playStats)
   const stalls = useRef(0);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const panMode = useRef<null | "seek" | "brightness" | "volume">(null);
+  const panMode = useRef<null | "seek" | "brightness" | "volume" | "dismiss">(null);
+  // Swipe down in the middle of the picture drags the player away and closes it (YouTube-style).
+  const drag = useSharedValue(0);
+  const dragStyle = useAnimatedStyle(() => ({ flex: 1, transform: [{ translateY: drag.value }], opacity: 1 - Math.min(drag.value / 700, 0.6) }));
   const panStart = useRef({ pos: 0, level: 0 });
   const it = item.data;
   // Effects below key on the item id, not the object: the item is refetched when the app comes back
@@ -406,10 +409,14 @@ export default function PlayerScreen() {
     .onStart((e) => {
       if (locked) return;
       const horizontal = Math.abs(e.translationX) > Math.abs(e.translationY);
-      const mode = horizontal ? "seek" : e.x < width / 2 ? "brightness" : "volume";
+      // Vertical: the outer strips adjust brightness (left) / volume (right); the middle swipes the player
+      // down to close it (upward in the middle does nothing).
+      const edge = Math.min(width * 0.2, 160);
+      const mode = horizontal ? "seek" : e.x < edge ? "brightness" : e.x > width - edge ? "volume" : e.translationY > 0 ? "dismiss" : null;
       panMode.current = mode;
       panStart.current = { pos, level: 0.5 };
-      if (mode !== "seek") {
+      if (mode === "dismiss") setControls(false);
+      if (mode === "brightness" || mode === "volume") {
         void (mode === "brightness" ? device.getBrightness() : device.getVolume()).then((l) => {
           if (l !== null && l !== undefined) panStart.current = { pos, level: l };
         });
@@ -418,7 +425,9 @@ export default function PlayerScreen() {
     .onUpdate((e) => {
       const mode = panMode.current;
       if (locked || !mode) return;
-      if (mode === "seek") {
+      if (mode === "dismiss") {
+        drag.set(Math.max(0, e.translationY));
+      } else if (mode === "seek") {
         const span = Math.max(120, Math.min(dur, 600));
         setScrub(Math.max(0, Math.min(dur, panStart.current.pos + (e.translationX / width) * span)));
         setControls(true);
@@ -428,7 +437,16 @@ export default function PlayerScreen() {
         void (mode === "brightness" ? device.setBrightness(v) : device.setVolume(v));
       }
     })
-    .onEnd(() => {
+    .onEnd((e) => {
+      if (panMode.current === "dismiss") {
+        if (e.translationY > 140 || e.velocityY > 900) {
+          track("play_swipe_close");
+          drag.set(withTiming(900, { duration: 180 }));
+          setTimeout(close, 170);
+        } else {
+          drag.set(withSpring(0, { damping: 18, stiffness: 220 }));
+        }
+      }
       if (panMode.current === "seek" && scrub !== null) {
         track("play_pan_seek");
         seekTo(scrub);
@@ -457,14 +475,17 @@ export default function PlayerScreen() {
     );
   }
 
-  const L = Math.max(insets.left, 20);
-  const R = Math.max(insets.right, 20);
+  // Landscape has no top inset; the Dynamic Island sits on a side edge, covered by the left/right insets
+  // (plus a little room so the back button is never under it). Top bar hugs the top edge.
+  const L = insets.left ? insets.left + 6 : 20;
+  const R = insets.right ? insets.right + 6 : 20;
+  const TOP = insets.top ? insets.top : 6;
 
   return (
     <View style={{ flex: 1, backgroundColor: "#000" }} onLayout={(e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width)}>
       <StatusBar hidden />
       <GestureDetector gesture={surfaceGesture}>
-        <View style={{ flex: 1 }}>
+        <Animated.View style={dragStyle}>
           <PlayerView
             ref={ref}
             style={{ flex: 1 }}
@@ -577,7 +598,7 @@ export default function PlayerScreen() {
               <Text style={{ color: "#ccc", fontSize: 13, marginTop: 2 }}>{scrub >= pos ? "+" : "-"}{clock(Math.abs(scrub - pos))} / {clock(dur)}</Text>
             </Animated.View>
           ) : null}
-        </View>
+        </Animated.View>
       </GestureDetector>
 
       <Animated.View pointerEvents={showChrome ? "box-none" : "none"} style={[{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }, fadeStyle]}>
@@ -590,7 +611,7 @@ export default function PlayerScreen() {
           </Animated.View>
         ) : (
           <>
-            <Animated.View style={[{ position: "absolute", top: Math.max(insets.top, 14), left: L, right: R, flexDirection: "row", alignItems: "center", gap: 18 }, topStyle]}>
+            <Animated.View style={[{ position: "absolute", top: TOP, left: L, right: R, flexDirection: "row", alignItems: "center", gap: 18 }, topStyle]}>
               <Btn name="chevron-down" onPress={close} label="关闭" size={26} />
               <View style={{ flex: 1 }}>
                 <Text style={{ color: "#fff", fontSize: 17, fontWeight: "700" }} numberOfLines={1}>{title}</Text>
