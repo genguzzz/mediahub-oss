@@ -5,7 +5,7 @@ import { Pressable, ScrollView, Text, useWindowDimensions, View } from "react-na
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import type { SheetAction } from "./ActionSheet";
-import { imageLog } from "@/lib/imageLog";
+import { imageLog, logMissing } from "@/lib/imageLog";
 import { openPeek } from "@/lib/peek";
 import { setSettings, useSettings } from "@/lib/settings";
 import { colors, radius, shadow } from "@/lib/theme";
@@ -37,7 +37,8 @@ export interface CardData {
 
 const peek = (c: CardData) => () => { tap(); openPeek(c); };
 
-export function Img({ source, style, icon = "film-outline", iconSize = 28, right, where = "img" }: { source: Src; style: object; icon?: keyof typeof Ionicons.glyphMap; iconSize?: number; right?: boolean; where?: string }) {
+export function Img({ source, style, icon = "film-outline", iconSize = 28, right, where = "img", label }: { source: Src; style: object; icon?: keyof typeof Ionicons.glyphMap; iconSize?: number; right?: boolean; where?: string; label?: string }) {
+  if (!source) logMissing(where, label);
   return (
     <View style={[{ backgroundColor: colors.cardMuted, overflow: "hidden", alignItems: "center", justifyContent: "center" }, style]}>
       <Ionicons name={icon} size={iconSize} color={colors.textFaint} style={{ position: "absolute" }} />
@@ -96,7 +97,7 @@ function GridCard({ c, w }: { c: CardData; w: number }) {
   return (
     <Pressable onPress={() => { tap(); c.onPress(); }} onLongPress={peek(c)} delayLongPress={350} style={({ pressed }) => ({ width: w, marginBottom: 16, opacity: pressed ? 0.85 : 1 })}>
       <View style={{ borderRadius: radius.md, overflow: "hidden", ...shadow() }}>
-        <Img source={c.poster} right={c.posterRight} style={{ width: w, height: w / (c.aspect ?? 2 / 3) }} iconSize={w * 0.2} />
+        <Img label={c.title} where="card" source={c.poster} right={c.posterRight} style={{ width: w, height: w / (c.aspect ?? 2 / 3) }} iconSize={w * 0.2} />
         <Overlays c={c} />
       </View>
       <Text style={{ fontSize: 14, fontWeight: "700", color: colors.text, marginTop: 8, lineHeight: 19 }} numberOfLines={2}>{c.title}</Text>
@@ -144,7 +145,7 @@ export function ListCard({ c }: { c: CardData }) {
       style={({ pressed }) => ({ flexDirection: "row", gap: 14, padding: 12, borderRadius: radius.lg, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, opacity: pressed ? 0.88 : 1, ...shadow() })}
     >
       <View style={{ borderRadius: radius.md, overflow: "hidden" }}>
-        <Img source={c.poster} right={c.posterRight} style={{ width: w, height: w / (c.aspect ?? 2 / 3) }} />
+        <Img label={c.title} where="card" source={c.poster} right={c.posterRight} style={{ width: w, height: w / (c.aspect ?? 2 / 3) }} />
         <Overlays c={{ ...c, rating: undefined }} />
       </View>
       <View style={{ flex: 1, paddingVertical: 2 }}>
@@ -214,7 +215,7 @@ export function PosterTile({ c, w = 118 }: { c: CardData; w?: number }) {
   return (
     <Pressable onPress={() => { tap(); c.onPress(); }} onLongPress={peek(c)} delayLongPress={350} style={({ pressed }) => ({ width: w, opacity: pressed ? 0.85 : 1 })}>
       <View style={{ borderRadius: radius.md, overflow: "hidden", ...shadow() }}>
-        <Img source={c.poster} right={c.posterRight} style={{ width: w, height: w / (c.aspect ?? 2 / 3) }} />
+        <Img label={c.title} where="card" source={c.poster} right={c.posterRight} style={{ width: w, height: w / (c.aspect ?? 2 / 3) }} />
         <Overlays c={c} />
       </View>
       <Text style={{ fontSize: 13, fontWeight: "700", color: colors.text, marginTop: 7 }} numberOfLines={1}>{c.title}</Text>
@@ -227,7 +228,7 @@ export function LandscapeTile({ c, w = 260 }: { c: CardData; w?: number }) {
   return (
     <Pressable onPress={() => { tap(); c.onPress(); }} onLongPress={peek(c)} delayLongPress={350} style={({ pressed }) => ({ width: w, opacity: pressed ? 0.85 : 1 })}>
       <View style={{ borderRadius: radius.md, overflow: "hidden", ...shadow() }}>
-        <Img source={c.poster} style={{ width: w, height: w * 0.5625 }} icon="tv-outline" />
+        <Img label={c.title} where="card" source={c.poster} style={{ width: w, height: w * 0.5625 }} icon="tv-outline" />
         <View style={{ position: "absolute", left: 10, bottom: 12, width: 34, height: 34, borderRadius: 17, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center" }}>
           <Ionicons name="play" size={16} color="#fff" style={{ marginLeft: 2 }} />
         </View>

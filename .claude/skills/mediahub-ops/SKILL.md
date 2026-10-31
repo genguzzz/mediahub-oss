@@ -43,7 +43,7 @@ ops.sh v1|admin|hub|mp <METHOD> <path> [json]   raw call (backend /v1, /admin, p
 4. **Feedback** → `feedback`; the Emby snapshot (path, provider ids, images, streams) usually shows the cause; fix, then `feedback-done <id> "what was done"`.
 5. **Subscription not progressing** → `sub <id>`: per-episode state, Bangumi vs TMDb episode counts.
 
-6. **Images do not load** → app log `log <id> img` (`failed` / `slow`, with the backend path), then `srvlog '"img res"'` and `srvlog '"mod":"images"'` (upstream status / error / time), then `img <path>`. Both sides log a failure or a load over 3–5 s, once per URL per window.
+6. **Images do not load** → upload the app log, then `log <id> img:`. `failed` (error, ms, full URL), `slow` (> 5 s) and `missing` (the card had no image URL, i.e. the source has no poster) are logged once per URL per session. TMDb / Bangumi / 豆瓣 / JavDB URLs are loaded by the phone directly; only `/v1/img/ext` (Jable, hanime) and Emby go through the backend, whose side is `srvlog '"img res"'` and `srvlog '"mod":"images"'`; `img <path>` fetches one through the backend.
 
 ## Logging
 
