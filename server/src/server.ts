@@ -10,6 +10,7 @@ import { mp, mpRaw, plug, plugBytes, UpstreamError } from "./mp.ts";
 import { listUpdates, manifestResponse, storeUpdate } from "./updates.ts";
 import { registerCatalog } from "./catalog/index.ts";
 import { embyEvents, startEmbyEvents } from "./embyEvents.ts";
+import { egressSummary } from "./egress.ts";
 import { initLog } from "./log.ts";
 
 const app = Fastify({
@@ -1114,6 +1115,9 @@ app.get("/admin/playstats", async (req) => {
 });
 
 // Uploaded logs, newest first (read one on the server: $DATA_DIR/logs/<id>.log).
+// How each outside source is reached (direct / which proxy; no credentials).
+app.get("/admin/egress", async () => ({ sources: egressSummary(), flaresolverr: process.env.FLARESOLVERR_URL ? "set" : "default 127.0.0.1:8191" }));
+
 app.get("/admin/logs", async () => {
   const dir = path.join(config.dataDir, "logs");
   const names = (await readdir(dir).catch(() => [] as string[])).filter((n) => n.endsWith(".json"));

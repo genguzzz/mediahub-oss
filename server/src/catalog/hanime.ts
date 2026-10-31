@@ -7,6 +7,8 @@ import path from "node:path";
 import { config } from "../config.ts";
 import { extImage, extUrl } from "../images.ts";
 import type { CatalogDetail, CatalogItem, CatalogProvider, HomeRow, ListQuery, Page } from "./types.ts";
+import { fetch as ufetch } from "undici";
+import { dispatcherFor } from "../egress.ts";
 import { errText, logger } from "../log.ts";
 
 const log = logger("hanime");
@@ -95,7 +97,7 @@ function index(raw: Raw[]) {
 }
 
 async function download() {
-  const res = await fetch(DB_URL, { headers: { "user-agent": UA, origin: "https://hanime.tv", referer: "https://hanime.tv/" }, signal: AbortSignal.timeout(60_000) });
+  const res = await ufetch(DB_URL, { dispatcher: dispatcherFor("hanime"), headers: { "user-agent": UA, origin: "https://hanime.tv", referer: "https://hanime.tv/" }, signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(`hanime 索引返回 ${res.status}`);
   const text = await res.text();
   const raw = (JSON.parse(text) as { data?: Raw[] }).data ?? [];
@@ -161,7 +163,7 @@ async function storyboardOf(slug: string): Promise<CatalogDetail["storyboard"] |
   if (hit && Date.now() - hit.at < 7 * 86400_000) return hit.v;
   let v: CatalogDetail["storyboard"] | null = null;
   try {
-    const res = await fetch(`https://hanime.tv/videos/hentai/${encodeURIComponent(slug)}`, { headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) });
+    const res = await ufetch(`https://hanime.tv/videos/hentai/${encodeURIComponent(slug)}`, { dispatcher: dispatcherFor("hanime"), headers: { "user-agent": UA }, signal: AbortSignal.timeout(8000) });
     const html = (await res.text()).replace(/&quot;/g, '"');
     const num = (k: string) => Number(new RegExp(`"${k}":\\[0,(\\d+)\\]`).exec(html)?.[1] ?? 0);
     const url = /"storyboard_url":\[0,"(https:\/\/[^"]+)"\]/.exec(html)?.[1];

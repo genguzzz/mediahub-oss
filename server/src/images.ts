@@ -6,6 +6,8 @@ import path from "node:path";
 import { config } from "./config.ts";
 import { plugBytes } from "./mp.ts";
 import { proxiedRaw } from "./catalog/http.ts";
+import { fetch as ufetch } from "undici";
+import { dispatcherFor, type Source } from "./egress.ts";
 import { EXT_HOSTS } from "./imageUrls.ts";
 import { errText, logger, once } from "./log.ts";
 
@@ -96,11 +98,19 @@ export function embyImage(id: string, type: string, w: number, tag: string) {
 
 export function tmdbImage(size: string, file: string) {
   const url = `https://image.tmdb.org/t/p/${size}/${file}`;
-  return cached(`tmdb:${size}:${file}`, () => fetchImage("tmdb", url, () => fetch(url, { signal: AbortSignal.timeout(20_000) })), 90 * 86400_000);
+  return cached(`tmdb:${size}:${file}`, () => fetchImage("tmdb", url, () => ufetch(url, { dispatcher: dispatcherFor("tmdb"), signal: AbortSignal.timeout(20_000) })), 90 * 86400_000);
 }
 
-// JavDB images, like its pages, only answer through the home-broadband proxy.
-const PROXIED_HOSTS = /\.jdbstatic\.com$/;
+// Image host → source, for its egress (egress.ts).
+function sourceOfHost(host: string): Source {
+  if (host.endsWith("jdbstatic.com")) return "javdb";
+  if (host.endsWith("hanime-cdn.com")) return "hanime";
+  if (host.endsWith("jable.tv")) return "jable";
+  if (host.endsWith("doubanio.com")) return "douban";
+  if (host.endsWith("bgm.tv")) return "bangumi";
+  return "tmdb";
+}
+
 export function extImage(raw: string) {
   let u: URL;
   try {
@@ -112,11 +122,12 @@ export function extImage(raw: string) {
     if (once(`ext-host:${u.hostname}`) !== null) log.warn({ host: u.hostname }, "image host not allowed");
     return Promise.resolve(null);
   }
-  const proxied = PROXIED_HOSTS.test(u.hostname);
-  return cached(`ext:${u}`, () => fetchImage(proxied ? "ext-proxied" : "ext", u.toString(), () => proxied
+  const source = sourceOfHost(u.hostname);
+  return cached(`ext:${u}`, () => fetchImage(`ext-${source}`, u.toString(), () => source === "javdb"
     ? proxiedRaw(u.toString(), { referer: "https://javdb.com/" })
-    : fetch(u, {
-      headers: { "user-agent": "Mozilla/5.0", ...(u.hostname.endsWith("doubanio.com") ? { referer: "https://movie.douban.com/" } : {}) },
+    : ufetch(u, {
+      dispatcher: dispatcherFor(source),
+      headers: { "user-agent": "Mozilla/5.0", ...(source === "douban" ? { referer: "https://movie.douban.com/" } : {}), ...(source === "hanime" ? { referer: "https://hanime.tv/" } : {}) },
       signal: AbortSignal.timeout(20_000),
     })), 30 * 86400_000);
 }

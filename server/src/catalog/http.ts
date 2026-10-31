@@ -6,9 +6,11 @@
 //   Docker network is IPv4-only, so these requests go out over IPv4 too (over the host's IPv6 they were
 //   challenged again). When Cloudflare challenges anyway, the clearance is dropped and the next page goes
 //   through FlareSolverr, which renews it.
-// - proxied(): JavDB blocks some countries; set INDEX_PROXY to a proxy with a suitable exit
+// - proxied(): pages from a source whose exit is configured per source (egress.ts, SOURCE_PROXY;
+//   JavDB blocks some countries, so its default is INDEX_PROXY)
 //   (e.g. home broadband) and pages and images go through it. Unset = direct.
-import { Agent, fetch as ufetch, ProxyAgent } from "undici";
+import { Agent, fetch as ufetch } from "undici";
+import { dispatcherFor, type Source } from "../egress.ts";
 import { errText, logger } from "../log.ts";
 
 const log = logger("catalog-http");
@@ -29,7 +31,6 @@ async function timed<T>(via: string, url: string, run: () => Promise<T>): Promis
 }
 
 const FLARE = process.env.FLARESOLVERR_URL ?? "http://127.0.0.1:8191/v1";
-const PROXY = process.env.INDEX_PROXY ?? "";
 export const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
 
 const cache = new Map<string, { at: number; ttl: number; value: Promise<string> }>();
@@ -122,10 +123,8 @@ function viaBrowser(url: string, urgent: boolean): Promise<string> {
   }, urgent));
 }
 
-const agent = PROXY ? new ProxyAgent(PROXY) : new Agent();
-
-export async function proxiedRaw(url: string, headers: Record<string, string> = {}, init: { method?: string; body?: string; redirect?: "follow" | "manual" } = {}) {
-  return ufetch(url, { dispatcher: agent, ...init, headers: { "user-agent": UA, "accept-language": "zh-CN,zh;q=0.9", ...headers }, signal: AbortSignal.timeout(25_000) });
+export async function proxiedRaw(url: string, headers: Record<string, string> = {}, init: { method?: string; body?: string; redirect?: "follow" | "manual" } = {}, source: Source = "javdb") {
+  return ufetch(url, { dispatcher: dispatcherFor(source), ...init, headers: { "user-agent": UA, "accept-language": "zh-CN,zh;q=0.9", ...headers }, signal: AbortSignal.timeout(25_000) });
 }
 
 /** The page needs a logged-in account (the site redirected to its login page). */
@@ -140,9 +139,9 @@ export class LoginRequired extends Error {
 }
 
 // `cookie`: a logged-in session (JavDB); pages fetched with and without it are cached apart.
-export function proxied(url: string, ttlMs = 30 * 60_000, cookie = ""): Promise<string> {
+export function proxied(url: string, ttlMs = 30 * 60_000, cookie = "", source: Source = "javdb"): Promise<string> {
   return remember(`proxy:${cookie ? "auth:" : ""}${url}`, ttlMs, () => timed("proxy", url, async () => {
-    const res = await proxiedRaw(url, cookie ? { cookie } : {});
+    const res = await proxiedRaw(url, cookie ? { cookie } : {}, {}, source);
     if (res.url && new URL(res.url).pathname === "/login") throw new LoginRequired("JavDB");
     if (res.status === 404) return "";
     if (!res.ok) throw new Error(`页面返回 ${res.status}`);
