@@ -1,5 +1,5 @@
 // The chat header's model chip and the card it opens: model, thinking effort, web search for the next
-// questions (remembered on this device). Effort and web search start from the server's defaults
+// questions (remembered on this device). Effort can stay 默认 (nothing sent); web search starts from the server's default
 // (server environment / admin) until picked here.
 import { useState } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
@@ -16,10 +16,11 @@ export function useModelChoice() {
   // selected values only: the chat store changes on every streamed token
   const picked = { model: useAiSelect((a) => a.model), effort: useAiSelect((a) => a.effort), webSearch: useAiSelect((a) => a.webSearch) };
   const d = useQuery("ai:settings", () => api<Defaults>("/v1/ai/settings"), { staleMs: 60_000 }).data;
-  const effort: Effort = picked.effort ?? (AI_EFFORTS.some((x) => x.value === d?.effort) ? (d!.effort as Effort) : "medium");
+  // effort null = 默认: nothing sent, the server's setting applies (named in the 默认 row)
+  const serverEffort = AI_EFFORTS.find((x) => x.value === d?.effort);
   const webSearch = picked.webSearch ?? d?.webSearch ?? true;
   const model = AI_MODELS.find((o) => o.value === picked.model) ?? AI_MODELS[0];
-  return { model, effort, webSearch };
+  return { model, effort: picked.effort as Effort | null, serverEffort, webSearch };
 }
 
 /** The chip under the chat title: "Sonnet · 思考中"; tap opens the menu. */
@@ -30,11 +31,11 @@ export function ModelChip({ onPress }: { onPress: () => void }) {
     <Pressable
       hitSlop={8}
       accessibilityRole="button"
-      accessibilityLabel={`模型 ${model.label}，思考${e?.label ?? ""}，点按调整`}
+      accessibilityLabel={`模型 ${model.label}，思考${e?.label ?? "默认"}，点按调整`}
       onPress={() => { void haptic("select"); onPress(); }}
       style={({ pressed }) => ({ flexDirection: "row", alignItems: "center", gap: 3, alignSelf: "flex-start", opacity: pressed ? 0.6 : 1 })}
     >
-      <Text style={{ fontSize: fs.xs, color: colors.textFaint }}>{model.label} · 思考{e?.label}</Text>
+      <Text style={{ fontSize: fs.xs, color: colors.textFaint }}>{model.label}{e ? ` · 思考${e.label}` : ""}</Text>
       <Ionicons name="chevron-down" size={11} color={colors.textFaint} />
     </Pressable>
   );
@@ -63,7 +64,7 @@ const Title = ({ children }: { children: string }) => (
 
 /** The dropdown card (rendered over the chat; a tap outside closes it). */
 export function ModelMenu({ top, onClose }: { top: number; onClose: () => void }) {
-  const { model, effort, webSearch } = useModelChoice();
+  const { model, effort, serverEffort, webSearch } = useModelChoice();
   // web search flips at once but the switch keeps its own state for a smooth animation
   const [web, setWeb] = useState(webSearch);
   return (
@@ -73,6 +74,7 @@ export function ModelMenu({ top, onClose }: { top: number; onClose: () => void }
         <Text style={{ fontSize: fs.xs, color: colors.textFaint, marginTop: 4, marginBottom: 2, marginLeft: 10 }}>模型</Text>
         {AI_MODELS.map((m) => <Option key={m.value} label={m.label} hint={m.hint} on={m.value === model.value} onPress={() => setModel(m.value)} />)}
         <Title>思考程度</Title>
+        <Option label="默认" hint={`不指定，用服务器的设置${serverEffort ? `（现在是${serverEffort.label}）` : ""}`} on={!effort} onPress={() => setEffort(null)} />
         {AI_EFFORTS.map((e) => <Option key={e.value} label={e.label} hint={e.hint} on={e.value === effort} onPress={() => setEffort(e.value)} />)}
         <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 8, marginHorizontal: 10 }} />
         <View style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingBottom: 6, gap: 10 }}>

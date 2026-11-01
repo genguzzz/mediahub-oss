@@ -116,9 +116,9 @@ export function setModel(m: string) {
   put(MODEL_KEY, m);
   emit();
 }
-export function setEffort(e: Effort) {
+export function setEffort(e: Effort | null) {
   ai.effort = e;
-  put(EFFORT_KEY, e);
+  put(EFFORT_KEY, e ?? "");
   emit();
 }
 export function setWebSearch(on: boolean) {
