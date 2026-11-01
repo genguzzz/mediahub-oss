@@ -48,7 +48,3 @@ Adding a key: declare it in `SCHEMA` and in `DEFAULTS` of `lib/remoteConfig.ts`,
 ## Online subtitles (player)
 
 The player's subtitle sheet has 在线字幕: the backend searches every source for the item (`GET /v1/subs/search?embyId=`: 迅雷, 射手网, sub_share — see docs/AI.md), best match first; a 射手网 pack opens into its files (`/v1/subs/files`). A pick loads through `/v1/subs/file?path=<source>` (served as UTF-8, GBK files converted) and can be kept with 存到媒体库 (`POST /v1/emby/item/:id/subtitles/install`, written beside the strm, timing aligned to the audio).
-
-## Casting a show (连播)
-
-Casting an episode sends the series from that episode on (seasons in order, specials left out, up to 30) as one M3U playlist, so the TV moves on to the next episode by itself — when the TV declares M3U support over standard DLNA (`ConnectionManager.GetProtocolInfo` Sink lists `audio/x-mpegurl`, `audio/mpegurl` or `application/x-mpegurl`; `lib/dlna.ts playlistMime`). A TV that doesn't gets the single episode, and the panel says so; there is no try-and-fall-back. The app builds each entry's direct-play Emby link (the same link a single cast uses) and posts the list to `POST /v1/cast/playlist`; the server serves it at `GET /cast/p/<token>.m3u` — outside `/v1` because the TV can't send a token, an unguessable 32-hex path, kept 12 hours. The cast panel has 连播（N 集）/ 单集; the assistant's `cast_to_tv` takes `scope=series|episode` (series by default). `lib/castQueue.ts`.

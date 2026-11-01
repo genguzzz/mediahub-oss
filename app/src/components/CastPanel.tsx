@@ -2,9 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { castSeries, queueFrom } from "@/lib/castQueue";
-import { cast, discover, describe, fromAddress, playlistMime, type CastStatus, type Renderer } from "@/lib/dlna";
-import type { Item } from "@/lib/emby";
+import { cast, discover, describe, fromAddress, type CastStatus, type Renderer } from "@/lib/dlna";
 import { logger } from "@/lib/log";
 import { getSettings, setSettings } from "@/lib/settings";
 import { track } from "@/lib/track";
@@ -25,11 +23,9 @@ export interface CastPanelProps {
   canScan: boolean;
   onStart: () => void;     // local playback should pause: the TV took over
   onStop: (at: number) => void; // casting ended; resume locally from this position
-  /** the Emby item: an episode can go as the series from here on (连播) */
-  itemId?: string;
 }
 
-export function CastPanel({ uri, title, position, canScan, onStart, onStop, itemId }: CastPanelProps) {
+export function CastPanel({ uri, title, position, canScan, onStart, onStop }: CastPanelProps) {
   const [devices, setDevices] = useState<Renderer[]>([]);
   const [target, setTarget] = useState<Renderer | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -41,21 +37,6 @@ export function CastPanel({ uri, title, position, canScan, onStart, onStop, item
   const [error, setError] = useState("");
   const alive = useRef(true);
   useEffect(() => () => { alive.current = false; }, []);
-  // 连播: an episode with more after it goes as the series from here on, when the TV declares playlist support
-  const [queue, setQueue] = useState<Item[] | null>(null);
-  const [series, setSeries] = useState(true);
-  // the TV's answer, kept with the TV it came from (undefined while asking)
-  const [probe, setProbe] = useState<{ location: string; mime: string | null } | null>(null);
-  const plMime = target && probe?.location === target.location ? probe.mime : undefined;
-  useEffect(() => {
-    if (itemId) void queueFrom(itemId).then((q) => alive.current && setQueue(q)).catch(() => {});
-  }, [itemId]);
-  useEffect(() => {
-    if (!target) return;
-    const location = target.location;
-    void playlistMime(target).catch(() => null).then((mime) => alive.current && setProbe({ location, mime }));
-  }, [target]);
-  const canSeries = !!queue && queue.length > 1;
 
   const pick = useCallback((r: Renderer) => {
     setTarget(r);
@@ -112,13 +93,8 @@ export function CastPanel({ uri, title, position, canScan, onStart, onStop, item
     if (!target || !uri) return;
     setBusy(true);
     await run("投屏", async () => {
-      if (canSeries && series && plMime) {
-        const r = await castSeries(target, queue!, position);
-        track("cast_start", { tv: target.name, mode: r.mode, n: r.count });
-      } else {
-        await cast.load(target, uri, title, position);
-        track("cast_start", { tv: target.name });
-      }
+      await cast.load(target, uri, title, position);
+      track("cast_start", { tv: target.name });
       setCasting(true);
       onStart();
       setVolume(await cast.volume(target).catch(() => null));
@@ -200,23 +176,6 @@ export function CastPanel({ uri, title, position, canScan, onStart, onStop, item
               <Text style={{ color: "#fff" }}>添加</Text>
             </Pressable>
           </View>
-          {canSeries ? (
-            <View style={{ marginTop: 14 }}>
-              <View style={{ flexDirection: "row", gap: 8 }}>
-                {[{ v: true, t: `连播（${queue!.length} 集）` }, { v: false, t: "单集" }].map((o) => {
-                  const on = o.v === (series && !!plMime);   // 单集 is what goes when the TV can't take a list
-                  return (
-                    <Pressable key={o.t} disabled={o.v && !plMime} onPress={() => setSeries(o.v)} style={{ flex: 1, paddingVertical: 9, borderRadius: 10, alignItems: "center", backgroundColor: on ? "rgba(232,176,75,0.22)" : "rgba(255,255,255,0.08)", opacity: o.v && !plMime ? 0.45 : 1 }}>
-                      <Text style={{ color: on ? ACCENT : "#ddd", fontWeight: on ? "700" : "400" }}>{o.t}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-              <Text style={{ color: "#888", fontSize: 12, marginTop: 6 }}>
-                {plMime === undefined && target ? "正在确认电视能否播放列表…" : plMime ? "从这一集放到最后一集，电视放完自动下一集" : target ? "这台电视没有声明支持播放列表，只能投单集" : ""}
-              </Text>
-            </View>
-          ) : null}
           <Pressable
             disabled={!target || !uri || busy}
             onPress={() => void start()}

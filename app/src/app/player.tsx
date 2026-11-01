@@ -835,7 +835,6 @@ export default function PlayerScreen() {
                 </>
               ) : sheet === "cast" ? (
                 <CastPanel
-                  itemId={loadedId}
                   uri={plan?.uri ?? null}
                   title={`${title}${subtitle ? ` ${subtitle}` : ""}`}
                   position={posRef.current}

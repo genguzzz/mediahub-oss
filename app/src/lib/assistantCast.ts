@@ -1,9 +1,8 @@
 // The assistant's TV tools, run on the phone (it shares the TV's network): the server sends an event
-// (lib/ai.ts) — `cast` (cast_to_tv: an Emby item to a TV by DLNA; an episode as the series from there on, castQueue.ts) or `tv` (tv_control: play / pause / seek /
+// (lib/ai.ts) — `cast` (cast_to_tv: an Emby item to a TV by DLNA) or `tv` (tv_control: play / pause / seek /
 // volume / status) — on the TV named in the request, else the one used last, else the first found; the
 // outcome goes back to /v1/ai/phone/:rid, which the waiting tool returns to the model.
 import { api } from "./api";
-import { castSeries, queueFrom } from "./castQueue";
 import { cast, describe, discover, type Renderer } from "./dlna";
 import { embyApi, playbackPlan } from "./emby";
 import { logger } from "./log";
@@ -14,7 +13,7 @@ import { toast, toastError } from "@/components/ui";
 const log = logger("ai-cast");
 const handled = new Set<string>();
 
-export interface CastRequest { rid: string; expires: number; embyId: string; title: string; resume: boolean; tv?: string; scope?: "series" | "episode" }
+export interface CastRequest { rid: string; expires: number; embyId: string; title: string; resume: boolean; tv?: string }
 
 const norm = (s: string) => s.normalize("NFKC").toLowerCase().replace(/\s+/g, "");
 
@@ -47,18 +46,12 @@ export async function castForAssistant(req: CastRequest) {
       return;
     }
     const at = req.resume ? ((await embyApi.item(req.embyId).catch(() => null))?.UserData?.PlaybackPositionTicks ?? 0) / 1e7 : 0;
-    // an episode goes as the series from here on (a playlist, when the TV plays them) unless one episode was asked for
-    const queue = req.scope === "episode" ? null : await queueFrom(req.embyId);
-    let done: { mode: "playlist" | "single"; count: number; reason?: string } = { mode: "single", count: 1 };
-    if (queue && queue.length > 1) done = await castSeries(tv, queue, at);
-    else {
-      const plan = await playbackPlan(req.embyId, at);
-      await cast.load(tv, plan.uri, req.title, at);
-    }
+    const plan = await playbackPlan(req.embyId, at);
+    await cast.load(tv, plan.uri, req.title, at);
     setSettings({ castTv: { name: tv.name, location: tv.location } });
-    track("ai_cast", { ok: true, mode: done.mode, n: done.count });
-    toast(`已投到 ${tv.name}`, done.mode === "playlist" ? `${req.title} 起连播 ${done.count} 集` : req.title);
-    await report({ ok: true, tv: tv.name, devices, mode: done.mode, episodes: done.count, ...(done.reason ? { note: done.reason } : {}) });
+    track("ai_cast", { ok: true });
+    toast(`已投到 ${tv.name}`, req.title);
+    await report({ ok: true, tv: tv.name, devices });
   } catch (e) {
     track("ai_cast", { ok: false });
     toastError("投屏失败", e);

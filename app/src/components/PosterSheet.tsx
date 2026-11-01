@@ -115,7 +115,7 @@ export function PosterSheetHost() {
             <Ionicons name="chevron-back" size={16} color={colors.primary} />
             <Text style={{ color: colors.primary, fontWeight: "700" }}>返回</Text>
           </Pressable>
-          <CastPanel itemId={id} uri={plan?.uri ?? null} title={card.title} position={0} canScan={scan} onStart={() => {}} onStop={() => {}} />
+          <CastPanel uri={plan?.uri ?? null} title={card.title} position={0} canScan={scan} onStart={() => {}} onStop={() => {}} />
         </View>
       ) : (
         <Animated.View key="menu" entering={FadeIn.duration(200)} style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 16 }}>

@@ -1121,28 +1121,6 @@ app.get("/v1/subs/file", async (req, reply) => {
   return reply.type(text ? `${f.type}; charset=utf-8` : f.type).header("cache-control", "private, max-age=3600").send(text ? Buffer.from(decodeSubtitle(f.body), "utf8") : f.body);
 });
 
-// ---------- cast playlists (a season to the TV) ----------
-// DLNA TVs without a "next track" command still play a playlist URL in order. The app posts the episodes'
-// stream URLs; the TV fetches the playlist without a login (it can't send headers), so it lives at an
-// unguessable path outside /v1 for 12 hours. Entries are the same direct-play Emby links as a single cast.
-const castLists = new Map<string, { at: number; body: string }>();
-app.post("/v1/cast/playlist", async (req) => {
-  const b = z.object({ items: z.array(z.object({ url: z.string().url().max(2000), title: z.string().max(200), duration: z.number().int().min(0).max(86400).default(0) })).min(1).max(60) }).parse(req.body);
-  const now = Date.now();
-  for (const [k, v] of castLists) if (now - v.at > 12 * 3600_000) castLists.delete(k);
-  const token = randomUUID().replace(/-/g, "");
-  const clean = (t: string) => t.replace(/[\r\n,]+/g, " ").trim();
-  castLists.set(token, { at: now, body: ["#EXTM3U", ...b.items.flatMap((i) => [`#EXTINF:${i.duration || -1},${clean(i.title)}`, i.url]), ""].join("\n") });
-  req.log.info({ n: b.items.length }, "cast playlist");
-  return { path: `/cast/p/${token}.m3u` };
-});
-app.get<{ Params: { file: string } }>("/cast/p/:file", async (req, reply) => {
-  const m = /^([0-9a-f]{32})\.m3u8?$/.exec(req.params.file);
-  const list = m ? castLists.get(m[1]) : undefined;
-  if (!list) return reply.code(404).send();
-  return reply.type("audio/x-mpegurl; charset=utf-8").header("cache-control", "no-store").send(list.body);
-});
-
 // ---------- media files and subtitles (the assistant; the app's player uses /v1/subs/list + file) ----------
 
 interface EmbyStream { Index: number; Type: string; Codec?: string; Language?: string; DisplayTitle?: string; Title?: string; IsExternal?: boolean; IsDefault?: boolean; Width?: number; Height?: number; Channels?: number; BitRate?: number; Path?: string }
