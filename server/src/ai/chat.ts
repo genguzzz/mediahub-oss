@@ -2,7 +2,7 @@
 // HTTP request, its events are buffered and fanned out over Server-Sent Events, and the app can re-attach
 // (/stream replays the turn from its start), stop it, or retry a question left unanswered by a restart.
 // Storage: DATA_DIR/ai/chats/<id>.json (messages for the app + the model's own history, trimmed) and
-// DATA_DIR/ai/notes.json (preferences, written by the remember tool or edited in the app).
+// memory.ts (profile always in the prompt, archival memories recalled per question).
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
@@ -12,6 +12,7 @@ import { logger } from "../log.ts";
 import { aiClient } from "./client.ts";
 import { systemPrompt } from "./prompt.ts";
 import { labelOf, runTool, toolList, type Resource, type ToolCtx } from "./tools.ts";
+import { profile, recall } from "./memory.ts";
 
 const log = logger("ai");
 type Msg = Anthropic.Beta.BetaMessageParam;
@@ -23,12 +24,10 @@ export type Step =
 
 interface StoredMsg { id: number; ts: number; role: "user" | "assistant"; content: string; steps: Step[]; latencyMs?: number; error?: string }
 interface Chat { id: number; created: number; updated: number; title: string; msgs: StoredMsg[]; history: Msg[]; refs: Record<string, Resource> }
-export interface Note { id: number; ts: number; text: string; by: "ai" | "owner" }
 export interface Context { adult: boolean; screen?: string }
 
 const dir = path.join(config.dataDir, "ai");
 const chatDir = path.join(dir, "chats");
-const notesFile = path.join(dir, "notes.json");
 const chats = new Map<number, Chat>();
 let loaded: Promise<void> | null = null;
 
@@ -49,31 +48,6 @@ function load() {
 }
 
 const save = (c: Chat) => writeFile(path.join(chatDir, `${c.id}.json`), JSON.stringify(c)).catch((e) => log.error({ id: c.id, err: String(e) }, "chat save failed"));
-
-// ---------- notes (preferences) ----------
-
-let notes: Note[] | null = null;
-export async function getNotes(): Promise<Note[]> {
-  notes ??= await readFile(notesFile, "utf8").then((t) => JSON.parse(t) as Note[]).catch(() => []);
-  return notes;
-}
-async function saveNotes(n: Note[]) {
-  notes = n.slice(-50);
-  await mkdir(dir, { recursive: true });
-  await writeFile(notesFile, JSON.stringify(notes, null, 1));
-}
-export async function addNote(text: string, by: "ai" | "owner", replaces?: number) {
-  const n = [...(await getNotes())];
-  const i = replaces ? n.findIndex((x) => x.id === replaces) : -1;
-  const note: Note = { id: i >= 0 ? n[i].id : Math.max(0, ...n.map((x) => x.id)) + 1, ts: Date.now(), text: text.trim().slice(0, 300), by };
-  if (i >= 0) n[i] = note;
-  else n.push(note);
-  await saveNotes(n);
-  return note;
-}
-export async function deleteNote(id: number) {
-  await saveNotes((await getNotes()).filter((x) => x.id !== id));
-}
 
 // ---------- runs ----------
 
@@ -238,10 +212,12 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
     const { client, model: defModel, webSearch } = await aiClient();
     const ctx: ToolCtx = {
       app, adult: context.adult, refs: c.refs,
-      remember: (t, replaces) => void addNote(t, "ai", replaces).then((n) => ev({ type: "memory", text: n.text, replaces })).catch((e) => log.warn({ err: String(e) }, "remember failed")),
+      saved: (text, replaces) => ev({ type: "memory", text, replaces }),
       chats: { list: (q, n) => searchChats(q, n, id), read: (cid, n) => readChat(cid, n) },
     };
-    const system = systemPrompt({ notes: await getNotes(), recent: await recentTitles(id), context, now: new Date() });
+    // memory: the core profile always; archival memories relevant to this question (and the chat's title)
+    const [core, recalled] = await Promise.all([profile(), recall(`${c.title} ${question}`)]);
+    const system = systemPrompt({ profile: core, recalled, recent: await recentTitles(id), context, now: new Date() });
     const tools = toolList(context.adult, webSearch);
     const messages: Msg[] = [...trim(c.history), { role: "user", content: question }];
     for (let round = 0; round < 30; round++) {
@@ -249,7 +225,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
       const stream = client.beta.messages.stream({
         model: model || defModel,
         max_tokens: 16_000,
-        system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+        system: [{ type: "text", text: system.stable, cache_control: { type: "ephemeral" } }, { type: "text", text: system.turn }],
         messages,
         tools,
         thinking: { type: "adaptive", display: "summarized" } as never,

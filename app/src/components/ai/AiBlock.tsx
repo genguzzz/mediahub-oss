@@ -92,17 +92,18 @@ export function AiBlock({ seg }: { seg: Extract<Segment, { k: "block" }> }) {
 
 // ---------- ```video ----------
 
-type Vid = { site?: string; id?: string; title?: string; author?: string; duration?: string; views?: number; cover?: string; published?: string };
+type Vid = { site?: string; id?: string; title?: string; author?: string; duration?: string; views?: number; cover?: string; published?: string; live?: boolean; online?: number; area?: string };
 const VW = 220;
-const okVid = (v: Vid) => !!v && (v.site === "bilibili" || v.site === "youtube") && !!v.id && /^[\w-]{6,20}$/.test(v.id);
+// videos: BV id / YouTube id; Bilibili live rooms: the numeric room id
+const okVid = (v: Vid) => !!v && (v.site === "bilibili" || v.site === "youtube") && !!v.id && (v.live ? /^\d{1,12}$/.test(String(v.id)) : /^[\w-]{6,20}$/.test(v.id));
 const coverOf = (v: Vid) => (v.site === "youtube" ? `https://i.ytimg.com/vi/${v.id}/mqdefault.jpg` : v.cover ? (/^https?:\/\//.test(v.cover) ? v.cover : `https://${v.cover.replace(/^\/+/, "")}`) : undefined);
 const count = (n?: number) => (n == null ? "" : n >= 1e8 ? `${(n / 1e8).toFixed(1)}亿` : n >= 1e4 ? `${(n / 1e4).toFixed(1)}万` : String(n));
 
 /** The site's app when installed (its URL scheme), else the page in the in-app browser. */
 async function openVideo(v: Vid) {
   tap();
-  const web = v.site === "bilibili" ? `https://www.bilibili.com/video/${v.id}` : `https://www.youtube.com/watch?v=${v.id}`;
-  const app = v.site === "bilibili" ? `bilibili://video/${v.id}` : `youtube://www.youtube.com/watch?v=${v.id}`;
+  const web = v.live ? `https://live.bilibili.com/${v.id}` : v.site === "bilibili" ? `https://www.bilibili.com/video/${v.id}` : `https://www.youtube.com/watch?v=${v.id}`;
+  const app = v.live ? `bilibili://live/${v.id}` : v.site === "bilibili" ? `bilibili://video/${v.id}` : `youtube://www.youtube.com/watch?v=${v.id}`;
   try {
     await Linking.openURL(app);
   } catch {
@@ -121,9 +122,9 @@ function VideoBlock({ seg }: { seg: Extract<Segment, { k: "block" }> }) {
           <Pressable key={`${v.site}:${v.id}:${i}`} onPress={() => void openVideo(v)} style={({ pressed }) => ({ width: VW, opacity: pressed ? 0.85 : 1 })}>
             <View style={{ borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.raised }}>
               <Img label={v.title} where="ai-video" source={uri ? { uri } : undefined} style={{ width: VW, height: VW * 0.5625 }} icon="play-circle-outline" />
-              <View style={{ position: "absolute", left: 8, top: 8, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, backgroundColor: v.site === "bilibili" ? "rgba(251,114,153,0.92)" : "rgba(230,33,23,0.92)" }}>
-                <Ionicons name={v.site === "bilibili" ? "tv-outline" : "logo-youtube"} size={11} color="#fff" />
-                <Text style={{ fontSize: 10, fontWeight: "700", color: "#fff" }}>{v.site === "bilibili" ? "B站" : "YouTube"}</Text>
+              <View style={{ position: "absolute", left: 8, top: 8, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, backgroundColor: v.live ? "rgba(239,68,68,0.95)" : v.site === "bilibili" ? "rgba(251,114,153,0.92)" : "rgba(230,33,23,0.92)" }}>
+                <Ionicons name={v.live ? "radio-outline" : v.site === "bilibili" ? "tv-outline" : "logo-youtube"} size={11} color="#fff" />
+                <Text style={{ fontSize: 10, fontWeight: "700", color: "#fff" }}>{v.live ? "直播中" : v.site === "bilibili" ? "B站" : "YouTube"}</Text>
               </View>
               {v.duration ? (
                 <View style={{ position: "absolute", right: 8, bottom: 8, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, backgroundColor: "rgba(0,0,0,0.7)" }}>
@@ -132,7 +133,7 @@ function VideoBlock({ seg }: { seg: Extract<Segment, { k: "block" }> }) {
               ) : null}
             </View>
             <Text numberOfLines={2} style={{ fontSize: fs.md, lineHeight: 18, fontWeight: "600", color: colors.text, marginTop: 7 }}>{v.title}</Text>
-            <Text numberOfLines={1} style={{ fontSize: fs.xs, color: colors.textFaint, marginTop: 2 }}>{[v.author, v.views != null ? `${count(v.views)}播放` : "", v.published].filter(Boolean).join(" · ")}</Text>
+            <Text numberOfLines={1} style={{ fontSize: fs.xs, color: colors.textFaint, marginTop: 2 }}>{(v.live ? [v.author, v.online != null ? `人气 ${count(v.online)}` : "", v.area] : [v.author, v.views != null ? `${count(v.views)}播放` : "", v.published]).filter(Boolean).join(" · ")}</Text>
           </Pressable>
         );
       })}

@@ -2,7 +2,8 @@
 // `data: <json>` per event, `: ping` every 15 s; the run keeps going when the connection drops.
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
-import { addNote, attach, deleteNote, getChat, getNotes, listChats, removeChat, startChat, stopChat } from "./chat.ts";
+import { attach, getChat, listChats, removeChat, startChat, stopChat } from "./chat.ts";
+import { allMemories, forget, saveMemory } from "./memory.ts";
 import { status, update } from "./settings.ts";
 
 function sse(reply: FastifyReply, chatId: number, onClose?: () => void) {
@@ -69,10 +70,11 @@ export function registerAi(app: FastifyInstance) {
     return { ok: true };
   });
 
-  app.get("/v1/ai/notes", async () => getNotes());
-  app.post("/v1/ai/notes", async (req) => addNote(z.object({ text: z.string().min(1).max(300) }).parse(req.body).text, "owner"));
+  // the app's 偏好与记忆 pane: every memory (profile first); the owner adds profile entries
+  app.get("/v1/ai/notes", async () => (await allMemories()).map((m) => ({ id: m.id, ts: m.updated, text: m.text, by: m.by, kind: m.kind })));
+  app.post("/v1/ai/notes", async (req) => (await saveMemory({ text: z.object({ text: z.string().min(1).max(300) }).parse(req.body).text, kind: "profile", by: "owner" })).memory);
   app.delete<{ Params: { id: string } }>("/v1/ai/notes/:id", async (req) => {
-    await deleteNote(Number(req.params.id));
+    await forget(Number(req.params.id));
     return { ok: true };
   });
 }

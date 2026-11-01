@@ -12,13 +12,15 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { config } from "../config.ts";
 import { readKnowledge, TOPICS, type Topic } from "./knowledge.ts";
+import { forget, KINDS, saveMemory, search as searchMemory } from "./memory.ts";
 
 export interface ToolCtx {
   app: FastifyInstance;
   adult: boolean;
   /** resources found by find_resources in this chat, by ref ("r1"…) */
   refs: Record<string, Resource>;
-  remember: (text: string, replaces?: number) => void;
+  /** a memory was written (the app shows it) */
+  saved: (text: string, replaces?: number) => void;
   /** past conversations (chat.ts): search titles + questions, read one */
   chats: { list: (query: string, limit: number) => Promise<unknown>; read: (id: number, maxChars: number) => Promise<unknown> };
 }
@@ -64,6 +66,14 @@ function work(m: any, overview = 90) {
     ...(m.poster ? { poster: String(m.poster).split("/").pop() } : {}),   // the app rebuilds the TMDb URL
     ...("library" in m ? { inLibrary: !!m.library } : {}),   // known only where the route looked it up
     ...(m.roles?.length ? { roles: m.roles.slice(0, 3) } : {}),
+  };
+}
+
+/** A Bilibili live room as the model sees it (cover kept for the card, without the scheme). */
+function liveSlim(l: any) {
+  return {
+    live: !!l.live, roomId: l.roomId, title: cut(l.title, 60) || undefined, uname: l.uname || undefined, area: l.area || undefined,
+    online: l.online ?? undefined, ...(l.since ? { since: l.since } : {}), ...(l.cover ? { cover: String(l.cover).replace(/^https?:\/\//, "") } : {}),
   };
 }
 
@@ -326,6 +336,64 @@ export const TOOLS: Record<string, Def> = {
       return call(ctx, "POST", "/v1/prowlarr", { action: "update", id: Number(a.id.split(":")[1]), enable: a.action === "enable" });
     },
   },
+  find_creators: {
+    tier: "read",
+    description: "按名字找 UP 主 / YouTube 频道（可能有多个同名、子账号、粉丝号）：返回 id、名字、粉丝数、投稿数、签名；B 站还带直播间和是否正在直播。主人问『有没有某某的号』『某某在不在直播』或 creator_videos 选错账号时用。",
+    input: z.object({ name: z.string().min(1).max(60), site: z.enum(["bilibili", "youtube", "both"]).optional() }),
+    label: (a) => `找 UP 主「${a.name}」`,
+    run: async (ctx, a) => {
+      const sites = a.site && a.site !== "both" ? [a.site] : ["bilibili", "youtube"];
+      return Promise.all(sites.map(async (site: string) => {
+        try {
+          const who = ((await call(ctx, "GET", `/v1/ugc/creators${qs({ site, q: a.name })}`)).items ?? []) as any[];
+          const live = site === "bilibili" && who.length ? (await call(ctx, "GET", `/v1/ugc/live${qs({ uids: who.slice(0, 8).map((w) => w.id).join(",") })}`).catch(() => ({ status: {} }))).status ?? {} : {};
+          return { site, accounts: who.map((w) => ({ id: w.id, name: w.name, followers: w.followers ?? undefined, videos: w.videos ?? undefined, sign: w.sign || undefined, ...(live[w.id] ? { live: liveSlim(live[w.id]) } : {}) })) };
+        } catch (e) {
+          return { site, error: e instanceof Error ? e.message : String(e) };
+        }
+      }));
+    },
+  },
+  live_search: {
+    tier: "read",
+    description: "搜 B 站直播间（主播名、游戏、赛事、话题，如『英雄联盟』『德云色』『LPL』）：返回正在直播的房间（roomId、标题、主播、分区、在线人数、封面），在播的、人多的在前。展示用 video 卡片块（live:true）。",
+    input: z.object({ query: z.string().min(1).max(60), limit: z.number().int().min(1).max(20).optional() }),
+    label: (a) => `搜直播「${a.query}」`,
+    run: async (ctx, a) => ((await call(ctx, "GET", `/v1/ugc/live${qs({ q: a.query })}`)).items ?? []).slice(0, a.limit ?? 10).map(liveSlim),
+  },
+  creator_videos: {
+    tier: "read",
+    description: "某个 UP 主 / YouTube 频道 / 创作者（如『影视飓风』『老番茄』『MKBHD』）的账号和最新投稿：先按名字找账号（取名字最匹配、粉丝最多的），再拉它的最新视频，按时间倒序。site = bilibili | youtube | both（默认 both）。问『某某最近更新了什么』『看看某某的新视频』时用它，不要用 video_search 按关键词搜。B 站结果来自搜索、只有近期投稿；YouTube 是完整的最新列表。",
+    input: z.object({ name: z.string().min(1).max(60), site: z.enum(["bilibili", "youtube", "both"]).optional(), limit: z.number().int().min(1).max(20).optional() }),
+    label: (a) => `看「${a.name}」的最新视频`,
+    run: async (ctx, a) => {
+      const sites = a.site && a.site !== "both" ? [a.site] : ["bilibili", "youtube"];
+      const norm = (x: string) => x.normalize("NFKC").toLowerCase().replace(/\s+/g, "");
+      return Promise.all(sites.map(async (site: string) => {
+        try {
+          const who = ((await call(ctx, "GET", `/v1/ugc/creators${qs({ site, q: a.name })}`)).items ?? []) as any[];
+          if (!who.length) return { site, error: "没找到这个账号" };
+          // the account whose name contains the query, most followers first; else the top search hit
+          const pick = [...who].sort((x, y) => Number(norm(y.name).includes(norm(a.name))) - Number(norm(x.name).includes(norm(a.name))) || (y.followers ?? 0) - (x.followers ?? 0))[0];
+          const [vids, liveNow] = await Promise.all([
+            call(ctx, "GET", `/v1/ugc/uploads${qs({ site, id: pick.id, name: pick.name })}`).then((r) => (r.items ?? []) as any[]),
+            site === "bilibili" ? call(ctx, "GET", `/v1/ugc/live${qs({ uids: pick.id })}`).then((r) => r.status?.[pick.id] ?? null).catch(() => null) : Promise.resolve(null),
+          ]);
+          return {
+            site, account: { id: pick.id, name: pick.name, followers: pick.followers ?? undefined, videos: pick.videos ?? undefined, url: pick.url },
+            ...(liveNow ? { live: liveSlim(liveNow) } : {}),
+            others: who.filter((w) => w.id !== pick.id).slice(0, 3).map((w) => `${w.name}（${w.followers ?? "?"} 粉）`),
+            latest: vids.slice(0, a.limit ?? 10).map((v) => ({
+              site: v.site, id: v.id, title: cut(v.title, 70), author: v.author || pick.name, duration: v.duration || undefined, views: v.views ?? undefined, published: v.published || undefined,
+              ...(v.site === "bilibili" && v.cover ? { cover: String(v.cover).replace(/^https?:\/\//, "") } : {}),
+            })),
+          };
+        } catch (e) {
+          return { site, error: e instanceof Error ? e.message : String(e) };
+        }
+      }));
+    },
+  },
   catalog_list: {
     tier: "read", adult: true,
     description: "成人目录（只在成人内容开启时可用）：provider = javdb | jable | hanime | emby-av；可按 sort、tag、q（关键词）、page 列出作品。",
@@ -372,8 +440,8 @@ export const TOOLS: Record<string, Def> = {
   },
   subscribe: {
     tier: "write",
-    description: "订阅一部剧（追更）或电影（上线后自动下载）。主人明确要求订阅/追更时用。",
-    input: z.object({ type: Type, tmdbid: z.number().int().positive(), title: z.string().min(1), year: z.string().optional(), season: z.number().int().min(0).optional() }),
+    description: "订阅一部剧的某一季（追更新集）或一部电影（上线后自动下载）。剧集必须给 season：先用 media_detail 看 seasons，选主人说的那季（『第二季』= season 2；没说就是正在播或即将播出的最新一季）。已经全部在库里的季订阅了会立刻结束，没有意义。主人明确要求订阅/追更/出新集提醒时用；季不确定先问。",
+    input: z.object({ type: Type, tmdbid: z.number().int().positive(), title: z.string().min(1), year: z.string().optional(), season: z.number().int().min(0).optional() }).refine((a) => a.type === "movie" || a.season != null, { message: "剧集订阅要给 season", path: ["season"] }),
     label: (a) => `订阅「${a.title}」`,
     run: async (ctx, a) => call(ctx, "POST", "/v1/subscriptions", { tmdbid: a.tmdbid, type: a.type, title: a.title, year: a.year ?? "", season: a.season }),
   },
@@ -436,15 +504,30 @@ export const TOOLS: Record<string, Def> = {
     label: () => "读以前的对话",
     run: async (ctx, a) => ctx.chats.read(a.id, a.maxChars ?? 6000),
   },
-  remember: {
+  memory_save: {
     tier: "memory",
-    description: "记住主人的一条长期偏好或事实（口味、不喜欢的类型、画质/字幕要求、在追的剧等），以后每次对话都会带上。replaces = 要替换的旧偏好编号。只记主人明确表达的、长期有用的内容。",
-    input: z.object({ text: z.string().min(2).max(300), replaces: z.number().int().positive().optional() }),
-    label: () => "记住偏好",
+    description: "写一条记忆（一句话，自包含，写清主语和具体对象）。kind：profile = 核心画像，每次对话都带（稳定的口味和规则：喜欢/讨厌的类型、画质字幕要求，最多 12 条，宁可合并）；fact = 关于主人的事实；watching = 在追/在看/想看的；event = 发生过的事（入库了什么、某次推荐和反馈）；plan = 待办和约定（『下周提醒我…』『等第二季出了再下』）。tags 给 1-4 个检索词（片名、人名、类型）。同类相近的记忆会自动更新而不是重复；要改某条就给 replaces=id。",
+    input: z.object({ text: z.string().min(4).max(300), kind: z.enum(KINDS), tags: z.array(z.string().max(30)).max(4).optional(), replaces: z.number().int().positive().optional() }),
+    label: (a) => (a.kind === "profile" ? "更新口味画像" : "记一笔"),
     run: async (ctx, a) => {
-      ctx.remember(a.text, a.replaces);
-      return { ok: true };
+      const r = await saveMemory({ text: a.text, kind: a.kind, tags: a.tags, replaces: a.replaces, by: "ai" });
+      ctx.saved(r.memory.text, r.action === "updated" ? r.memory.id : undefined);
+      return { id: r.memory.id, action: r.action };
     },
+  },
+  memory_search: {
+    tier: "read",
+    description: "搜记忆（按关键词，可限定 kind）。系统提示里只带了核心画像和与本问题最相关的几条；问到『我以前说过…』『我在追什么』『上次那个约定』或要更多背景时搜它。写入前也可先搜，避免重复。",
+    input: z.object({ query: z.string().max(100), kind: z.enum(KINDS).optional(), limit: z.number().int().min(1).max(30).optional() }),
+    label: (a) => `翻记忆「${a.query}」`,
+    run: async (_ctx, a) => (await searchMemory(a.query, a.kind, a.limit ?? 10)).map((m) => ({ id: m.id, kind: m.kind, text: m.text, tags: m.tags.length ? m.tags : undefined, updated: new Date(m.updated).toISOString().slice(0, 10), score: m.score })),
+  },
+  memory_forget: {
+    tier: "memory",
+    description: "删除一条记忆（id 来自 memory_search 或系统提示）。只在主人要求忘掉、或记忆已明显过时/错误时用。",
+    input: z.object({ id: z.number().int().positive() }),
+    label: () => "删掉一条记忆",
+    run: async (_ctx, a) => ({ ok: await forget(a.id) }),
   },
 };
 

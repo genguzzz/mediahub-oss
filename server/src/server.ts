@@ -12,7 +12,7 @@ import { registerCatalog } from "./catalog/index.ts";
 import { registerAi } from "./ai/index.ts";
 import { embyEvents, startEmbyEvents } from "./embyEvents.ts";
 import { egressSummary } from "./egress.ts";
-import { searchVideos } from "./ugc.ts";
+import { bilibiliLiveSearch, bilibiliLiveStatus, bilibiliUploads, bilibiliUsers, searchVideos, youtubeChannels, youtubeUploads } from "./ugc.ts";
 import { initLog } from "./log.ts";
 
 const app = Fastify({
@@ -617,6 +617,25 @@ app.get("/v1/douban/related", async (req) => {
 app.get("/v1/ugc/search", async (req) => {
   const q = z.object({ site: z.enum(["bilibili", "youtube"]), q: z.string().min(1).max(100), sort: z.enum(["relevance", "latest", "views", "favorites", "danmaku"]).default("relevance") }).parse(req.query);
   return { items: await remember(`ugc:${q.site}:${q.sort}:${q.q}`, 10 * 60_000, () => searchVideos(q.site, q.q, q.sort)) };
+});
+
+// Creators (UP 主 / YouTube channels): find accounts by name, then an account's latest uploads.
+app.get("/v1/ugc/creators", async (req) => {
+  const q = z.object({ site: z.enum(["bilibili", "youtube"]), q: z.string().min(1).max(60) }).parse(req.query);
+  return { items: await remember(`ugc:who:${q.site}:${q.q}`, 3600_000, () => (q.site === "bilibili" ? bilibiliUsers(q.q) : youtubeChannels(q.q))) };
+});
+// Bilibili live: rooms by keyword (q), or the live state of UP 主 by uid (uids=1,2,3).
+app.get("/v1/ugc/live", async (req) => {
+  const q = z.object({ q: z.string().max(60).optional(), uids: z.string().regex(/^\d+(,\d+){0,19}$/).optional() }).parse(req.query);
+  if (q.uids) return { status: await bilibiliLiveStatus(q.uids.split(",")) };
+  if (!q.q) throw Object.assign(new Error("需要 q 或 uids"), { statusCode: 400 });
+  return { items: await remember(`ugc:live:${q.q}`, 2 * 60_000, () => bilibiliLiveSearch(q.q!)) };
+});
+app.get("/v1/ugc/uploads", async (req) => {
+  // Bilibili needs the UP 主's name too (their uploads come from a search kept to their id)
+  const q = z.object({ site: z.enum(["bilibili", "youtube"]), id: z.string().regex(/^[\w-]{2,40}$/), name: z.string().max(60).default("") }).parse(req.query);
+  if (q.site === "bilibili" && !q.name) throw Object.assign(new Error("B站需要 UP 主名字（name）"), { statusCode: 400 });
+  return { items: await remember(`ugc:up:${q.site}:${q.id}`, 15 * 60_000, () => (q.site === "bilibili" ? bilibiliUploads(q.id, q.name) : youtubeUploads(q.id))) };
 });
 
 // Emby login for the app's direct connection (the app logs in itself and keeps only its token).
