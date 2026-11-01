@@ -322,6 +322,20 @@ def _magnet(info_hash: str, name: str = "") -> str:
     return "magnet:?" + urllib.parse.urlencode(q, safe=":/")
 
 
+# A work's title is a name, never a web address: TMDb translations get vandalised (2026-11-01 the zh-CN titles of
+# top-rated films became "淫片网 448832𝟵.com …"); such a title must not become a library folder. Same rule as the
+# server's cleanTitle.
+_SPAM_TITLE = re.compile(r"https?://|www\.|[a-z0-9-]+\.(?:com|net|org|cc|top|xyz|vip|me|tv|club|info|co|io|app|site|online|live|fun|cn|hk|tw)\b", re.I)
+
+
+def _work_title(media: Any) -> str:
+    """The work's title for folders and messages; a vandalised (URL-carrying) title falls back to the original one."""
+    t = (getattr(media, "title", None) or "").strip()
+    if t and _SPAM_TITLE.search(unicodedata.normalize("NFKC", t)):
+        t = ""
+    return t or getattr(media, "original_title", None) or getattr(media, "en_title", None) or ""
+
+
 def _safe(name: str) -> str:
     """去掉路径非法字符。"""
     return re.sub(r'[\\/:*?"<>|]', " ", name or "").strip()
@@ -334,7 +348,7 @@ class Prowlarr115(_PluginBase):
     plugin_desc = ("未认证也能用：多关键词资源源 + 下载直接 115 离线（失败转 NAS 缓冲）+ strm 入 Emby + 刮削确认通知 + 批量入库 API；"
                    "AV（番号 → 115 → MDC 刮削）和里番（追更目录 + sukebei RSS → 115 → Bangumi）也在这里。")
     plugin_icon = "https://raw.githubusercontent.com/Prowlarr/Prowlarr/develop/Logo/256.png"
-    plugin_version = "2.34.7"
+    plugin_version = "2.34.8"
     plugin_label = "资源搜索,下载器"
     plugin_author = "mediahub"
     author_url = ""
@@ -1325,11 +1339,11 @@ class Prowlarr115(_PluginBase):
             tw = self._tmdb_twin(media, force=True)
             if tw is not None:
                 media.tmdb_id = tw.tmdb_id
-        name, year = media.title or getattr(media, "original_title", "") or "未知", media.year
+        name, year = _work_title(media) or "未知", media.year
         tm = self._tmdb_media(media) if (getattr(media, "bangumi_id", None) or getattr(media, "douban_id", None)) else None
-        if tm is not None and tm.title:
+        if tm is not None and _work_title(tm):
             # Bangumi / 豆瓣条目名是「青之箱 第二季 (2026)」：目录用 TMDb 的「青之箱 (2024)」，和前几季同一个条目
-            name, year = tm.title, tm.year or year
+            name, year = _work_title(tm), tm.year or year
         name = _safe(name)
         folder = f"{name} ({year})" if year else name
         if media.tmdb_id:
@@ -1717,7 +1731,7 @@ class Prowlarr115(_PluginBase):
         media = batch_mod._recognize({"tmdbid": payload.get("tmdbid"), "type": payload.get("type", "tv")})
         if not media or not media.tmdb_id:
             return {"ok": False, "error": "识别失败"}
-        new = f"{_safe(media.title)} ({media.year}) [tmdbid={media.tmdb_id}]" if media.year else f"{_safe(media.title)} [tmdbid={media.tmdb_id}]"
+        new = f"{_safe(_work_title(media))} ({media.year}) [tmdbid={media.tmdb_id}]" if media.year else f"{_safe(_work_title(media))} [tmdbid={media.tmdb_id}]"
         if new == old:
             return {"ok": True, "same": True, "new": new}
         src115, dst115 = f"{p.root}/{lib}/{old}", f"{p.root}/{lib}/{new}"
