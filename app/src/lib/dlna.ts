@@ -5,7 +5,7 @@ import { logger } from "./log";
 
 const log = logger("dlna");
 
-export interface Renderer { name: string; location: string; base: string; avt: string; rc: string }
+export interface Renderer { name: string; location: string; base: string; avt: string; rc: string; cm?: string }
 export interface CastStatus { state: string; position: number; duration: number; title?: string }
 
 const xmlText = (xml: string, tag: string) => new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i").exec(xml)?.[1]?.trim() ?? "";
@@ -22,7 +22,7 @@ async function get(url: string, ms = 4000): Promise<string> {
   }
 }
 
-function serviceControl(xml: string, kind: "AVTransport" | "RenderingControl"): string {
+function serviceControl(xml: string, kind: "AVTransport" | "RenderingControl" | "ConnectionManager"): string {
   for (const m of xml.matchAll(/<service>([\s\S]*?)<\/service>/gi)) {
     if (m[1].includes(`service:${kind}:`)) return xmlText(m[1], "controlURL");
   }
@@ -38,7 +38,7 @@ export async function describe(location: string): Promise<Renderer | null> {
     const u = new URL(location);
     const urlBase = xmlText(xml, "URLBase");
     const base = (urlBase || `${u.protocol}//${u.host}/`).replace(/\/?$/, "/");
-    return { name: unescapeXml(xmlText(xml, "friendlyName")) || u.hostname, location, base, avt, rc: serviceControl(xml, "RenderingControl") };
+    return { name: unescapeXml(xmlText(xml, "friendlyName")) || u.hostname, location, base, avt, rc: serviceControl(xml, "RenderingControl"), cm: serviceControl(xml, "ConnectionManager") };
   } catch (e) {
     log.warn("describe failed", { location, err: e instanceof Error ? e.message : String(e) });
     return null;
@@ -65,9 +65,11 @@ function url(r: Renderer, path: string) {
   return path.startsWith("http") ? path : new URL(path.replace(/^\//, ""), r.base).toString();
 }
 
-async function soap(r: Renderer, service: "AVTransport" | "RenderingControl", action: string, args: string): Promise<string> {
-  const path = service === "AVTransport" ? r.avt : r.rc;
-  const body = `<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:${action} xmlns:u="urn:schemas-upnp-org:service:${service}:1"><InstanceID>0</InstanceID>${args}</u:${action}></s:Body></s:Envelope>`;
+async function soap(r: Renderer, service: "AVTransport" | "RenderingControl" | "ConnectionManager", action: string, args: string): Promise<string> {
+  const path = service === "AVTransport" ? r.avt : service === "RenderingControl" ? r.rc : r.cm ?? "";
+  // ConnectionManager actions take no InstanceID
+  const inst = service === "ConnectionManager" ? "" : "<InstanceID>0</InstanceID>";
+  const body = `<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:${action} xmlns:u="urn:schemas-upnp-org:service:${service}:1">${inst}${args}</u:${action}></s:Body></s:Envelope>`;
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 8000);
   try {
@@ -94,9 +96,28 @@ const seconds = (t: string) => {
   return p.length === 3 && p.every((x) => !Number.isNaN(x)) ? p[0] * 3600 + p[1] * 60 + p[2] : 0;
 };
 
+// What the TV can play, from its standard ConnectionManager.GetProtocolInfo (Sink: one protocolInfo per
+// format it accepts). M3U playlists are listed as audio/x-mpegurl, audio/mpegurl or application/x-mpegurl.
+const sinkCache = new Map<string, string[]>();
+export async function sinkFormats(r: Renderer): Promise<string[]> {
+  const hit = sinkCache.get(r.location);
+  if (hit) return hit;
+  if (!r.cm) return [];
+  const xml = await soap(r, "ConnectionManager", "GetProtocolInfo", "").catch(() => "");
+  const mimes = [...new Set(unescapeXml(xmlText(xml, "Sink")).split(",").map((p) => p.split(":")[2]?.trim().toLowerCase()).filter((m): m is string => !!m))];
+  if (xml) sinkCache.set(r.location, mimes);
+  return mimes;
+}
+export const PLAYLIST_MIME = /^(audio|application)\/(x-)?mpegurl$/;
+/** The M3U type the TV declares it plays, or null when it declares none. */
+export async function playlistMime(r: Renderer): Promise<string | null> {
+  return (await sinkFormats(r)).find((m) => PLAYLIST_MIME.test(m)) ?? null;
+}
+
 export const cast = {
-  async load(r: Renderer, uri: string, title: string, at = 0) {
-    const didl = `<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="1" parentID="0" restricted="1"><dc:title>${escapeXml(title)}</dc:title><upnp:class>object.item.videoItem</upnp:class><res protocolInfo="http-get:*:video/mp4:*">${escapeXml(uri)}</res></item></DIDL-Lite>`;
+  /** mime: the content's type for the TV (a playlist is audio/x-mpegurl; the TV still reads it as video). */
+  async load(r: Renderer, uri: string, title: string, at = 0, mime = "video/mp4") {
+    const didl = `<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"><item id="1" parentID="0" restricted="1"><dc:title>${escapeXml(title)}</dc:title><upnp:class>object.item.videoItem</upnp:class><res protocolInfo="http-get:*:${mime}:*">${escapeXml(uri)}</res></item></DIDL-Lite>`;
     await soap(r, "AVTransport", "Stop", "").catch(() => {});
     await soap(r, "AVTransport", "SetAVTransportURI", `<CurrentURI>${escapeXml(uri)}</CurrentURI><CurrentURIMetaData>${escapeXml(didl)}</CurrentURIMetaData>`);
     await soap(r, "AVTransport", "Play", "<Speed>1</Speed>");

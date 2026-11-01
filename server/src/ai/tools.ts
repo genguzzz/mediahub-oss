@@ -210,11 +210,11 @@ export const TOOLS: Record<string, Def> = {
   },
   cast_to_tv: {
     tier: "write",
-    description: "把媒体库（Emby）里的一部电影或某一集投到电视（DLNA，由手机 App 在本地网络里投）。给 embyId（电影或某一集），或给 title（剧名/片名）+ 剧集的 season、episode。默认投到上次用过的电视，tv 可指定电视名字（模糊匹配）；resume=true（默认）从上次看到的位置接着放，false 从头。先确认库里有（没入库的不能投）；『下一集 / 接着看』先用 watch_history kind=resume 找到那一集。返回投到了哪台电视，失败时有原因和找到的电视列表。",
+    description: "把媒体库（Emby）里的一部电影或某一集投到电视（DLNA，由手机 App 在本地网络里投）。给 embyId（电影或某一集），或给 title（剧名/片名）+ 剧集的 season、episode。剧集默认按『连播』投：从这一集到剧末作为播放列表投过去，电视放完自动下一集（电视通过 DLNA 声明支持播放列表时；不支持就只投这一集，结果里 note 会说明）；主人说『只放这一集 / 单集』时 scope=episode。默认投到上次用过的电视，tv 可指定电视名字（模糊匹配）；resume=true（默认）从上次看到的位置接着放，false 从头。返回 mode（playlist 连播 / single 单集）和 episodes（投了几集）。先确认库里有（没入库的不能投）；『下一集 / 接着看』先用 watch_history kind=resume 找到那一集。返回投到了哪台电视，失败时有原因和找到的电视列表。",
     input: z.object({
       embyId: z.string().regex(/^\w+$/).optional(), title: z.string().max(200).optional(),
       season: z.number().int().min(0).max(100).optional(), episode: z.number().int().min(0).max(5000).optional(),
-      tv: z.string().max(100).optional(), resume: z.boolean().optional(),
+      tv: z.string().max(100).optional(), resume: z.boolean().optional(), scope: z.enum(["series", "episode"]).optional(),
     }),
     label: (a) => `投屏${a.title ? `「${a.title}」` : ""}${a.season != null && a.episode != null ? ` S${a.season}E${a.episode}` : ""}`,
     run: async (ctx, a) => {
@@ -248,7 +248,7 @@ export const TOOLS: Record<string, Def> = {
       const where = String(series?.item.path ?? target.path ?? "");
       if (!ctx.adult && /\/(AV|里番)\//.test(where)) throw new ToolError("隐藏内容未开启");
       const title = target.series ? `${target.series} 第${target.season}季第${target.episode}集${target.name ? ` ${target.name}` : ""}` : target.name;
-      const r = await ctx.phone("cast", { embyId: target.id, title, resume: a.resume ?? true, tv: a.tv });
+      const r = await ctx.phone("cast", { embyId: target.id, title, resume: a.resume ?? true, tv: a.tv, scope: a.scope ?? "series" });
       return { ...r, item: { embyId: target.id, title } };
     },
   },
