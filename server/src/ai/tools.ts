@@ -21,6 +21,8 @@ export interface ToolCtx {
   refs: Record<string, Resource>;
   /** a memory was written (the app shows it) */
   saved: (text: string, replaces?: number) => void;
+  /** ask the app to cast an Emby item to a TV by DLNA; resolves with what the app reports */
+  cast: (req: { embyId: string; title: string; resume: boolean; tv?: string }) => Promise<{ ok: boolean; tv?: string; error?: string; devices?: string[] }>;
   /** past conversations (chat.ts): search titles + questions, read one */
   chats: { list: (query: string, limit: number) => Promise<unknown>; read: (id: number, maxChars: number) => Promise<unknown> };
 }
@@ -205,6 +207,50 @@ export const TOOLS: Record<string, Def> = {
     input: z.object({ query: z.string().min(1), limit: z.number().int().min(1).max(40).optional() }),
     label: (a) => `在媒体库找「${a.query}」`,
     run: async (ctx, a) => (await call(ctx, "GET", `/v1/emby/items${qs({ q: a.query, limit: a.limit ?? 20, noAdult: ctx.adult ? undefined : 1 })}`)).items?.map(embyItem) ?? [],
+  },
+  cast_to_tv: {
+    tier: "write",
+    description: "把媒体库（Emby）里的一部电影或某一集投到电视（DLNA，由手机 App 在本地网络里投）。给 embyId（电影或某一集），或给 title（剧名/片名）+ 剧集的 season、episode。默认投到上次用过的电视，tv 可指定电视名字（模糊匹配）；resume=true（默认）从上次看到的位置接着放，false 从头。先确认库里有（没入库的不能投）；『下一集 / 接着看』先用 watch_history kind=resume 找到那一集。返回投到了哪台电视，失败时有原因和找到的电视列表。",
+    input: z.object({
+      embyId: z.string().regex(/^\w+$/).optional(), title: z.string().max(200).optional(),
+      season: z.number().int().min(0).max(100).optional(), episode: z.number().int().min(0).max(5000).optional(),
+      tv: z.string().max(100).optional(), resume: z.boolean().optional(),
+    }),
+    label: (a) => `投屏${a.title ? `「${a.title}」` : ""}${a.season != null && a.episode != null ? ` S${a.season}E${a.episode}` : ""}`,
+    run: async (ctx, a) => {
+      const norm = (x: string) => x.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+      let target: any = null;
+      let series: any = null;
+      if (a.embyId) {
+        const r = await call(ctx, "GET", `/v1/emby/item/${a.embyId}`);
+        if (r.item.type === "Series") series = r;
+        else target = r.item;
+      } else if (a.title) {
+        const found = ((await call(ctx, "GET", `/v1/emby/items${qs({ q: a.title, limit: 20, noAdult: ctx.adult ? undefined : 1 })}`)).items ?? []) as any[];
+        const want = a.episode != null ? "Series" : null;
+        const pool = found.filter((i) => !want || i.type === want);
+        const pick = pool.find((i) => norm(i.name) === norm(a.title!)) ?? pool[0];
+        if (!pick) throw new ToolError(`媒体库里没有「${a.title}」${want ? "这部剧" : ""}`);
+        if (pick.type === "Series") series = await call(ctx, "GET", `/v1/emby/item/${pick.id}`);
+        else target = pick;
+      } else throw new ToolError("需要 embyId，或 title（剧集再加 season、episode）");
+      if (series) {
+        if (a.episode == null) throw new ToolError(`「${series.item.name}」是剧集：要给 season 和 episode（接着看先查 watch_history kind=resume）`);
+        const seasons = series.seasons as { season: number; episodes: any[] }[];
+        const s = seasons.find((x) => x.season === (a.season ?? 1)) ?? (a.season == null && seasons.length === 1 ? seasons[0] : undefined);
+        const ep = s?.episodes.find((e) => e.episode === a.episode);
+        if (!ep) {
+          const have = seasons.map((x) => `第${x.season}季 ${x.episodes.length} 集`).join("；");
+          throw new ToolError(`库里没有第 ${a.season ?? 1} 季第 ${a.episode} 集。库里有：${have || "没有分集"}`);
+        }
+        target = { ...ep, series: series.item.name };
+      }
+      const where = String(series?.item.path ?? target.path ?? "");
+      if (!ctx.adult && /\/(AV|里番)\//.test(where)) throw new ToolError("隐藏内容未开启");
+      const title = target.series ? `${target.series} 第${target.season}季第${target.episode}集${target.name ? ` ${target.name}` : ""}` : target.name;
+      const r = await ctx.cast({ embyId: target.id, title, resume: a.resume ?? true, tv: a.tv });
+      return { ...r, item: { embyId: target.id, title } };
+    },
   },
   library_latest: {
     tier: "read",

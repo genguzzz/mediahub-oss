@@ -201,6 +201,10 @@ function apply(ev: any) {
       }
       return emit();
     }
+    case "cast":
+      // cast_to_tv: the phone casts (it shares the TV's network) and reports back
+      void import("./assistantCast").then((m) => m.castForAssistant(ev));
+      return;
     case "done": {
       const m = last();
       m.live = false;
