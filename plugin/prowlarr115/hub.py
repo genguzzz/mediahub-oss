@@ -9,7 +9,7 @@ import hashlib
 import threading
 import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -26,7 +26,7 @@ from .adult import magnet as adult_magnet
 from .adult import VIDEO as VIDEO_EXT
 from .pipeline import STALL_AFTER, btih, ep_of
 from .policy import features, pick, runtime_minutes, score, year_conflict
-from .sources import animetosho, hex_magnet, mikan_rss, nyaa_limited
+from .sources import animetosho, dmhy_rss, hex_magnet, mikan_rss, nyaa_limited
 
 # 直连来源（后端直接访问，不经 Prowlarr）
 DIRECT = [
@@ -36,6 +36,8 @@ DIRECT = [
      "tags": ["动漫", "外文"], "desc": "Nyaa、AniDex、TokyoTosho 的镜像，可按大小排序，老番 BD 合集不会被新单集挤掉"},
     {"id": "mikan", "name": "Mikan", "kind": "direct", "note": "中文字幕组，用中文名搜", "lang": "zh", "privacy": "public",
      "tags": ["动漫", "中文"], "desc": "蜜柑计划：中文字幕组的周更和合集，用中文名搜"},
+    {"id": "dmhy", "name": "动漫花园", "kind": "direct", "note": "中文字幕组最全，用中文名搜", "lang": "zh", "privacy": "public",
+     "tags": ["动漫", "中文"], "desc": "share.dmhy.org：国内字幕组发布最全（周更、合集、BDRip），用中文名搜；RSS 不带体积"},
     {"id": "sukebei-av", "name": "sukebei 真人", "kind": "adult", "note": "AV 番号", "lang": "ja", "privacy": "public",
      "tags": ["成人"], "desc": "sukebei.nyaa 真人分类，按番号搜"},
     {"id": "sukebei-anime", "name": "sukebei 动画", "kind": "adult", "note": "里番", "lang": "ja", "privacy": "public",
@@ -419,22 +421,23 @@ class Hub:
         if not q:
             return [], "缺少关键词"
         jobs = []
+        # Prowlarr indexers asked for: listed ones (prowlarr:<id>) or every one ("prowlarr"). Prowlarr refuses a
+        # search when its indexers are switched off or paused after failures (400 "all selected indexers being
+        # unavailable"), so only the usable ones are sent; the others are named in the result's note.
         prow = [int(s.split(":", 1)[1]) for s in sources if s.startswith("prowlarr:") and s.split(":", 1)[1].isdigit()]
         skipped = ""
-        if prow:
-            # Prowlarr refuses a search whose indexers are all switched off or paused after failures (400 "all
-            # selected indexers being unavailable"): leave those out and say so
-            prow, skipped = self._usable_indexers(prow)
         if prow or "prowlarr" in sources:
-            jobs.append(("prowlarr", lambda: self._prowlarr(q, prow)))
-        elif skipped and not jobs and not any(s in sources for s in ("nyaa", "animetosho", "mikan", "sukebei-av", "sukebei-anime")):
-            return [], skipped
+            prow, skipped = self._usable_indexers(prow or None)
+            if prow:
+                jobs.append(("prowlarr", lambda: self._prowlarr(q, prow)))
         if "nyaa" in sources:
             jobs.append(("nyaa", lambda: nyaa_limited(_get, q, "seeders", 1)))
         if "animetosho" in sources:
             jobs.append(("animetosho", lambda: animetosho(_get, q, "size-d", 1) + animetosho(_get, q, "", 1)))
         if "mikan" in sources:
             jobs.append(("mikan", lambda: mikan_rss(_get, q)))
+        if "dmhy" in sources:
+            jobs.append(("dmhy", lambda: dmhy_rss(_get, q)))
         for s, cat in (("sukebei-av", CAT_REAL), ("sukebei-anime", CAT_ANIME)):
             if s in sources and self.p._adult:
                 jobs.append((s, lambda cat=cat: [dict(r, magnet=adult_magnet(r["hash"]), site="sukebei", peers=0)
@@ -445,8 +448,11 @@ class Hub:
             for name, f in futs:
                 try:
                     rows = f.result(timeout=90) or []
+                except FuturesTimeout:
+                    errs.append(f"{name}: 90 秒没有返回（超时）")
+                    continue
                 except Exception as e:  # noqa: BLE001
-                    errs.append(f"{name}: {e}")
+                    errs.append(f"{name}: {e or type(e).__name__}")
                     continue
                 for r in rows:
                     it = self._item(r["title"], r.get("size"), r.get("seeders"), r.get("peers"), r.get("magnet") or "",
@@ -460,15 +466,20 @@ class Hub:
             errs.append(skipped)
         return out, "；".join(errs) or None
 
-    def _usable_indexers(self, ids: List[int]) -> tuple:
-        """ids Prowlarr will search now, and a note naming the ones it won't (switched off / paused until …)."""
+    def _usable_indexers(self, ids: Optional[List[int]]) -> tuple:
+        """Torrent indexers Prowlarr will search now among `ids` (None = all of them), and a note naming the asked-for
+        ones it won't: switched off, gone, or paused after failures until …"""
         try:
             _, ix = self._pw("GET", "/indexer", timeout=15)
             _, st = self._pw("GET", "/indexerstatus", timeout=15)
         except Exception:  # noqa: BLE001
-            return ids, ""
-        names = {i.get("id"): i.get("name") or str(i.get("id")) for i in ix or []}
-        off = {i.get("id") for i in ix or [] if not i.get("enable")}
+            return ids or [], ""
+        ix = [i for i in ix or [] if isinstance(i, dict) and i.get("protocol") == "torrent"]
+        names = {i.get("id"): i.get("name") or str(i.get("id")) for i in ix}
+        off = {i.get("id") for i in ix if not i.get("enable")} | {i for i in (ids or []) if i not in names}
+        excluded = set(self.p._exclude_indexers or [])
+        if ids is None:      # "all": every enabled indexer the plugin doesn't exclude; switched-off ones are not news
+            ids = [i.get("id") for i in ix if i.get("enable") and i.get("id") not in excluded]
         now = datetime.now(timezone.utc)
         paused = {}
         for x in st or []:
@@ -480,7 +491,7 @@ class Hub:
             if t > now:
                 paused[x.get("indexerId")] = t.astimezone().strftime("%m-%d %H:%M")
         keep = [i for i in ids if i not in off and i not in paused]
-        notes = [f"{names.get(i, i)} 已停用" for i in ids if i in off] + \
+        notes = [f"{names.get(i, f'索引器 {i}')} 已停用或已删除" for i in ids if i in off] + \
                 [f"{names.get(i, i)} 暂停中（Prowlarr 连续失败后暂停，{paused[i]} 恢复）" for i in ids if i in paused and i not in off]
         return keep, "；".join(notes)
 

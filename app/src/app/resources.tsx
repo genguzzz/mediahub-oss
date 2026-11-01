@@ -45,23 +45,22 @@ export default function ResourcesScreen() {
   // Smart search is one MoviePilot call. Source searches go out one request per source (「全部已启用索引器」 =
   // one per enabled Prowlarr indexer) and fill the list as each answers, instead of waiting for the slowest.
   const smartQ = useQuery(mode === "smart" && !waiting ? key : null, () => api<SearchResult>("/v1/search", { body, timeoutMs: 160_000 }), { staleMs: 15 * 60_000 });
-  const allSources = useQuery(mode !== "smart" ? "sources" : null, () => api<{ sources: Source[] }>("/v1/sources"), { staleMs: 10 * 60_000 });
-  // The requests actually sent: 「全部已启用索引器」 expands to each enabled indexer; indexers Prowlarr has
-  // paused after failures (downTill in the future) or that are switched off are left out — Prowlarr would
-  // answer 400 "all selected indexers being unavailable" — and named in the header instead.
+  const allSources = useQuery(mode !== "smart" ? "sources" : null, () => api<{ sources: Source[] }>("/v1/sources"), { staleMs: 60_000 });
+  // The requests actually sent: 「全部已启用索引器」 expands to each enabled indexer. Sources that are switched off
+  // or gone drop out quietly (a saved default can still name them); indexers Prowlarr has paused after failures
+  // (downTill ahead) are left out and named in the header — Prowlarr would refuse them anyway.
   const [now] = useState(() => Date.now());
   const { expanded, skipped } = useMemo(() => {
     if (mode === "smart") return { expanded: null, skipped: [] as string[] };
-    const byId = new Map((allSources.data?.sources ?? []).map((x) => [x.id, x]));
-    const usable = (id: string) => {
-      const x = byId.get(id);
-      return !x || (x.enabled !== false && x.prowlarrEnabled !== false && !(x.downTill && new Date(x.downTill).getTime() > now));
-    };
-    if (picked.includes("prowlarr") && !allSources.data) return { expanded: null, skipped: [] as string[] };
+    if (!allSources.data) return { expanded: picked.includes("prowlarr") ? null : picked, skipped: [] as string[] };
+    const byId = new Map(allSources.data.sources.map((x) => [x.id, x]));
+    const on = (id: string) => { const x = byId.get(id); return !!x && x.enabled !== false && x.prowlarrEnabled !== false; };
+    const paused = (id: string) => { const x = byId.get(id); return !!x?.downTill && new Date(x.downTill).getTime() > now; };
     const all = picked.includes("prowlarr")
-      ? [...new Set([...picked.filter((x) => x !== "prowlarr"), ...(allSources.data?.sources ?? []).filter((x) => x.kind === "prowlarr" && x.enabled && x.prowlarrEnabled !== false).map((x) => x.id)])]
+      ? [...new Set([...picked.filter((x) => x !== "prowlarr"), ...allSources.data.sources.filter((x) => x.kind === "prowlarr").map((x) => x.id)])]
       : picked;
-    return { expanded: all.filter(usable), skipped: all.filter((x) => !usable(x)).map((x) => byId.get(x)?.name ?? x) };
+    const live = all.filter(on);
+    return { expanded: live.filter((x) => !paused(x)), skipped: live.filter(paused).map((x) => byId.get(x)?.name ?? x) };
   }, [mode, picked, allSources.data, now]);
   const streamQ = useStreamSearch(mode !== "smart" && !waiting ? key : null, body, expanded);
   const q = mode === "smart" ? { ...smartQ, progress: null as null | { done: number; total: number } } : streamQ;
@@ -183,7 +182,13 @@ export default function ResourcesScreen() {
             ) : null}
           </>
         }
-        ListEmptyComponent={q.data ? <EmptyState icon="file-tray-outline" text="没有符合条件的资源。可以放宽筛选，或换成「按来源搜索」。" /> : undefined}
+        ListEmptyComponent={q.data ? (
+          hideExcluded && excludedCount && all?.length === excludedCount ? (
+            <EmptyState icon="funnel-outline" text={`找到 ${excludedCount} 条，都被选片策略排除了（${[...new Set((all ?? []).map((x) => x.excluded).filter(Boolean))].slice(0, 2).join("；")}）`} action={<PillButton small variant="soft" icon="eye-outline" label="显示这些资源" onPress={() => setHideExcluded(false)} />} />
+          ) : (
+            <EmptyState icon="file-tray-outline" text={mode === "smart" ? "没有符合条件的资源。可以放宽筛选，或换成「按来源搜索」。" : "没有符合条件的资源。可以放宽筛选，换个关键词，或多选几个来源。"} />
+          )
+        ) : undefined}
         renderItem={({ item }) => <ResourceRow r={item} submitted={!!submitted[item.id]} onPress={() => setOpen(item)} />}
       />
 
@@ -344,7 +349,7 @@ function SourceSheet({ visible, onClose, picked, keywords, names, showAdult, onA
   onApply: (keywords: string[], sources: string[]) => void;
 }) {
   const router = useRouter();
-  const q = useQuery(visible ? "sources" : null, () => api<{ sources: Source[] }>("/v1/sources"), { staleMs: 10 * 60_000 });
+  const q = useQuery(visible ? "sources" : null, () => api<{ sources: Source[] }>("/v1/sources"), { staleMs: 60_000 });
   const [sel, setSel] = useState<string[] | null>(null);
   const [kws, setKws] = useState<string[] | null>(null);
   const [text, setText] = useState("");

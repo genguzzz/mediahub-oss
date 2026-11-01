@@ -1,4 +1,5 @@
-"""番剧直连资源源：AnimeTosho（Nyaa 等的镜像，JSON，可按大小排序）+ Nyaa（按做种数）+ Mikan（Bangumi 对应的中文字幕组发布）。
+"""番剧直连资源源：AnimeTosho（Nyaa 等的镜像，JSON，可按大小排序）+ Nyaa（按做种数）+ Mikan（Bangumi 对应的中文字幕组发布）
++ 动漫花园 dmhy（中文字幕组最全；Prowlarr 的 dmhy 定义在 NAS 上搜不出结果）。
 
 为什么不走 Prowlarr：Prowlarr 查 Nyaa 只给第一页 75 条（按时间），老番的 BD 合集常被新单集挤掉；
 dmhy/comicat 经常被 Prowlarr 标成不可用；每个查询都扇出到 11 个索引器，NAS（2GB）扛不住批量。
@@ -91,6 +92,24 @@ def mikan_rss(get: Callable[[str], str], q: str) -> List[Dict]:
         out.append({"title": title, "magnet": f"magnet:?xt=urn:btih:{h.group(1)}&dn={urllib.parse.quote(title)}",
                     "size": float(sz.group(1)) if sz else 0.0, "seeders": 1, "peers": 0,
                     "pub": pub.group(1)[:19].replace("T", " ") if pub else "", "site": "Mikan"})
+    return out
+
+
+DMHY = "https://share.dmhy.org/topics/rss/rss.xml?keyword="
+
+
+def dmhy_rss(get: Callable[[str], str], q: str) -> List[Dict]:
+    """动漫花园搜索 RSS（中文字幕组发布最全）：磁力在 enclosure 里（base32 哈希）；RSS 不带大小。"""
+    out = []
+    for it in re.findall(r"<item>(.*?)</item>", get(DMHY + urllib.parse.quote(q)) or "", re.S)[:150]:
+        t = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", it, re.S)
+        mg = re.search(r'<enclosure url="(magnet:[^"]+)"', it)
+        pub = re.search(r"<pubDate>([^<]+)</pubDate>", it)
+        if not t or not mg:
+            continue
+        title = html.unescape(t.group(1)).strip()
+        out.append({"title": title, "magnet": hex_magnet(html.unescape(mg.group(1)), title), "size": 0.0, "seeders": 1, "peers": 0,
+                    "pub": pub.group(1).strip() if pub else "", "site": "dmhy"})
     return out
 
 

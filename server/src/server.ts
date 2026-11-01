@@ -643,7 +643,8 @@ app.get("/v1/emby/account", async () => ({ server: config.emby.url, username: co
 
 // ---------- resource search & ingest (plugin) ----------
 
-app.get("/v1/sources", async () => remember("sources", 10 * 60_000, () => plug("GET", "/hub/sources")));
+// short cache: indexer pauses and switches change from Prowlarr and the plugin too, not only through /v1/prowlarr
+app.get("/v1/sources", async () => remember("sources", 60_000, () => plug("GET", "/hub/sources")));
 
 // Prowlarr indexer management (Settings → 索引源): browse definitions, add public ones, enable/disable, delete.
 app.get("/v1/prowlarr/catalog", async () => remember("prowlarr:catalog", 30 * 60_000, () => plug("GET", "/hub/prowlarr/catalog", { timeoutMs: 90_000 })));
