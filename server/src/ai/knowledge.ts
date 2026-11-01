@@ -12,6 +12,7 @@ export const TOPICS = {
   selection: "选片策略：画质/体积/字幕/字幕组规则，excluded 和评分从哪来",
   app: "App 里各功能在哪、去哪操作、回答里可用的页面链接",
   troubleshooting: "常见问题怎么判断：卡 0%、no-video、没刮削、缺集、播放失败",
+  api: "影库服务端全部接口（app_api 用）：Emby 条目元数据和文件、入库任务操作、115 和 qB、统计、健康、订阅、反馈",
   adult: "AV / 里番 的索引、入库和刮削（只在隐藏内容开着时）",
 } as const;
 export type Topic = keyof typeof TOPICS;

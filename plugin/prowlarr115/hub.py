@@ -183,6 +183,7 @@ class Hub:
             ("/hub/openlist", self.openlist, "GET", "OpenList 复制/上传/离线任务"),
             ("/hub/emby/get", self.emby_get, "GET", "Emby 只读 JSON 代理：path, query"),
             ("/hub/emby/image", self.emby_image, "GET", "Emby 图片：id, type, w, tag"),
+            ("/hub/emby/subtitle", self.emby_subtitle, "GET", "Emby 交付一条字幕轨（内封的由 Emby 抽取并缓存）：id, msid, index, fmt=srt|ass"),
             ("/hub/emby/refresh", self.emby_refresh, "POST", "Emby 重新刮削条目：{id, replace}"),
             ("/hub/emby/scan", self.emby_scan, "POST", "Emby 扫描全部媒体库"),
             ("/hub/health", self.health, "GET", "健康检查（只读扫描，后端低频调用）：里番 ID 不一致、未确认刮削、卡住/失败的任务、MDC 失败、缺海报"),
@@ -191,8 +192,11 @@ class Hub:
             ("/hub/emby/changed", self.emby_changed, "POST", "Emby 条目变化推送（后端转发 LibraryChanged）：{ids:[..]}，立刻核对等待刮削的任务、识别新里番"),
             ("/hub/debug/threads", self.debug_threads, "GET", "诊断：插件线程当前的调用栈（某一轮卡住时看卡在哪）"),
             ("/hub/emby/activity", self.emby_activity, "GET", "Emby 正在跑的计划任务（扫描/刮削进度）和最近活动"),
-            ("/hub/subs/list", self.subs_list, "GET", "视频同目录（含 Subs/ 子目录）的字幕文件：url=strm 里的 OpenList 链接或 115 路径"),
-            ("/hub/subs/file", self.subs_file, "GET", "读一个字幕文件（≤20MB）：path=115 路径"),
+            ("/hub/subs/list", self.subs_list, "GET", "视频同目录（含 Subs/ 子目录）的字幕文件：url=strm 里的 OpenList 链接或 115 路径；strm=Emby 里的 strm 路径时也列媒体库里 strm 旁边的"),
+            ("/hub/subs/file", self.subs_file, "GET", "读一个字幕文件（≤20MB）：path=115 路径或媒体库路径"),
+            ("/hub/drive/list", self.drive_list, "GET", "列 115 媒体目录或媒体库里的一个目录：path（空=115 媒体根目录）"),
+            ("/hub/subs/online", self.subs_online, "GET", "在 sub_share（开源中文字幕库，只有动画）找字幕：names（逗号分隔）, year, season, episodes（逗号分隔，空=全部）"),
+            ("/hub/subs/install", self.subs_install, "POST", "装一个字幕：strm（Emby 路径）, source（sub_share:<仓库路径> | file:<115/媒体库路径> | url:<https 链接>）, target=library|115, lang, align"),
         ]
         return [{"path": p, "endpoint": fn, "methods": [m], "summary": s} for p, fn, m, s in r]
 
@@ -1356,6 +1360,16 @@ class Hub:
         params.pop("api_key", None)
         return p.emby.get(path, **params)
 
+    def emby_subtitle(self, id: str, msid: str, index: int, fmt: str = "srt") -> Response:  # noqa: A002
+        """一条字幕轨的文本。内封轨由 Emby 用 ffmpeg 从视频里抽（strm 要读完整个远端文件，大文件很慢），抽过一次 Emby 会缓存。"""
+        p = self.p._pipe
+        if not p or not re.fullmatch(r"\w{1,40}", id or "") or not re.fullmatch(r"\w{1,64}", msid or "") or fmt not in ("srt", "ass", "vtt"):
+            return Response(status_code=404)
+        r = RequestUtils(timeout=240).get_res(f"{p.emby.url}/emby/Videos/{id}/{msid}/Subtitles/{int(index)}/Stream.{fmt}", params={"api_key": p.emby.key})
+        if r is None or r.status_code != 200:
+            return Response(status_code=504 if r is None else r.status_code)
+        return Response(content=r.content, media_type="text/plain; charset=utf-8")
+
     def emby_image(self, id: str, type: str = "Primary", w: int = 400, tag: str = "") -> Response:  # noqa: A002
         p = self.p._pipe
         if not p or not re.fullmatch(r"[0-9a-f]{1,40}", id or "") or not re.fullmatch(r"[A-Za-z]{2,20}(/\d+)?", type or ""):
@@ -1539,21 +1553,19 @@ class Hub:
         m = re.match(r"https?://[^/]+/d(/[^?]+)", url or "")
         return urllib.parse.unquote(m.group(1)) if m else (url or "")
 
-    def subs_list(self, url: str) -> Dict[str, Any]:
+    def _lib_of(self, emby_path: str) -> str:
+        """Emby 里的路径（/media/library/...）→ 媒体库在 OpenList 的路径；不在媒体库里返回空。"""
         p = self.p._pipe
-        if not p:
-            return {"ok": False, "error": "流水线未就绪"}
-        remote = self._remote_of(url)
-        if not remote.startswith(p.root + "/") or ".." in remote:
-            return {"ok": False, "error": "不在 115 媒体目录里"}
-        d, video = remote.rsplit("/", 1)
-        stem = video.rsplit(".", 1)[0]
-        ep = ep_of(video)
-        found = []
-        try:
+        root = (p.c.get("emby_lib_root") or "/media/library") if p else ""
+        if not p or not emby_path.startswith(root + "/") or ".." in emby_path:
+            return ""
+        return p.lib_ol + emby_path[len(root):]
+
+    def _sub_files(self, d: str, stem: str, ep, where: str, entries=None) -> List[Dict[str, Any]]:
+        p = self.p._pipe
+        if entries is None:
             entries = p.ol.list(d)
-        except Exception as err:  # noqa: BLE001
-            return {"ok": False, "error": f"列目录失败：{err}"}
+        found = []
         dirs = [e["name"] for e in entries if e.get("is_dir") and self.SUB_DIRS.match(e["name"])]
         for sub_dir, items in [(d, entries)] + [(f"{d}/{n}", None) for n in dirs[:3]]:
             if items is None:
@@ -1569,13 +1581,37 @@ class Hub:
                 lang = next((t for t in ("chs", "cht", "sc", "tc", "jpsc", "jptc", "zh", "chi", "eng", "en", "jpn", "ja")
                              if re.search(rf"(?i)[._\[\(\s]{t}[._\]\)\s]", f".{n.rsplit('.', 1)[0]}.")), "")
                 found.append({"name": n, "path": f"{sub_dir}/{n}", "size": e.get("size"), "match": match, "lang": lang,
-                              "format": n.rsplit(".", 1)[-1].lower()})
+                              "format": n.rsplit(".", 1)[-1].lower(), "where": where})
+        return found
+
+    def subs_list(self, url: str, strm: str = "") -> Dict[str, Any]:
+        p = self.p._pipe
+        if not p:
+            return {"ok": False, "error": "流水线未就绪"}
+        lib = self._lib_of(strm) if strm else ""
+        lib_found: List[Dict[str, Any]] = []
+        if lib:
+            ld, lname = lib.rsplit("/", 1)
+            try:
+                lib_found = [f for f in self._sub_files(ld, lname[:-5] if lname.endswith(".strm") else lname, ep_of(lname), "library") if f["match"]]
+            except Exception as err:  # noqa: BLE001
+                logger.warning(f"【Prowlarr115】列媒体库字幕失败：{err}")
+        remote = self._remote_of(url)
+        if not remote.startswith(p.root + "/") or ".." in remote:
+            return {"ok": False, "error": "不在 115 媒体目录里"}
+        d, video = remote.rsplit("/", 1)
+        stem = video.rsplit(".", 1)[0]
+        try:
+            found = self._sub_files(d, stem, ep_of(video), "115")
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": f"列目录失败：{err}"}
         found.sort(key=lambda x: (-x["match"], x["name"]))
-        return {"ok": True, "dir": d, "video": video, "subs": found[:80]}
+        return {"ok": True, "dir": d, "video": video, "subs": (lib_found + found)[:80]}
 
     def subs_file(self, path: str) -> Response:
         p = self.p._pipe
-        if not p or not path.startswith(p.root + "/") or ".." in path or not path.lower().endswith(self.SUB_EXT):
+        inside = path.startswith(p.root + "/") or path.startswith(p.lib_ol + "/") if p else False
+        if not p or not inside or ".." in path or not path.lower().endswith(self.SUB_EXT):
             return Response(status_code=404)
         info = p.ol.get(path) or {}
         if int(info.get("size") or 0) > 20 * 1024 * 1024:
@@ -1584,3 +1620,82 @@ class Hub:
         ext = path.rsplit(".", 1)[-1].lower()
         mime = {"srt": "application/x-subrip", "vtt": "text/vtt", "ass": "text/x-ssa", "ssa": "text/x-ssa"}.get(ext, "application/octet-stream")
         return Response(content=data, media_type=mime, headers={"Cache-Control": "private, max-age=3600"})
+
+    def drive_list(self, path: str = "") -> Dict[str, Any]:
+        """115 媒体目录（经 OpenList）或媒体库里的一个目录：名字、是否目录、大小、修改时间。只读。"""
+        p = self.p._pipe
+        if not p:
+            return {"ok": False, "error": "流水线未就绪"}
+        path = (path or p.root).rstrip("/")
+        if ".." in path or not (path == p.root or path.startswith(p.root + "/") or path == p.lib_ol or path.startswith(p.lib_ol + "/")):
+            return {"ok": False, "error": f"只能看 {p.root} 和 {p.lib_ol} 下面"}
+        try:
+            items = p.ol.list(path)
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": f"列目录失败：{err}"}
+        rows = [{"name": e.get("name"), "dir": bool(e.get("is_dir")), "size": e.get("size"), "modified": str(e.get("modified") or "")[:19]} for e in items]
+        rows.sort(key=lambda r: (not r["dir"], r["name"] or ""))
+        return {"ok": True, "path": path, "roots": {"115": p.root, "library": p.lib_ol}, "total": len(rows), "items": rows[:300]}
+
+    def subs_online(self, names: str, year: int = 0, season: int = 1, episodes: str = "") -> Dict[str, Any]:
+        """sub_share（GitHub foxofice/sub_share，开源中文字幕库，只收动画）里的作品和每集字幕。"""
+        from . import subs as subs_mod
+        want = [int(x) for x in episodes.split(",") if x.strip().isdigit()]
+        try:
+            work = subs_mod.find_work([n.strip() for n in names.split(",") if n.strip()], int(year or 0), int(season or 1)) if year else None
+            if not work:
+                return {"ok": True, "work": None, "files": {}, "note": "sub_share 没找到（它只收动画，需要首播年份）"}
+            files = subs_mod.plan(work, want or list(range(0, 200)))
+            return {"ok": True, "work": work.get("name"), "files": {str(k): f"sub_share:{v}" for k, v in sorted(files.items())}}
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": f"sub_share 查询失败：{err}"}
+
+    def subs_install(self, body: dict = Body(...)) -> Dict[str, Any]:
+        """把一个字幕装到媒体库 strm 旁边（Emby 直接认）或 115 视频旁边；ASS 可按音轨自动校准时间轴。"""
+        from . import subs as subs_mod
+        p = self.p._pipe
+        if not p:
+            return {"ok": False, "error": "流水线未就绪"}
+        strm = self._lib_of(str(body.get("strm") or ""))
+        if not strm or not strm.endswith(".strm") or not p.ol.get(strm):
+            return {"ok": False, "error": "媒体库里没有这个 strm"}
+        source = str(body.get("source") or "")
+        try:
+            if source.startswith("sub_share:"):
+                data, name = subs_mod.download(source[10:]), source
+            elif source.startswith("file:"):
+                f = source[5:]
+                if ".." in f or not (f.startswith(p.root + "/") or f.startswith(p.lib_ol + "/")) or not f.lower().endswith(self.SUB_EXT):
+                    return {"ok": False, "error": "file 只能是 115 或媒体库里的字幕文件"}
+                data, name = p.ol.read(f), f
+            elif source.startswith("url:https://"):
+                res = RequestUtils(timeout=60).get_res(source[4:])
+                if res is None or res.status_code != 200 or len(res.content) > 5 * 1024 * 1024:
+                    return {"ok": False, "error": "下载字幕失败（或大于 5MB）"}
+                data, name = res.content, source.split("?")[0]
+            else:
+                return {"ok": False, "error": "source 要以 sub_share: / file: / url:https:// 开头"}
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": f"取字幕失败：{err}"}
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name.rsplit("/", 1)[-1] else "ass"
+        if ext not in ("ass", "ssa", "srt", "vtt"):
+            return {"ok": False, "error": f"不支持的字幕格式 .{ext}（要 ass / ssa / srt / vtt）"}
+        remote = p.ol.remote_of_strm(strm)
+        off = None
+        if body.get("align", True) and ext in ("ass", "ssa") and remote:
+            off = subs_mod.offset(p.ol.sign_url(remote, public=False), data)
+            if off is not None and abs(off) > 0.3:
+                data = subs_mod.shift(data, off)
+        lang = re.sub(r"[^a-z]", "", str(body.get("lang") or "chs").lower())[:6] or "chs"
+        if body.get("target") == "115":
+            if not remote:
+                return {"ok": False, "error": "读不到 strm 指向的 115 文件"}
+            dest = f"{remote.rsplit('.', 1)[0]}.{lang}.{ext}"
+        else:
+            dest = f"{strm[:-5]}.{lang}.{ext}"
+        try:
+            p.ol.put(dest, data)
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": f"写入失败：{err}"}
+        logger.info(f"【Prowlarr115】装字幕 {dest}（来源 {name[-80:]}，偏移 {off}）")
+        return {"ok": True, "path": dest, "offset": off, "shifted": off is not None and abs(off) > 0.3}

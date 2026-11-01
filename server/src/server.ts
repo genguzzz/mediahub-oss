@@ -15,6 +15,7 @@ import { egressSummary } from "./egress.ts";
 import { cacheHeaders, cacheStatus, clearAllCaches, loadCacheControl, onClearCaches } from "./cacheControl.ts";
 import { configView, loadAppConfig, updateAppConfig } from "./appConfig.ts";
 import { doubanFind, doubanReviews } from "./reviews.ts";
+import { parseSubtitles, searchCues } from "./subtitles.ts";
 import { bilibiliLiveSearch, bilibiliLiveStatus, bilibiliUploads, bilibiliUsers, searchVideos, youtubeChannels, youtubeUploads } from "./ugc.ts";
 import { initLog } from "./log.ts";
 
@@ -1092,6 +1093,87 @@ app.get("/v1/subs/file", async (req, reply) => {
   const f = await plugBytes("/hub/subs/file", { path: p });
   if (!f) return reply.code(404).send();
   return reply.type(f.type).header("cache-control", "private, max-age=3600").send(f.body);
+});
+
+// ---------- media files and subtitles (the assistant; the app's player uses /v1/subs/list + file) ----------
+
+interface EmbyStream { Index: number; Type: string; Codec?: string; Language?: string; DisplayTitle?: string; Title?: string; IsExternal?: boolean; IsDefault?: boolean; Width?: number; Height?: number; Channels?: number; BitRate?: number; Path?: string }
+interface EmbyFull extends EmbyItem { Name?: string; SeriesName?: string; ParentIndexNumber?: number; IndexNumber?: number; OriginalTitle?: string; ProductionYear?: number; RunTimeTicks?: number; MediaSources?: { Id: string; Path?: string; Container?: string; Size?: number; Bitrate?: number; MediaStreams?: EmbyStream[] }[] }
+
+async function embyFull(id: string) {
+  if (!embyEvents.userId) throw Object.assign(new Error("服务端还没登录 Emby 用户"), { statusCode: 503 });
+  const it = await embyGet<EmbyFull>(`/Users/${embyEvents.userId}/Items/${id}`, { Fields: `${FIELDS},MediaSources,MediaStreams,OriginalTitle,Overview,Genres,Studios,People,Tags` });
+  if (!it) throw Object.assign(new Error("Emby 里没有这个条目"), { statusCode: 404 });
+  return it;
+}
+
+// One item's files: the strm in the library, what it points at (115 via OpenList), container, size, bitrate,
+// and every video / audio / subtitle stream.
+app.get<{ Params: { id: string } }>("/v1/emby/item/:id/media", async (req) => {
+  const it = await embyFull(z.string().regex(/^\w+$/).parse(req.params.id));
+  return {
+    id: it.Id, name: it.Name, type: it.Type, series: it.SeriesName ?? null, season: it.ParentIndexNumber ?? null, episode: it.IndexNumber ?? null,
+    path: it.Path ?? "", runtime: it.RunTimeTicks ? Math.round(it.RunTimeTicks / 1e7) : null, providers: it.ProviderIds ?? {},
+    sources: (it.MediaSources ?? []).map((m) => ({
+      id: m.Id, target: m.Path ?? "", container: m.Container ?? "", size: m.Size ?? null, bitrate: m.Bitrate ?? null,
+      streams: (m.MediaStreams ?? []).map((x) => ({ index: x.Index, type: x.Type, codec: x.Codec ?? "", lang: x.Language ?? "", title: x.DisplayTitle ?? x.Title ?? "", external: !!x.IsExternal, default: !!x.IsDefault,
+        ...(x.Type === "Video" ? { width: x.Width, height: x.Height } : {}), ...(x.Type === "Audio" ? { channels: x.Channels } : {}), ...(x.IsExternal && x.Path ? { file: x.Path } : {}) })),
+    })),
+  };
+});
+
+// Browse the 115 media folder (via OpenList) or the library, read-only.
+app.get("/v1/drive/list", async (req) => {
+  const q = z.object({ path: z.string().max(2000).default("") }).parse(req.query);
+  return plug("GET", "/hub/drive/list", { query: { path: q.path }, timeoutMs: 40_000 });
+});
+
+// Subtitles of an item: embedded tracks (Emby), and files beside the strm in the library and beside the video on 115.
+app.get<{ Params: { id: string } }>("/v1/emby/item/:id/subtitles", async (req) => {
+  const it = await embyFull(z.string().regex(/^\w+$/).parse(req.params.id));
+  const src = it.MediaSources?.[0];
+  const streams = (src?.MediaStreams ?? []).filter((x) => x.Type === "Subtitle");
+  type Files = { ok: boolean; error?: string; subs?: unknown[] };
+  const files: Files = src?.Path
+    ? await plug<Files>("GET", "/hub/subs/list", { query: { url: src.Path, strm: it.Path ?? "" }, timeoutMs: 40_000 }).catch((e: unknown) => ({ ok: false, error: e instanceof Error ? e.message : String(e) }))
+    : { ok: false, error: "没有媒体来源" };
+  return {
+    embedded: streams.filter((x) => !x.IsExternal).map((x) => ({ index: x.Index, lang: x.Language ?? "", title: x.DisplayTitle ?? x.Title ?? "", codec: x.Codec ?? "" })),
+    files: files.ok ? files.subs ?? [] : [],
+    ...(files.ok ? {} : { filesError: files.error }),
+  };
+});
+
+// A subtitle file's lines with times: search by words (q, with the lines around each hit) or read from a time.
+app.get("/v1/subs/read", async (req) => {
+  const q = z.object({ path: z.string().min(1).max(2000), q: z.string().max(200).optional(), from: z.coerce.number().min(0).optional(), limit: z.coerce.number().int().min(1).max(200).default(40), around: z.coerce.number().int().min(0).max(5).default(1) }).parse(req.query);
+  const f = await remember(`subtext:${q.path}`, 3600_000, async () => {
+    const r = await plugBytes("/hub/subs/file", { path: q.path });
+    if (!r) throw Object.assign(new Error("读不到这个字幕文件"), { statusCode: 404 });
+    return parseSubtitles(r.body);
+  });
+  return searchCues(f, q);
+});
+
+// Subtitles online for an item (sub_share: the open Chinese subtitle archive on GitHub; anime only).
+app.get<{ Params: { id: string } }>("/v1/emby/item/:id/subtitles/online", async (req) => {
+  const it = await embyFull(z.string().regex(/^\w+$/).parse(req.params.id));
+  const series = it.SeriesId ? await embyFull(it.SeriesId).catch(() => null) : null;
+  const names = [series?.Name, series?.OriginalTitle, it.SeriesName, it.Name, it.OriginalTitle].filter((x, i, a): x is string => !!x && a.indexOf(x) === i);
+  const year = series?.ProductionYear ?? it.ProductionYear ?? 0;
+  return plug("GET", "/hub/subs/online", { query: { names: names.join(","), year, season: it.ParentIndexNumber ?? 1, episodes: it.IndexNumber ?? "" }, timeoutMs: 60_000 });
+});
+
+// Install a subtitle for an item (beside its strm, or beside the video on 115), then refresh it in Emby.
+app.post<{ Params: { id: string } }>("/v1/emby/item/:id/subtitles/install", async (req) => {
+  const id = z.string().regex(/^\w+$/).parse(req.params.id);
+  const b = z.object({ source: z.string().min(5).max(2000), target: z.enum(["library", "115"]).default("library"), lang: z.string().regex(/^[a-z]{2,6}$/).default("chs"), align: z.boolean().default(true) }).parse(req.body ?? {});
+  const it = await embyFull(id);
+  if (!it.Path?.endsWith(".strm")) throw Object.assign(new Error("这个条目不是 strm，不能装字幕"), { statusCode: 400 });
+  const r = await plug<{ ok: boolean; error?: string; path?: string }>("POST", "/hub/subs/install", { body: { strm: it.Path, ...b }, timeoutMs: 600_000 });
+  req.log.info({ id, source: b.source.slice(0, 120), target: b.target, ok: r.ok }, "subtitle install");
+  if (r.ok) await plug("POST", "/hub/emby/refresh", { body: { id, replace: false } }).catch(() => null);
+  return r;
 });
 
 // ---------- images ----------

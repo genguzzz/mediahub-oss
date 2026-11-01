@@ -34,7 +34,7 @@ export interface Resource {
 
 class ToolError extends Error {}
 
-async function call(ctx: ToolCtx, method: "GET" | "POST", url: string, body?: unknown): Promise<any> {
+async function call(ctx: ToolCtx, method: "GET" | "POST" | "PUT" | "DELETE", url: string, body?: unknown): Promise<any> {
   const r = await ctx.app.inject({
     method, url,
     headers: { authorization: `Bearer ${config.appToken}`, "content-type": "application/json", "x-request-id": "ai-tool" },
@@ -267,6 +267,47 @@ export const TOOLS: Record<string, Def> = {
       const r = await ctx.phone("tv", { action: a.action, seconds: a.seconds, level: a.level, step: a.step, tv: a.tv });
       const clock = (n: number) => `${Math.floor(n / 3600)}:${String(Math.floor((n % 3600) / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
       return typeof r.position === "number" ? { ...r, at: `${clock(r.position)} / ${typeof r.duration === "number" && r.duration ? clock(r.duration) : "?"}` } : r;
+    },
+  },
+  subtitles: {
+    tier: "write",
+    description: "媒体库条目（电影或某一集，embyId）的字幕。action：list 列出内封字幕轨和外挂字幕文件（媒体库 strm 旁边 where=library、115 视频旁边 where=115，带 path）；read 读一个字幕文件的台词和时间（path；q=要找的词，空格分隔多个词任一命中，返回命中行和前后各一句；不给 q 时从 from 秒开始读 limit 行）——找『某个镜头/某句台词在第几分钟』就用它，再用 tv_control seek 跳过去；online 在 sub_share（GitHub 开源中文字幕库，只收动画）找这部的字幕，返回每集的 source；install 把字幕装上（source = online 给的 sub_share:… | file:<list 给的 path> | url:https://…；target=library 写在 strm 旁边、Emby 直接认（默认），115 写在网盘视频旁边；ASS 默认按音轨自动校准时间轴，要几分钟）。内封字幕轨读不了（要下载整个视频），只能列出。",
+    input: z.object({
+      action: z.enum(["list", "read", "online", "install"]), embyId: z.string().regex(/^\w+$/).optional(), path: z.string().max(2000).optional(),
+      q: z.string().max(200).optional(), from: z.number().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
+      source: z.string().max(2000).optional(), target: z.enum(["library", "115"]).optional(), lang: z.string().regex(/^[a-z]{2,6}$/).optional(), align: z.boolean().optional(),
+    }),
+    label: (a) => ({ list: "看有哪些字幕", read: a.q ? `在字幕里找「${a.q}」` : "读字幕台词", online: "在线找字幕", install: "安装字幕" } as Record<string, string>)[a.action],
+    run: async (ctx, a) => {
+      const need = (k: string, v: unknown) => { if (v == null || v === "") throw new ToolError(`${a.action} 要给 ${k}`); };
+      if (a.action === "read") {
+        need("path", a.path);
+        return call(ctx, "GET", `/v1/subs/read${qs({ path: a.path, q: a.q, from: a.from, limit: a.limit })}`);
+      }
+      need("embyId", a.embyId);
+      if (a.action === "list") return call(ctx, "GET", `/v1/emby/item/${a.embyId}/subtitles`);
+      if (a.action === "online") return call(ctx, "GET", `/v1/emby/item/${a.embyId}/subtitles/online`);
+      need("source", a.source);
+      return call(ctx, "POST", `/v1/emby/item/${a.embyId}/subtitles/install`, { source: a.source, target: a.target, lang: a.lang, align: a.align });
+    },
+  },
+  app_api: {
+    tier: "write",
+    description: "调用影库服务端自己的 API（App 能做的事都在这里：Emby 条目全部元数据和文件（strm 指向、码率、音轨字幕轨）、入库任务的查看重试换源取消、115 离线和网盘、qBittorrent、统计、健康检查和修复、订阅、黑名单、索引器……）。先 read_knowledge topic=api 看有哪些接口和参数，再调。GET 随便读；POST/PUT/DELETE 只在主人要求时做。删除、取消、移除类操作（会删文件或丢任务）必须先跟主人说清楚影响、得到明确同意后，带 confirmed=true 再调；Emby 删除先 dryRun 看计划。method + path（以 /v1/ 开头，可带 ?查询参数）+ body。",
+    input: z.object({ method: z.enum(["GET", "POST", "PUT", "DELETE"]), path: z.string().regex(/^\/v1\/[^\s#]*$/).max(600), body: z.record(z.string(), z.unknown()).optional(), confirmed: z.boolean().optional() }),
+    label: (a) => (a.method === "GET" ? `读取 ${a.path.split("?")[0]}` : `执行 ${a.method} ${a.path.split("?")[0]}`),
+    run: async (ctx, a) => {
+      const p = a.path.split("?")[0];
+      // not for the assistant: server settings and secrets, its own chats, logs, binary streams
+      if (/^\/v1\/(ai|emby\/account|javdb\/session|logs|events|img|stream|subs\/file|config)(\/|$)/.test(p) || p.includes(".."))
+        throw new ToolError("这个接口助手不能用（设置、凭据、日志或二进制内容）");
+      if (!ctx.adult && /^\/v1\/(catalog|av)(\/|$)/.test(p)) throw new ToolError("隐藏内容未开启");
+      const destructive = a.method === "DELETE" || /\/(delete|cancel|remove)$/.test(p) || (p === "/v1/qb/action" && a.body?.action === "delete");
+      if (destructive && !a.confirmed) throw new ToolError("这是删除/取消类操作：先向主人说明会发生什么，得到明确同意后带 confirmed=true 再调");
+      const body = /^\/v1\/emby\/item\/\w+\/delete$/.test(p) && !a.confirmed ? { ...a.body, dryRun: true } : a.body;
+      const out = await call(ctx, a.method, a.path, a.method === "GET" ? undefined : body ?? {});
+      const text = JSON.stringify(out);
+      return text.length > 12_000 ? { truncated: true, note: "结果太长，只给了前 12000 字：用查询参数缩小范围（limit、filter、具体 id）", head: text.slice(0, 12_000) } : out;
     },
   },
   library_latest: {
