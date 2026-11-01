@@ -107,7 +107,10 @@ def file_ep(name: str) -> Optional[int]:
     m = re.search(r"第\s*([〇一二三四五六七八九十]{1,3})\s*[巻話章]", name or "")   # 「第三話」（KyokuSai 等）
     if m and _kanji_num(m.group(1)):
         return _kanji_num(m.group(1))
-    for rx in (r"第\s*(\d+)\s*[巻話]", r"(\d+)\s*時限目", r"\s-\s(\d{1,3})(?:v\d)?(?:\s|\[|\(|\.|$)",
+    m = re.search(r"([前中後后])[編篇编]", name or "")      # 「断れない母 前編 / 後編」：中編存在时由调用方把後編顺延
+    if m:
+        return {"前": 1, "中": 2}.get(m.group(1), 2)
+    for rx in (r"第\s*(\d+)\s*[巻話]", r"(\d+)\s*時限目", r"\s-\s(\d{1,3})(?:v\d)?(?:\s|\[|\(|\.|$)", r"[#＃]\s*(\d{1,3})(?!\d)",
                r"\b(?:EP?|Episode|Vol(?:ume)?)[\s._-]*(\d{1,3})\b", r"\[(\d{1,2})\]", r"_(\d{1,2})_"):
         m = re.search(rx, name, re.I)
         if m:
@@ -295,7 +298,8 @@ class Adult:
                 # 不能当成「没有视频」——那会拉黑资源（诊察日誌 2026-11-01）。按 strm 出错计数，下一轮再看
                 raise RuntimeError(f"OpenList 里还看不到下载的文件夹 {scope[:60]}")
             files = list(self.ol.walk(f"{d}/{scope}")) if hit.get("is_dir") else [(f"{d}/{scope}", hit)]
-        vids = [(r, it) for r, it in files if r.lower().endswith(VIDEO) and not rejected(r)]
+        # 字幕组常附「前作/」目录（上一部作品，另一个 Bangumi 条目）：不算本作的集（诊察日誌附了研修日誌）
+        vids = [(r, it) for r, it in files if r.lower().endswith(VIDEO) and not rejected(r) and "/前作/" not in r[len(d):]]
         if not vids:
             return []
         biggest = max(it.get("size", 0) for _, it in vids)
@@ -343,10 +347,21 @@ class Adult:
             have = self.existing_eps(lib)
             title = re.sub(r"\s*\[bangumiid=\d+\]$", "", lib).rsplit(" (", 1)[0]
             made: List[str] = []
+            names = [r.rsplit("/", 1)[1] for r, _ in vids]
+            # 同一集的几个字幕版本（「[720P GB]…」「[720P BIG5]…」）：去掉方括号标签后同名，按一集处理，简体优先
+            stems = {re.sub(r"\[[^\]]*\]|\.\w+$", "", n).strip() for n in names}
+            same = len(stems) == 1 and len(next(iter(stems))) >= 4
+            if same and len(vids) > 1:
+                vids = sorted(vids, key=lambda v: (not re.search(r"GB|简|CHS|SC", v[0].rsplit("/", 1)[1], re.I), -v[1].get("size", 0)))
+            three = any(re.search(r"中[編篇编]", n) for n in names)
             for remote, _ in vids:
-                ep = file_ep(remote.rsplit("/", 1)[1]) or (int(meta["ep"]) if meta.get("ep") and len(vids) == 1 else None)
-                if ep is None and len(vids) == 1:
+                ep = file_ep(remote.rsplit("/", 1)[1]) or (int(meta["ep"]) if meta.get("ep") and (len(vids) == 1 or same) else None)
+                if ep is None and (len(vids) == 1 or same):
                     ep = 1
+                if ep == 2 and three and re.search(r"[後后][編篇编]", remote.rsplit("/", 1)[1]):
+                    ep = 3
+                if ep is not None and ep in have:
+                    self.p._tl.kept = getattr(self.p._tl, "kept", 0) + 1   # 库里已有这一集：算「已有其他版本」，不是没视频（不拉黑）
                 if ep is None or ep in have:
                     continue
                 sdir = f"{self.h_lib}/{lib}/Season {season}"
