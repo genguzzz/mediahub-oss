@@ -17,8 +17,9 @@ const SORT: Record<string, string> = {
   week: "本週排行", day: "本日排行", month: "本月排行", new: "最新上市", upload: "最新上傳", views: "觀看次數", likes: "讚好比例",
 };
 
-// The headers the site is used to from a browser visit (same as the owner's media tool, which it serves).
+// The same request a plain HTTP client sends to the site (headers and user agent), which it serves.
 const HEADERS = {
+  "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
   "accept-language": "zh-TW,zh;q=0.9,en;q=0.8,ja;q=0.7",
   referer: `${BASE}/`,
