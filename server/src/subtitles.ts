@@ -11,9 +11,19 @@ const srtTime = (t: string) => {
   return m ? Number(m[1] ?? 0) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(`0.${m[4]}`) : 0;
 };
 
+/** Subtitle files come as UTF-8 (BOM or not), UTF-16 or — many Chinese .srt — GBK / GB18030. */
+export function decodeSubtitle(raw: Buffer): string {
+  if (raw[0] === 0xff && raw[1] === 0xfe) return new TextDecoder("utf-16le").decode(raw);
+  if (raw[0] === 0xfe && raw[1] === 0xff) return new TextDecoder("utf-16be").decode(raw);
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(raw);
+  } catch {
+    return new TextDecoder("gb18030").decode(raw);
+  }
+}
+
 export function parseSubtitles(raw: Buffer): Cue[] {
-  // UTF-8 (with or without BOM) or UTF-16 LE, the encodings subtitle files come in
-  const text = raw[0] === 0xff && raw[1] === 0xfe ? raw.toString("utf16le") : raw.toString("utf8").replace(/^﻿/, "");
+  const text = decodeSubtitle(raw);
   const out: Cue[] = [];
   if (/^\s*\[Script Info\]/im.test(text) || /^Dialogue:/m.test(text)) {
     // ASS: "Dialogue: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text"; skip songs / signs styles

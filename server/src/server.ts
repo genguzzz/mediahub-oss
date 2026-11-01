@@ -15,8 +15,9 @@ import { egressSummary } from "./egress.ts";
 import { cacheHeaders, cacheStatus, clearAllCaches, loadCacheControl, onClearCaches } from "./cacheControl.ts";
 import { configView, loadAppConfig, updateAppConfig } from "./appConfig.ts";
 import { doubanFind, doubanReviews } from "./reviews.ts";
-import { parseSubtitles, searchCues } from "./subtitles.ts";
-import { assrtEnabled, assrtFileUrl, assrtFiles, assrtSearch } from "./assrt.ts";
+import { decodeSubtitle, parseSubtitles, searchCues } from "./subtitles.ts";
+import { assrtFiles } from "./assrt.ts";
+import { isOnlineSource, onlineSubtitle, onlineSubtitleUrl, searchSubtitles } from "./subsearch.ts";
 import { bilibiliLiveSearch, bilibiliLiveStatus, bilibiliUploads, bilibiliUsers, searchVideos, youtubeChannels, youtubeUploads } from "./ugc.ts";
 import { initLog } from "./log.ts";
 
@@ -1091,9 +1092,19 @@ app.get("/v1/subs/list", async (req) => {
 
 app.get("/v1/subs/file", async (req, reply) => {
   const { path: p } = z.object({ path: z.string().min(1).max(2000) }).parse(req.query);
+  if (isOnlineSource(p)) {
+    // an online file (subsearch.ts): the player loads it like a file beside the video
+    const o = await onlineSubtitle(p);
+    const ext = o.name.split(".").pop()?.toLowerCase() ?? "";
+    const mime = ({ srt: "application/x-subrip", vtt: "text/vtt", ass: "text/x-ssa", ssa: "text/x-ssa" } as Record<string, string>)[ext] ?? "text/plain";
+    // as UTF-8: many Chinese .srt are GBK, which players show garbled
+    return reply.type(`${mime}; charset=utf-8`).header("cache-control", "private, max-age=3600").send(Buffer.from(decodeSubtitle(o.body), "utf8"));
+  }
   const f = await plugBytes("/hub/subs/file", { path: p });
   if (!f) return reply.code(404).send();
-  return reply.type(f.type).header("cache-control", "private, max-age=3600").send(f.body);
+  // text subtitles as UTF-8 too; image formats (sup / idx) untouched
+  const text = /\.(srt|ass|ssa|vtt)$/i.test(p);
+  return reply.type(text ? `${f.type}; charset=utf-8` : f.type).header("cache-control", "private, max-age=3600").send(text ? Buffer.from(decodeSubtitle(f.body), "utf8") : f.body);
 });
 
 // ---------- media files and subtitles (the assistant; the app's player uses /v1/subs/list + file) ----------
@@ -1145,18 +1156,9 @@ app.get<{ Params: { id: string } }>("/v1/emby/item/:id/subtitles", async (req) =
   };
 });
 
-// Subtitle bytes by source: a file in 115 / the library (its path), or online — assrt:<id>/<n> (射手网) or
-// sub_share:<repo path> (the open archive on GitHub). Archives (zip / rar) are not read.
+// Subtitle bytes by source: a file in 115 / the library (its path), or an online file (subsearch.ts).
 async function subtitleBytes(source: string): Promise<Buffer> {
-  if (source.startsWith("assrt:") || source.startsWith("sub_share:")) {
-    const { url, name } = source.startsWith("assrt:")
-      ? await assrtFileUrl(source)
-      : { url: `https://raw.githubusercontent.com/foxofice/sub_share/master/${source.slice(10).split("/").map(encodeURIComponent).join("/")}`, name: source };
-    if (!/\.(ass|ssa|srt|vtt)$/i.test(name)) throw Object.assign(new Error("这是压缩包，不能直接读：先列出里面的字幕文件"), { statusCode: 400 });
-    const r = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-    if (!r.ok) throw Object.assign(new Error(`下载字幕失败（${r.status}）`), { statusCode: 502 });
-    return Buffer.from(await r.arrayBuffer());
-  }
+  if (isOnlineSource(source)) return (await onlineSubtitle(source)).body;
   const r = await plugBytes("/hub/subs/file", { path: source });
   if (!r) throw Object.assign(new Error("读不到这个字幕文件"), { statusCode: 404 });
   return r.body;
@@ -1170,37 +1172,28 @@ app.get("/v1/subs/read", async (req) => {
   return searchCues(cues, q);
 });
 
-// Subtitles online: 射手网 (assrt, films and series) by title, and for an Emby item also sub_share (anime).
-// Each 射手网 result lists its files with /v1/subs/files; a file reads with /v1/subs/read.
+// Subtitles online from every source (subsearch.ts), best first — for an Emby item (its names, season / episode,
+// runtime) or a title. Results are files (load with /v1/subs/file?path=<source>, read with /v1/subs/read) or
+// 射手网 packs (pack=true: list them with /v1/subs/files).
 app.get("/v1/subs/search", async (req) => {
-  const q = z.object({ q: z.string().max(200).optional(), embyId: z.string().regex(/^\w+$/).optional() }).parse(req.query);
-  let names: string[] = q.q ? [q.q] : [];
-  let anime: { names: string[]; year: number; season: number; episode: number | null } | null = null;
-  let want = "";
+  const q = z.object({ q: z.string().max(200).optional(), embyId: z.string().regex(/^\w+$/).optional(), season: z.coerce.number().int().min(0).optional(), episode: z.coerce.number().int().min(0).optional() }).parse(req.query);
+  const query: Parameters<typeof searchSubtitles>[0] = { names: q.q ? [q.q] : [], season: q.season, episode: q.episode };
   if (q.embyId) {
     const it = await embyFull(q.embyId);
     const series = it.SeriesId ? await embyFull(it.SeriesId).catch(() => null) : null;
-    const own = [series?.Name, it.SeriesName, series?.OriginalTitle, it.Type === "Episode" ? undefined : it.Name, it.Type === "Episode" ? undefined : it.OriginalTitle];
-    names = [...new Set([...names, ...own].filter((x): x is string => !!x))];
-    anime = { names, year: series?.ProductionYear ?? it.ProductionYear ?? 0, season: it.ParentIndexNumber ?? 1, episode: it.IndexNumber ?? null };
-    if (it.Type === "Episode" && it.ParentIndexNumber != null && it.IndexNumber != null) want = `S${String(it.ParentIndexNumber).padStart(2, "0")}E${String(it.IndexNumber).padStart(2, "0")}`;
+    const own = it.Type === "Episode" ? [series?.Name, it.SeriesName, series?.OriginalTitle] : [it.Name, it.OriginalTitle];
+    query.names = [...new Set([...query.names, ...own].filter((x): x is string => !!x))];
+    query.season ??= it.Type === "Episode" ? it.ParentIndexNumber ?? undefined : undefined;
+    query.episode ??= it.Type === "Episode" ? it.IndexNumber ?? undefined : undefined;
+    query.runtimeSec = it.RunTimeTicks ? Math.round(it.RunTimeTicks / 1e7) : undefined;
+    query.year = series?.ProductionYear ?? it.ProductionYear ?? undefined;
+    query.anime = /\/(动漫|动画|番剧|anime)\//i.test(it.Path ?? "") || [...(series?.Genres ?? []), ...(it.Genres ?? [])].some((g) => /动画|Animation|Anime/i.test(g));
   }
-  if (!names.length) throw Object.assign(new Error("需要 q 或 embyId"), { statusCode: 400 });
-  const [assrt, share] = await Promise.all([
-    assrtEnabled()
-      ? remember(`assrt:q:${names[0]}`, 3600_000, () => assrtSearch(names[0])).catch((e: unknown) => ({ error: e instanceof Error ? e.message : String(e) }))
-      : Promise.resolve({ error: "射手网字幕搜索没有配置（ASSRT_TOKEN）" }),
-    anime?.year
-      ? plug<{ ok: boolean; work?: string | null; files?: Record<string, string> }>("GET", "/hub/subs/online", { query: { names: anime.names.join(","), year: anime.year, season: anime.season, episodes: anime.episode ?? "" }, timeoutMs: 60_000 }).catch(() => null)
-      : Promise.resolve(null),
-  ]);
-  return {
-    query: names[0],
-    ...(want ? { episode: want } : {}),
-    assrt: Array.isArray(assrt) ? assrt : [],
-    ...(Array.isArray(assrt) ? {} : { assrtError: assrt.error }),
-    sub_share: share?.ok && share.work ? { work: share.work, files: share.files } : null,
-  };
+  if (!query.names.length) throw Object.assign(new Error("需要 q 或 embyId"), { statusCode: 400 });
+  return remember(`subsearch:${JSON.stringify(query)}`, 3600_000, async () => ({
+    query: query.names[0], season: query.season ?? null, episode: query.episode ?? null,
+    ...(await searchSubtitles(query, (path, query) => plug("GET", path, { query, timeoutMs: 60_000 }).catch(() => null) as never)),
+  }));
 });
 
 // A 射手网 release's subtitle files (source assrt:<id>/<n> each).
@@ -1216,8 +1209,8 @@ app.post<{ Params: { id: string } }>("/v1/emby/item/:id/subtitles/install", asyn
   const b = z.object({ source: z.string().min(5).max(2000), target: z.enum(["library", "115"]).default("library"), lang: z.string().regex(/^[a-z]{2,6}$/).default("chs"), align: z.boolean().default(true) }).parse(req.body ?? {});
   const it = await embyFull(id);
   if (!it.Path?.endsWith(".strm")) throw Object.assign(new Error("这个条目不是 strm，不能装字幕"), { statusCode: 400 });
-  // 射手网 links are short-lived: resolve one now and hand the plugin the URL
-  const source = b.source.startsWith("assrt:") ? `url:${(await assrtFileUrl(b.source)).url}` : b.source;
+  // online files: resolve the download link now (射手网's are short-lived) and hand the plugin the URL
+  const source = b.source.startsWith("assrt:") || b.source.startsWith("xunlei:") ? `url:${await onlineSubtitleUrl(b.source)}` : b.source;
   const r = await plug<{ ok: boolean; error?: string; path?: string }>("POST", "/hub/subs/install", { body: { strm: it.Path, ...b, source }, timeoutMs: 600_000 });
   req.log.info({ id, source: b.source.slice(0, 120), target: b.target, ok: r.ok }, "subtitle install");
   if (r.ok) await plug("POST", "/hub/emby/refresh", { body: { id, replace: false } }).catch(() => null);

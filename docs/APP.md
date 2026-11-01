@@ -44,3 +44,7 @@ The server can override app settings without a release (`server/src/appConfig.ts
 
 Adding a key: declare it in `SCHEMA` and in `DEFAULTS` of `lib/remoteConfig.ts`, read it with `useConfig()`, add a row here.
 
+
+## Online subtitles (player)
+
+The player's subtitle sheet has 在线字幕: the backend searches every source for the item (`GET /v1/subs/search?embyId=`: 迅雷, 射手网, sub_share — see docs/AI.md), best match first; a 射手网 pack opens into its files (`/v1/subs/files`). A pick loads through `/v1/subs/file?path=<source>` (served as UTF-8, GBK files converted) and can be kept with 存到媒体库 (`POST /v1/emby/item/:id/subtitles/install`, written beside the strm, timing aligned to the audio).

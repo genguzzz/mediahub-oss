@@ -423,6 +423,29 @@ export default function PlayerScreen() {
     if (id !== undefined && id < 0) toast("未能加载这个字幕文件", undefined, undefined, true);
   };
 
+  // an online subtitle (backend search across sources): loads like a file beside the video; can be kept in the library
+  const addOnlineSub = async (source: string, name: string) => {
+    const { server, token } = getSettings();
+    const id = await ref.current?.addSubtitle?.({ uri: `${server}/v1/subs/file?path=${encodeURIComponent(source)}`, name, headers: { authorization: `Bearer ${token}` } });
+    const ok = (id ?? -1) >= 0;
+    track("play_sub_online", { ok, provider: source.split(":")[0] });
+    setSheet(null);
+    if (!ok) {
+      toast("未能加载这个字幕", undefined, undefined, true);
+      return;
+    }
+    const itemId = itRef.current?.Id;
+    toast("已加载在线字幕", name, itemId ? {
+      label: "存到媒体库",
+      onPress: () => {
+        toast("正在保存字幕", "校准时间轴要几分钟，完成后下次播放直接有");
+        void api(`/v1/emby/item/${itemId}/subtitles/install`, { method: "POST", body: { source }, timeoutMs: 600_000 })
+          .then(() => toast("字幕已存到媒体库", name))
+          .catch((e) => toastError("保存字幕失败", e));
+      },
+    } : undefined);
+  };
+
   const importSub = async () => {
     const f = await pickFile(["public.text", "public.data", "*/*"]);
     if (!f) return;
@@ -803,6 +826,7 @@ export default function PlayerScreen() {
                       ))}
                     </>
                   ) : null}
+                  {loadedId ? <OnlineSubs itemId={loadedId} loaded={loadedNames} onPick={(src, name) => void addOnlineSub(src, name)} /> : null}
                   {has("documentPicker") && caps && caps.module >= 3 ? <Choice title="从「文件」导入字幕…" sub="ASS / SRT / VTT / SUP" onPress={() => void importSub()} /> : null}
                   <Heading text="字幕大小" />
                   <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
@@ -921,6 +945,61 @@ function Link({ text, onPress }: { text: string; onPress: () => void }) {
     <Pressable hitSlop={8} onPress={() => { tap(); onPress(); }}>
       <Text style={{ color: ACCENT, fontWeight: "700", fontSize: 15 }}>{text}</Text>
     </Pressable>
+  );
+}
+
+interface OnlineSub { source: string; provider: string; name: string; lang: string; format: string; pack?: boolean; match?: string }
+const PROVIDER: Record<string, string> = { xunlei: "迅雷", assrt: "射手网", sub_share: "sub_share" };
+
+// 在线字幕 in the subtitle sheet: the backend searches every source for this item (best first); a 射手网 pack
+// opens into its files.
+function OnlineSubs({ itemId, loaded, onPick }: { itemId: string; loaded: Set<string>; onPick: (source: string, name: string) => void }) {
+  const [list, setList] = useState<OnlineSub[] | null>(null);
+  const [pack, setPack] = useState<{ name: string; files: { source: string; name: string }[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const search = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const r = await api<{ results: OnlineSub[] }>(`/v1/subs/search?embyId=${itemId}`, { timeoutMs: 60_000 });
+      setList(r.results);
+      track("play_sub_search", { n: r.results.length });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const open = async (s: OnlineSub) => {
+    setBusy(true);
+    try {
+      const r = await api<{ files: { source: string; name: string }[] }>(`/v1/subs/files?source=${encodeURIComponent(s.source)}`, { timeoutMs: 30_000 });
+      setPack({ name: s.name, files: r.files });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <Heading text="在线字幕" />
+      {busy ? <ActivityIndicator color="#E8B04B" style={{ marginVertical: 10 }} /> : null}
+      {error ? <Text style={{ color: "#f88", fontSize: 13, marginBottom: 6 }}>{error}</Text> : null}
+      {pack ? (
+        <>
+          <Choice title={`‹ ${pack.name}`} sub="返回搜索结果" onPress={() => setPack(null)} />
+          {pack.files.map((f) => <Choice key={f.source} title={f.name} onPress={() => onPick(f.source, f.name)} />)}
+        </>
+      ) : list ? (
+        list.length ? list.filter((s) => !loaded.has(s.name)).slice(0, 15).map((s) => (
+          <Choice key={s.source} title={s.name}
+            sub={[PROVIDER[s.provider] ?? s.provider, s.lang, s.pack ? "字幕包" : s.format.toUpperCase(), s.match === "episode" ? "对应本集" : s.match === "duration" ? "时长吻合" : ""].filter(Boolean).join(" · ")}
+            onPress={() => (s.pack ? void open(s) : onPick(s.source, s.name))} />
+        )) : <Text style={{ color: "#999", marginVertical: 6 }}>没有找到在线字幕</Text>
+      ) : !busy ? <Choice title="搜索在线字幕" sub="迅雷、射手网、sub_share" onPress={() => void search()} /> : null}
+    </>
   );
 }
 

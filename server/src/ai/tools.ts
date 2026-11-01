@@ -271,7 +271,7 @@ export const TOOLS: Record<string, Def> = {
   },
   subtitles: {
     tier: "write",
-    description: "字幕：查、读、装。按台词/剧情找片段的位置（『跳到直升机撒钱那段』）：search 找这部的字幕 → files 列出字幕包里的文件（剧集挑对应 SxxExx 的那个）→ read 带 q（台词里可能出现的词，空格分隔多个，任一命中；多试几组同义词）拿到时间 → tv_control seek 跳过去。action：list（embyId）条目已有的字幕：内封轨（只能列，读不了）和外挂文件（path）；search（embyId 或 q=片名）在线搜：射手网（电影、剧集，中文为主，返回 source=assrt:<id> 的字幕包）和 sub_share（开源动画字幕库，直接给每集的 source）；files（source=assrt:<id>）字幕包里的文件，每个 source=assrt:<id>/<n>；read（path = list 的文件路径或在线文件的 source）读台词和时间：给 q 返回命中行和前后各一句，不给 q 从 from 秒读 limit 行；install（embyId + source）装上：target=library 写在 strm 旁边 Emby 直接认（默认），115 写在网盘视频旁边；ASS 默认按音轨校准时间轴（要几分钟）。读在线字幕不用先装。",
+    description: "字幕：查、读、装。按台词/剧情找片段的位置（『跳到直升机撒钱那段』）：search 找这部的字幕（结果已按合适程度排好：对得上集数 match=episode、时长 match=duration 的在前）→ 直接拿文件的 source（射手网的字幕包 pack=true 要先 files 列出里面的文件，挑对应 SxxExx 的）→ read 带 q（台词里可能出现的词，空格分隔多个，任一命中；多试几组同义词）拿到时间 → tv_control seek 跳过去。action：list（embyId）条目已有的字幕：内封轨（只能列，读不了）和外挂文件（path）；search（embyId 或 q=片名，可加 season/episode）同时搜多个在线字幕源：迅雷（直接是字幕文件，带语言和时长）、射手网（字幕包）、sub_share（开源动画字幕库）；files（source=assrt:<id>）字幕包里的文件，每个 source=assrt:<id>/<n>；read（path = list 的文件路径或在线文件的 source）读台词和时间：给 q 返回命中行和前后各一句，不给 q 从 from 秒读 limit 行；install（embyId + source）装上：target=library 写在 strm 旁边 Emby 直接认（默认），115 写在网盘视频旁边；ASS 默认按音轨校准时间轴（要几分钟）。读在线字幕不用先装。",
     input: z.object({
       action: z.enum(["list", "search", "files", "read", "install"]), embyId: z.string().regex(/^\w+$/).optional(), q: z.string().max(200).optional(),
       source: z.string().max(2000).optional(), path: z.string().max(2000).optional(), from: z.number().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
@@ -286,7 +286,7 @@ export const TOOLS: Record<string, Def> = {
           return call(ctx, "GET", `/v1/subs/read${qs({ path: a.path ?? a.source, q: a.q, from: a.from, limit: a.limit })}`);
         case "search":
           if (!a.embyId) need("embyId 或 q", a.q);
-          return call(ctx, "GET", `/v1/subs/search${qs({ embyId: a.embyId, q: a.q })}`);
+          return call(ctx, "GET", `/v1/subs/search${qs({ embyId: a.embyId, q: a.q })}`).then((r) => ({ ...r, results: (r.results ?? []).slice(0, 15) }));
         case "files":
           need("source", a.source);
           return call(ctx, "GET", `/v1/subs/files${qs({ source: a.source })}`);
