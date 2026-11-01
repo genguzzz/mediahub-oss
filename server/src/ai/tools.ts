@@ -59,10 +59,13 @@ function work(m: any, overview = 90) {
     ...(m.vote ? { rating: Math.round(m.vote * 10) / 10 } : {}),
     ...(overview && m.overview ? { overview: cut(m.overview, overview) } : {}),
     ...(m.poster ? { poster: String(m.poster).split("/").pop() } : {}),   // the app rebuilds the TMDb URL
-    ...(m.library ? { inLibrary: m.library.lib ?? true } : {}),
+    ...("library" in m ? { inLibrary: !!m.library } : {}),   // known only where the route looked it up
     ...(m.roles?.length ? { roles: m.roles.slice(0, 3) } : {}),
   };
 }
+
+/** Same clock as the system prompt's "Now", so 昨天 / 今晚 line up. */
+const localTime = (iso: string) => new Date(iso).toLocaleString("zh-CN", { timeZone: process.env.TZ || "Asia/Shanghai", hour12: false, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 
 function embyItem(i: any) {
   return {
@@ -70,8 +73,10 @@ function embyItem(i: any) {
     ...(i.series ? { series: i.series, season: i.season, episode: i.episode } : {}),
     ...(i.tmdbid ? { tmdbid: Number(i.tmdbid) || i.tmdbid } : {}),
     ...(i.added ? { added: String(i.added).slice(0, 10) } : {}),
-    ...(i.played ? { played: String(i.played).slice(0, 10) } : {}),
+    ...(i.played ? { played: localTime(i.played) } : {}),
+    ...(i.plays ? { plays: i.plays } : {}),
     ...(i.progress != null ? { progress: i.progress } : {}),
+    ...(i.finished === false ? { finished: false } : {}),
   };
 }
 
@@ -89,13 +94,30 @@ const Type = z.enum(["movie", "tv"]);
 export const TOOLS: Record<string, Def> = {
   search_media: {
     tier: "read",
-    description: "按片名/人名搜索影视（TMDb，经 MoviePilot）。返回作品（type、tmdbid、年份、评分、简介、是否已入库）和人物（personId）。中文名、原名、英文名都可以；模糊描述先用 web_search 找到片名再来这里。",
+    description: "按一个片名/人名搜索影视（TMDb，经 MoviePilot），返回候选作品（type、tmdbid、年份、评分、简介、是否已入库 inLibrary）和人物（personId）。用于不确定是哪部、要看候选时；已知一串片名用 lookup_titles 一次查完。模糊描述先 web_search 找到片名。",
     input: z.object({ query: z.string().min(1).describe("片名或人名"), page: z.number().int().min(1).max(5).optional() }),
     label: (a) => `搜索「${a.query}」`,
     run: async (ctx, a) => {
       const r = await call(ctx, "GET", `/v1/media/search${qs({ q: a.query, page: a.page })}`);
       return { works: (r.items ?? []).slice(0, 15).map((m: any) => work(m)), people: (r.persons ?? []).slice(0, 5).map((p: any) => ({ personId: p.id, name: p.name, dept: p.dept ?? p.known_for_department })) };
     },
+  },
+  lookup_titles: {
+    tier: "read",
+    description: "批量把一组片名（可带年份、类型）对上 TMDb 作品，一次返回每部的 tmdbid、海报、评分和是否已入库（inLibrary）。列推荐清单、核对一批片子『库里有没有』时用它，一次最多 20 部；不要逐部调用 search_media 或 library_search。",
+    input: z.object({ items: z.array(z.object({ title: z.string().min(1), year: z.string().optional(), type: Type.optional() })).min(1).max(20) }),
+    label: (a) => `批量查 ${a.items?.length ?? ""} 部`,
+    run: async (ctx, a) => {
+      const r = await call(ctx, "POST", "/v1/media/lookup", { items: a.items.map((i: any) => ({ title: i.title, year: i.year ?? "", type: i.type })) });
+      return (r.items ?? []).map((m: any) => (m.tmdbid ? { query: m.query, ...work(m, 0) } : { query: m.query, notFound: true }));
+    },
+  },
+  douban_related: {
+    tier: "read",
+    description: "豆瓣『喜欢这部的人也喜欢』：给豆瓣条目 id（从 web_search 搜『片名 豆瓣』的 movie.douban.com/subject/<id> 链接里拿），返回相似作品，已对上 TMDb（tmdbid、海报、豆瓣评分、是否已入库）。主人提到豆瓣、或想要华语口碑向推荐时优先用。",
+    input: z.object({ doubanId: z.string().regex(/^\d{4,10}$/), type: Type }),
+    label: () => "读豆瓣相似推荐",
+    run: async (ctx, a) => ((await call(ctx, "GET", `/v1/douban/related${qs({ id: a.doubanId, type: a.type })}`)).items ?? []).map((m: any) => ({ ...work(m, 40), ...(m.doubanRating ? { douban: m.doubanRating } : {}) })),
   },
   media_detail: {
     tier: "read",
@@ -166,7 +188,7 @@ export const TOOLS: Record<string, Def> = {
   },
   library_search: {
     tier: "read",
-    description: "在 Emby 媒体库里按名字找（返回 embyId、类型、年份、tmdbid）。判断『我有没有某部片』。",
+    description: "在 Emby 媒体库里按名字找条目（返回 embyId、类型、年份、tmdbid），用于要 embyId（刷新条目）或库里有、TMDb 对不上的片。判断有没有入库不需要它：search_media / lookup_titles / douban_related 的 inLibrary 已经给出。",
     input: z.object({ query: z.string().min(1), limit: z.number().int().min(1).max(40).optional() }),
     label: (a) => `在媒体库找「${a.query}」`,
     run: async (ctx, a) => (await call(ctx, "GET", `/v1/emby/items${qs({ q: a.query, limit: a.limit ?? 20, noAdult: ctx.adult ? undefined : 1 })}`)).items?.map(embyItem) ?? [],
@@ -180,10 +202,10 @@ export const TOOLS: Record<string, Def> = {
   },
   watch_history: {
     tier: "read",
-    description: "主人在 Emby 的观看记录：最近看完的（played）和看到一半的（resume，带进度 %）。推荐时用来了解口味、找『接着看』。",
-    input: z.object({ kind: z.enum(["played", "resume"]).optional(), limit: z.number().int().min(1).max(60).optional() }),
+    description: "主人在 Emby 的观看记录，按最后播放时间倒序：recent（默认，看完的和看了一部分的都有，带 played 日期、finished、进度 %）、played（只看完的）、resume（只看到一半的，『接着看』）。只记录在这台 Emby 上的播放；在别的播放器看的不会有。",
+    input: z.object({ kind: z.enum(["recent", "played", "resume"]).optional(), limit: z.number().int().min(1).max(60).optional() }),
     label: (a) => (a.kind === "resume" ? "看在看的" : "读观看记录"),
-    run: async (ctx, a) => (await call(ctx, "GET", `/v1/emby/played${qs({ kind: a.kind ?? "played", limit: a.limit ?? 30, adult: ctx.adult ? 1 : undefined })}`)).items?.map(embyItem) ?? [],
+    run: async (ctx, a) => (await call(ctx, "GET", `/v1/emby/played${qs({ kind: a.kind ?? "recent", limit: a.limit ?? 30, adult: ctx.adult ? 1 : undefined })}`)).items?.map(embyItem) ?? [],
   },
   tasks: {
     tier: "read",
@@ -276,10 +298,10 @@ export const TOOLS: Record<string, Def> = {
   },
   auto_ingest: {
     tier: "write",
-    description: "让系统自动挑选资源入库一部作品（可指定季）。主人说『帮我下/入库某部』但没指定资源时用。",
-    input: z.object({ type: Type, tmdbid: z.number().int().positive(), seasons: z.array(z.number().int().min(0)).max(30).optional() }),
-    label: () => "自动入库",
-    run: async (ctx, a) => call(ctx, "POST", "/v1/ingest/auto", { tmdbid: a.tmdbid, type: a.type, seasons: a.seasons }),
+    description: "让系统按选片策略自动挑资源，把一部或多部作品入库（一次最多 20 部，可给每部指定季）。主人说『帮我下/入库这几部』而没指定具体资源时用，多部一次提交，不要逐部调用。已在库里的不要提交。",
+    input: z.object({ items: z.array(z.object({ type: Type, tmdbid: z.number().int().positive(), seasons: z.array(z.number().int().min(0)).max(30).optional() })).min(1).max(20) }),
+    label: (a) => `自动入库 ${a.items?.length ?? ""} 部`,
+    run: async (ctx, a) => call(ctx, "POST", "/v1/ingest/auto", { items: a.items }),
   },
   subscribe: {
     tier: "write",

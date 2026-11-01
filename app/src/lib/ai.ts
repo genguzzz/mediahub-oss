@@ -344,7 +344,8 @@ function stopStream() {
   ai.running = false;
 }
 
-export async function send(text: string, retrying = false) {
+/** voice: the text came from speech recognition (the server tells the model it may hold homophone errors). */
+export async function send(text: string, retrying = false, voice = false) {
   text = text.trim();
   if ((!text && !retrying) || ai.running) return;
   if (retrying) {
@@ -358,7 +359,7 @@ export async function send(text: string, retrying = false) {
   ai.reconnecting = false;
   syncSeq++;
   track("ai.send", { model: ai.model, screen: ai.screen ? 1 : undefined, retry: retrying || undefined, len: text.length });
-  const body = JSON.stringify({ chatId: ai.chatId || 0, message: text, screen: ai.screen || undefined, model: ai.model, retry: retrying, adult: getSettings().showAdult });
+  const body = JSON.stringify({ chatId: ai.chatId || 0, message: text, screen: ai.screen || undefined, model: ai.model, retry: retrying, voice: voice || undefined, adult: getSettings().showAdult });
   const f = await streamFetch();
   const end = await stream((signal) => kfetch("/v1/ai/chat", { method: "POST", body, headers: { "Content-Type": "application/json", accept: "text/event-stream" }, signal }, f));
   if (end === "replaced") return;

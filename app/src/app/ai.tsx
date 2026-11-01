@@ -95,15 +95,15 @@ export default function AiScreen() {
 
   useEffect(() => { stick.current = true; }, [s.chatId]);
 
-  const submit = (text = input) => {
+  const submit = (text = input, voice = false) => {
     if (!text.trim() || ai.running) return;
     tap();
     stick.current = true;
-    void send(text);
+    void send(text, false, voice);
     setInput("");
   };
-  const talk = useTapToTalk({ onText: (t) => submit(t), onError: flash });
-  const hold = useHoldToTalk({ onTap: () => inputRef.current?.focus(), onText: (t) => submit(t), onError: flash });
+  const talk = useTapToTalk({ onText: (t) => submit(t, true), onError: flash });
+  const hold = useHoldToTalk({ onTap: () => inputRef.current?.focus(), onText: (t) => submit(t, true), onError: flash });
 
   const fresh = () => {
     tap();

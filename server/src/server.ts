@@ -571,7 +571,11 @@ async function resolveTmdb(title: string, year: string, type: Kind): Promise<MpM
     const list = await mp<MpMedia[]>("GET", "/media/search", { query: { title, type: "media", page: 1, count: 20 }, timeoutMs: 30_000 });
     const cands = (list ?? []).filter((m) => m.tmdb_id && kindOf(m.type) === type);
     const y = Number(year) || 0;
-    return cands.find((m) => !y || Math.abs(Number(m.year) - y) <= 1) ?? cands[0] ?? null;
+    const near = (m: MpMedia) => !y || Math.abs(Number(m.year) - y) <= 1;
+    // An exact title (or original title) wins over search rank: 「毒战」 must not resolve to 「战毒」.
+    const norm = (t?: string) => (t ?? "").normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}]+/gu, "");
+    const exact = (m: MpMedia) => norm(m.title) === norm(title) || norm(m.original_title) === norm(title);
+    return cands.find((m) => exact(m) && near(m)) ?? cands.find(exact) ?? cands.find(near) ?? cands[0] ?? null;
   });
 }
 
@@ -580,6 +584,32 @@ app.get("/v1/media/resolve", async (req) => {
   const pick = await resolveTmdb(q.title, q.year, q.type);
   if (!pick) throw Object.assign(new Error("TMDb 里没找到对应条目"), { statusCode: 404 });
   return { tmdbid: pick.tmdb_id, type: kindOf(pick.type), title: pick.title };
+});
+
+// Many titles at once (the assistant checking a list of picks): each → its TMDb work, whether it is in the
+// library. Resolved in parallel; unknown titles come back with tmdbid null.
+app.post("/v1/media/lookup", async (req) => {
+  const b = z.object({ items: z.array(z.object({ title: z.string().min(1).max(200), year: z.string().max(8).default(""), type: z.enum(["movie", "tv"]).optional() })).min(1).max(20) }).parse(req.body);
+  const found = await Promise.all(b.items.map(async (i) => {
+    const types: Kind[] = i.type ? [i.type] : ["movie", "tv"];
+    for (const t of types) {
+      const hit = await resolveTmdb(i.title, i.year, t).catch(() => null);
+      if (hit) return { query: i.title, ...brief(hit) };
+    }
+    return { query: i.title, type: i.type ?? "movie", tmdbid: null, title: i.title, year: i.year, originalTitle: "", poster: null, backdrop: null, overview: "", vote: 0 };
+  }));
+  return { items: await withLib(found as (ReturnType<typeof brief> & { query: string })[]) };
+});
+
+// Douban "喜欢这部的人也喜欢" for a Douban subject, each resolved to its TMDb work (+ library state).
+app.get("/v1/douban/related", async (req) => {
+  const q = z.object({ id: z.string().regex(/^\d{4,10}$/), type: z.enum(["movie", "tv"]).default("movie") }).parse(req.query);
+  const list = await remember(`dbrel:${q.id}:${q.type}`, 6 * 3600_000, () => mp<MpRec[]>("GET", `/douban/recommend/${q.id}/${encodeURIComponent(TYPE_NAME[q.type])}`, { timeoutMs: 40_000 }));
+  const items = await Promise.all((list ?? []).slice(0, 15).map(async (m) => {
+    const hit = m.tmdb_id ? m : await resolveTmdb(m.title ?? "", m.year ?? "", kindOf(m.type)).catch(() => null);
+    return { ...brief({ ...m, ...(hit ?? {}) } as MpMedia), doubanRating: m.vote_average ?? null };
+  }));
+  return { items: await withLib(items) };
 });
 
 // Emby login for the app's direct connection (the app logs in itself and keeps only its token).
@@ -652,9 +682,12 @@ app.post("/v1/ingest", async (req) => {
 // 自动入库: the plugin's batch in auto mode — aired seasons / movies are searched, picked by the 选片 policy and
 // downloaded; airing seasons become a subscription. Returns a job id to poll.
 app.post("/v1/ingest/auto", async (req) => {
-  const b = z.object({ tmdbid: z.number().int().positive(), type: z.enum(["movie", "tv"]), seasons: z.array(z.number().int().min(0)).max(50).optional() }).parse(req.body);
-  const res = await plug<{ ok: boolean; job?: string; error?: string }>("POST", "/batch", { body: { items: [{ tmdbid: b.tmdbid, type: b.type, ...(b.seasons ? { seasons: b.seasons } : {}) }], mode: "auto" } });
-  req.log.info({ ...b, job: res.job, ok: res.ok }, "ingest auto");
+  // One work ({tmdbid, type, seasons?}) or several ({items: [...]}, e.g. 全部入库 on the assistant's cards): one job.
+  const Work = z.object({ tmdbid: z.number().int().positive(), type: z.enum(["movie", "tv"]), seasons: z.array(z.number().int().min(0)).max(50).optional() });
+  const body = z.union([z.object({ items: z.array(Work).min(1).max(20) }), Work]).parse(req.body);
+  const items = "items" in body ? body.items : [body];
+  const res = await plug<{ ok: boolean; job?: string; error?: string }>("POST", "/batch", { body: { items: items.map((w) => ({ tmdbid: w.tmdbid, type: w.type, ...(w.seasons ? { seasons: w.seasons } : {}) })), mode: "auto" } });
+  req.log.info({ count: items.length, first: items[0]?.tmdbid, job: res.job, ok: res.ok }, "ingest auto");
   return res;
 });
 
@@ -844,21 +877,27 @@ app.get("/v1/emby/latest", async (req) => {
   return { items: items.map(embyBrief) };
 });
 
-// The owner's watching: recently finished (played) or started and not finished (resume), as the app's Emby user.
+// The owner's watching as the app's Emby user: played (finished), resume (started, not finished) or recent
+// (both, by last played). AV / 里番 only with adult=1 — filtered before the limit (they would crowd it out).
 app.get("/v1/emby/played", async (req) => {
-  const q = z.object({ kind: z.enum(["played", "resume"]).default("played"), limit: z.coerce.number().int().min(1).max(100).default(30), adult: z.string().optional().transform((v) => v === "1" || v === "true") }).parse(req.query);
+  const q = z.object({ kind: z.enum(["recent", "played", "resume"]).default("recent"), limit: z.coerce.number().int().min(1).max(100).default(30), adult: z.string().optional().transform((v) => v === "1" || v === "true") }).parse(req.query);
   if (!embyEvents.userId) throw Object.assign(new Error("服务端还没登录 Emby 用户"), { statusCode: 503 });
-  const r = await embyGet<{ Items: EmbyItem[] }>(`/Users/${embyEvents.userId}/Items${q.kind === "resume" ? "/Resume" : ""}`, {
-    Recursive: "true", IncludeItemTypes: "Movie,Episode", Limit: q.limit, Fields: `${FIELDS},UserData`, EnableImageTypes: "Primary",
-    ...(q.kind === "played" ? { Filters: "IsPlayed", SortBy: "DatePlayed", SortOrder: "Descending" } : {}),
-  });
-  return {
-    // AV / 里番 only with 成人内容 on (their libraries are folders named like ADULT_LIBS)
-    items: (r?.Items ?? []).filter((i) => q.adult || ![...ADULT_LIBS].some((l) => (i.Path ?? "").includes(`/${l}/`))).map((i) => {
-      const u = i.UserData as { LastPlayedDate?: string; PlayedPercentage?: number } | undefined;
-      return { ...embyBrief(i), played: u?.LastPlayedDate ?? null, progress: q.kind === "resume" && u?.PlayedPercentage != null ? Math.round(u.PlayedPercentage) : null };
-    }),
-  };
+  const fetchKind = (kind: "played" | "resume") => embyGet<{ Items: EmbyItem[] }>(`/Users/${embyEvents.userId}/Items${kind === "resume" ? "/Resume" : ""}`, {
+    Recursive: "true", IncludeItemTypes: "Movie,Episode", Limit: Math.min(200, q.limit * 4), Fields: `${FIELDS},UserDataPlayCount,UserDataLastPlayedDate`, EnableUserData: "true",   // Emby sends play dates only when asked EnableImageTypes: "Primary",
+    ...(kind === "played" ? { Filters: "IsPlayed", SortBy: "DatePlayed", SortOrder: "Descending" } : {}),
+  }).then((r) => (r?.Items ?? []).map((i) => ({ i, kind }))).catch(() => [] as { i: EmbyItem; kind: "played" | "resume" }[]);
+  const lists = await Promise.all(q.kind === "recent" ? [fetchKind("played"), fetchKind("resume")] : [fetchKind(q.kind)]);
+  const seen = new Set<string>();
+  type U = { LastPlayedDate?: string; PlayedPercentage?: number; Played?: boolean };
+  const rows = lists.flat()
+    .filter(({ i }) => q.adult || ![...ADULT_LIBS].some((l) => (i.Path ?? "").includes(`/${l}/`)))
+    .filter(({ i }) => (seen.has(i.Id) ? false : (seen.add(i.Id), true)))
+    .map(({ i, kind }) => {
+      const u = (i.UserData ?? {}) as U;
+      return { ...embyBrief(i), played: u.LastPlayedDate ?? null, plays: (u as { PlayCount?: number }).PlayCount ?? null, finished: kind === "played" || !!u.Played, progress: kind === "resume" && u.PlayedPercentage != null ? Math.round(u.PlayedPercentage) : null };
+    })
+    .sort((x, y) => String(y.played ?? "").localeCompare(String(x.played ?? "")));
+  return { items: rows.slice(0, q.limit) };
 });
 
 app.get("/v1/emby/items", async (req) => {

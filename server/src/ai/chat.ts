@@ -132,7 +132,7 @@ export class Busy extends Error {
 }
 
 /** Start a turn; returns the chat id at once, the answer streams to attach()ed listeners. */
-export async function startChat(app: FastifyInstance, req: { chatId?: number; message: string; retry?: boolean; model?: string; context: Context }): Promise<number> {
+export async function startChat(app: FastifyInstance, req: { chatId?: number; message: string; retry?: boolean; voice?: boolean; model?: string; context: Context }): Promise<number> {
   await load();
   if (runs.size >= MAX_RUNS) throw new Busy("已经有两个问题在回答，稍等");
   let c = req.chatId ? chats.get(req.chatId) : undefined;
@@ -161,7 +161,9 @@ export async function startChat(app: FastifyInstance, req: { chatId?: number; me
   emit(c.id, { type: "chat", chatId: c.id });
   const chat = c;
   const timer = setTimeout(() => run.abort.abort(), TURN_TIMEOUT_MS);
-  void turn(app, chat, question, req.model, req.context, run).finally(() => {
+  // speech-recognised questions are marked for the model only (the chat shows what was said)
+  const forModel = req.voice ? `[语音输入，可能有同音/近音错字] ${question}` : question;
+  void turn(app, chat, forModel, req.model, req.context, run).finally(() => {
     clearTimeout(timer);
     runs.delete(chat.id);
   });

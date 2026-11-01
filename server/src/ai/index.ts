@@ -48,11 +48,12 @@ export function registerAi(app: FastifyInstance) {
       chatId: z.number().int().min(0).optional(),
       message: z.string().max(4000).default(""),
       retry: z.boolean().default(false),
+      voice: z.boolean().default(false),
       model: z.string().max(80).optional(),
       adult: z.boolean().default(false),
       screen: z.string().max(300).optional(),
     }).parse(req.body ?? {});
-    const id = await startChat(app, { chatId: b.chatId || undefined, message: b.message, retry: b.retry, model: b.model, context: { adult: b.adult, screen: b.screen } });
+    const id = await startChat(app, { chatId: b.chatId || undefined, message: b.message, retry: b.retry, voice: b.voice, model: b.model, context: { adult: b.adult, screen: b.screen } });
     sse(reply, id);
   });
   app.get("/v1/ai/chats", async () => listChats());

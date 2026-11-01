@@ -46,7 +46,7 @@ export function FloatingOrb() {
     onText: (t, fresh) => {
       if (fresh) newChat(); // released in the 新对话 zone: start a fresh conversation (the coin page still sets context)
       open(pathname);
-      void send(t);
+      void send(t, false, true);
     },
     onError: (msg) => toast("语音没发出去", msg, undefined, true),
   });
