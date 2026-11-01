@@ -72,13 +72,12 @@ function overlap(q: Set<string>, d: Set<string>) {
 }
 const similar = (a: string, b: string) => overlap(grams(a), grams(b));
 
+// rel (text overlap + tag hit) decides whether a memory matches; recency and use only order the matches —
+// they must not lift an unrelated memory over the threshold.
 function score(m: Memory, q: Set<string>, qText: string, now: number) {
-  const text = overlap(q, grams(`${m.text} ${m.tags.join(" ")}`));
-  const tag = m.tags.some((t) => t && norm(qText).includes(norm(t))) ? 0.35 : 0;
+  const rel = overlap(q, grams(`${m.text} ${m.tags.join(" ")}`)) + (m.tags.some((t) => t && norm(qText).includes(norm(t))) ? 0.35 : 0);
   const ageDays = (now - m.updated) / 86400_000;
-  const recency = 0.15 * Math.exp(-ageDays / 60);            // fresh memories rank a little higher
-  const use = Math.min(0.1, m.hits * 0.01);
-  return text + tag + recency + use;
+  return { rel, rank: rel + 0.15 * Math.exp(-ageDays / 60) + Math.min(0.1, m.hits * 0.01) };
 }
 
 // ---------- API used by the chat and tools ----------
@@ -93,7 +92,7 @@ export async function recall(query: string, n = 6): Promise<Memory[]> {
   if (!all.length) return [];
   const q = grams(query);
   const now = Date.now();
-  const ranked = all.map((m) => ({ m, s: score(m, q, query, now) })).filter((x) => x.s > 0.18).sort((a, b) => b.s - a.s).slice(0, n);
+  const ranked = all.map((m) => ({ m, ...score(m, q, query, now) })).filter((x) => x.rel > 0.15).sort((a, b) => b.rank - a.rank).slice(0, n);
   if (ranked.length) {
     for (const { m } of ranked) {
       m.hits += 1;
@@ -108,8 +107,9 @@ export async function search(query: string, kind?: Kind, limit = 10): Promise<(M
   const q = grams(query);
   const now = Date.now();
   return (await load()).filter((m) => !kind || m.kind === kind)
-    .map((m) => ({ ...m, score: Math.round(score(m, q, query, now) * 100) / 100 }))
-    .filter((m) => !query.trim() || m.score > 0.1)
+    .map((m) => ({ m, ...score(m, q, query, now) }))
+    .filter((x) => !query.trim() || x.rel > 0.1)
+    .map((x) => ({ ...x.m, score: Math.round(x.rank * 100) / 100 }))
     .sort((a, b) => b.score - a.score || b.updated - a.updated).slice(0, limit);
 }
 
