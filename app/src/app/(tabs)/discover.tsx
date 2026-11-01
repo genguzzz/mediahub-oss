@@ -10,6 +10,7 @@ import { Chip, ChipRow, EmptyState, ErrorBox, Loading, Segmented, TAB_BAR_SPACE,
 import { api, img, type MediaBrief, type PersonHit } from "@/lib/api";
 import { PROVIDER_FOR } from "@/lib/catalog";
 import { useQuery } from "@/lib/query";
+import { useConfig } from "@/lib/remoteConfig";
 import { has, listenOnce } from "@/lib/device";
 import { useSettings } from "@/lib/settings";
 import { colors, radius } from "@/lib/theme";
@@ -51,6 +52,7 @@ export default function DiscoverTab() {
   const open = useOpenMedia();
   const index = mode === "tmdb" || mode === "douban";
   const results = useQuery(q ? `search:${q}` : null, () => api<{ items: MediaBrief[]; people?: PersonHit[] }>(`/v1/media/search?q=${encodeURIComponent(q)}`), { staleMs: 10 * 60_000 });
+  const hiddenSections = useConfig().hiddenDiscoverSections;
   const sections = useQuery("discover:sections", () => api<{ sections: SectionInfo[] }>("/v1/discover"), { staleMs: 24 * 3600_000 });
 
   const submit = () => {
@@ -127,7 +129,7 @@ export default function DiscoverTab() {
         <ScrollView key={mode} contentContainerStyle={{ paddingBottom: TAB_BAR_SPACE }} refreshControl={<Pull onRefresh={sections.refresh} />}>
           {sections.error ? <ErrorBox text={sections.error} onRetry={sections.refresh} /> : null}
           {!sections.data && sections.loading ? <Loading /> : null}
-          {(sections.data?.sections ?? []).filter((x) => x.group === mode).map((x, i) => (
+          {(sections.data?.sections ?? []).filter((x) => x.group === mode && !hiddenSections.includes(x.id)).map((x, i) => (
             <View key={x.id}>
               <Section s={x} />
               {mode === "tmdb" && i === 0 ? <BrowseShortcuts /> : null}

@@ -12,6 +12,7 @@ import { newChat, send, setContext, useAiSelect } from "@/lib/ai";
 import { colors, fs, tnum } from "@/components/ai/look";
 import { VoiceWave } from "@/components/ai/VoiceWave";
 import { useHoldToTalk } from "@/lib/voice";
+import { useConfig } from "@/lib/remoteConfig";
 
 const SIZE = 54; // web .orb
 const NEW_DX = 96; // centre of the 新对话 bubble, left of the orb centre (the zone starts at 70 px, lib/voice.ts)
@@ -35,7 +36,13 @@ function open(pathname: string) {
   router.push("/ai");
 }
 
+/** The orb, unless the remote config turns it off (aiOrb). */
 export function FloatingOrb() {
+  const { aiOrb } = useConfig();
+  return aiOrb ? <Orbit /> : null;
+}
+
+function Orbit() {
   const pathname = usePathname();
   const insets = useSafeAreaInsets();
   const running = useAiSelect((a) => a.running);

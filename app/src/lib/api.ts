@@ -2,6 +2,7 @@
 // the app token and a request id that the server logs (`journalctl -u mediahub | grep <rid>`).
 import * as Application from "expo-application";
 import { noteCacheHeaders } from "./query";
+import { noteConfigVersion } from "./remoteConfig";
 import { getSettings } from "./settings";
 import { logger } from "./log";
 import { runningLabel } from "./updates";
@@ -43,6 +44,7 @@ export async function api<T>(path: string, opts: { method?: string; body?: unkno
       signal: ctrl.signal,
     });
     noteCacheHeaders(res.headers.get("x-cache-epoch"), res.headers.get("x-cache-max-age"));
+    noteConfigVersion(res.headers.get("x-config-version"));
     const text = await res.text();
     let data: unknown = null;
     try {

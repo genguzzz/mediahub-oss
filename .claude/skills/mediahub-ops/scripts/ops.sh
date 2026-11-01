@@ -57,6 +57,7 @@ case "$cmd" in
   feedback) adm GET /admin/feedback ;;
   feedback-done) v1 POST "/v1/feedback/$1" "{\"status\":\"done\",\"note\":\"${2:-}\"}" ;;
   cache) case "${1:-}" in clear) adm POST /admin/cache '{"clear":true}' ;; maxage) adm POST /admin/cache "{\"maxAge\":${2:-null}}" ;; off) adm POST /admin/cache '{"maxAge":null}' ;; *) adm GET /admin/cache ;; esac ;;
+  config) case "${1:-}" in set) adm PUT /admin/config "{\"set\":{\"$2\":$3}}" ;; unset) adm PUT /admin/config "{\"unset\":[\"$2\"]}" ;; *) adm GET /admin/config ;; esac ;;
   logs) adm GET /admin/logs ;;
   log) rawget admin "$SERVER_LOCAL_URL/admin/logs/$1?tail=${3:-400}${2:+&grep=$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$2")}" ;;
   img) rawget app "$SERVER_LOCAL_URL$1" '%{http_code} %{content_type} %{size_download} bytes %{time_total}s\n' ;;

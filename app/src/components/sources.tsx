@@ -5,7 +5,7 @@ import type { Source } from "@/lib/api";
 import { colors } from "@/lib/theme";
 
 // Built-in sources pre-selected for 按来源搜索 when the user hasn't picked their own in Settings → 索引源.
-export const BUILTIN_SOURCES = ["nyaa", "animetosho", "mikan", "dmhy", "prowlarr"];
+// The built-in default sources are the remote config's defaultSources (lib/remoteConfig.ts).
 
 const TAG_COLOR: Record<string, string> = { 动漫: colors.primary, 中文: colors.success, 成人: colors.danger, 综合: colors.warning };
 

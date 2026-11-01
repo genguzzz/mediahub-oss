@@ -12,7 +12,8 @@ import { registerCatalog } from "./catalog/index.ts";
 import { registerAi } from "./ai/index.ts";
 import { embyEvents, startEmbyEvents } from "./embyEvents.ts";
 import { egressSummary } from "./egress.ts";
-import { cacheHeaders, cacheStatus, clearAllCaches, loadCacheControl, onClearCaches, setMaxAge } from "./cacheControl.ts";
+import { cacheHeaders, cacheStatus, clearAllCaches, loadCacheControl, onClearCaches } from "./cacheControl.ts";
+import { configView, loadAppConfig, updateAppConfig } from "./appConfig.ts";
 import { bilibiliLiveSearch, bilibiliLiveStatus, bilibiliUploads, bilibiliUsers, searchVideos, youtubeChannels, youtubeUploads } from "./ugc.ts";
 import { initLog } from "./log.ts";
 
@@ -34,7 +35,7 @@ await app.register(multipart, { limits: { fileSize: 60 * 1024 * 1024, files: 1 }
 
 // CORS for the web preview build; auth is a bearer token, never cookies.
 app.addHook("onRequest", async (req, reply) => {
-  reply.header("access-control-allow-origin", "*").header("access-control-expose-headers", "x-request-id, x-cache-epoch, x-cache-max-age");
+  reply.header("access-control-allow-origin", "*").header("access-control-expose-headers", "x-request-id, x-cache-epoch, x-cache-max-age, x-config-version");
   if (req.method === "OPTIONS") {
     return reply.code(204).header("access-control-allow-methods", "GET,POST,PUT,DELETE").header("access-control-allow-headers", "authorization,content-type,x-request-id,x-app-version").header("access-control-max-age", "86400").send();
   }
@@ -77,6 +78,7 @@ app.get("/health", async () => ({ ok: true }));
 
 // ---------- cache control (cacheControl.ts) ----------
 
+await loadAppConfig();
 await loadCacheControl();
 app.addHook("onSend", async (req, reply) => {
   if (req.url.startsWith("/v1/")) for (const [k, v] of Object.entries(cacheHeaders())) reply.header(k, v);
@@ -85,8 +87,18 @@ app.post("/v1/cache/clear", async () => clearAllCaches("app"));
 app.get("/admin/cache", async () => cacheStatus());
 app.post("/admin/cache", async (req) => {
   const b = z.object({ clear: z.boolean().default(false), maxAge: z.number().int().min(0).max(30 * 86400).nullable().optional() }).parse(req.body ?? {});
-  if (b.maxAge !== undefined) await setMaxAge(b.maxAge);
+  // the freshness cap is the remote config key cacheMaxAgeSec
+  if (b.maxAge !== undefined) await updateAppConfig(b.maxAge ? { cacheMaxAgeSec: b.maxAge } : {}, b.maxAge ? [] : ["cacheMaxAgeSec"]);
   return b.clear ? clearAllCaches("admin") : cacheStatus();
+});
+
+// ---------- remote config (appConfig.ts) ----------
+
+app.get("/v1/config", async () => configView());
+app.get("/admin/config", async () => configView());
+app.put("/admin/config", async (req) => {
+  const b = z.object({ set: z.record(z.string(), z.unknown()).default({}), unset: z.array(z.string()).default([]) }).parse(req.body ?? {});
+  return updateAppConfig(b.set, b.unset);
 });
 
 // ---------- helpers ----------

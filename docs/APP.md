@@ -30,3 +30,17 @@ How the Expo app is organised and the UI rules every screen follows.
 - Screen actions sit at the top and are never repeated at the bottom; adding a button keeps the existing order (the established primary button stays first) and the row must not wrap — use `small` buttons with equal `flex` when three share a row.
 - The drawer footer shows the running version and a small 检查更新 (same check as Settings).
 - 概览 shows 需要处理 from the 6-hourly read-only health check (`/health` screen lists findings with explicit actions).
+
+## Remote config
+
+The server can override app settings without a release (`server/src/appConfig.ts`, app `lib/remoteConfig.ts`). One schema declares each key, its type and default; overrides are stored on the server (`DATA_DIR/app-config.json`), validated, and versioned. Every `/v1` answer carries `x-config-version`; the app refetches `GET /v1/config` when it changes and keeps the last config on disk. Edit with `PUT /admin/config {set: {key: value}, unset: [key]}` or `ops.sh config`.
+
+| Key | Default | Used by |
+|---|---|---|
+| `cacheMaxAgeSec` | `null` | `lib/query.ts`: cap on list freshness (sent as `x-cache-max-age`) |
+| `defaultSources` | nyaa, animetosho, mikan, dmhy, prowlarr | 按来源搜索 / 索引源 when the owner hasn't saved their own |
+| `aiOrb` | `true` | the assistant's floating orb |
+| `hiddenDiscoverSections` | `[]` | 发现 sections (ids from `/v1/discover`) not shown |
+
+Adding a key: declare it in `SCHEMA` and in `DEFAULTS` of `lib/remoteConfig.ts`, read it with `useConfig()`, add a row here.
+

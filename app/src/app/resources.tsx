@@ -4,7 +4,8 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { Card, CopyText, Chip, ChipRow, EmptyState, ErrorBox, IconButton, Loading, PillButton, Row, Screen, Sheet, Tag, TopBar, confirm, styles, tap, toast, toastError, Pull } from "@/components/ui";
-import { BUILTIN_SOURCES, SourceMeta } from "@/components/sources";
+import { SourceMeta } from "@/components/sources";
+import { useConfig } from "@/lib/remoteConfig";
 import { LANG_LABEL, api, type IngestResult, type MediaDetail, type Resource, type SearchName, type SearchResult, type Source } from "@/lib/api";
 import { ago, bytes, ranges } from "@/lib/format";
 import { useQuery } from "@/lib/query";
@@ -32,8 +33,9 @@ export default function ResourcesScreen() {
   const [chosen, setChosen] = useState<string[] | null>(null);
   const keywords = chosen ?? [p.keyword || names[0]?.text || p.title || ""].filter(Boolean);
   const keyword = keywords[0] ?? "";
+  const { defaultSources } = useConfig();
   const [pickedState, setPicked] = useState<string[] | null>(null);
-  const picked = pickedState ?? (mode === "av" || mode === "hentai" ? ADULT_SOURCES[mode] : mySources ?? BUILTIN_SOURCES);
+  const picked = pickedState ?? (mode === "av" || mode === "hentai" ? ADULT_SOURCES[mode] : mySources ?? defaultSources);
   const [sourceSheet, setSourceSheet] = useState(false);
   // Raw searches wait for the names when there's a work, so the first search already uses the best keyword.
   const waiting = mode === "raw" && !!tmdbid && !p.keyword && !chosen && !detail.data && !detail.error;

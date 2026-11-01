@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { ScrollView, Switch, Text, View } from "react-native";
 import { useRouter } from "expo-router";
-import { BUILTIN_SOURCES, SourceMeta } from "@/components/sources";
+import { SourceMeta } from "@/components/sources";
+import { useConfig } from "@/lib/remoteConfig";
 import { Card, ErrorBox, IconButton, Loading, PillButton, Pull, Screen, SectionTitle, TopBar, confirm, styles, toast, toastError } from "@/components/ui";
 import { api, type Source } from "@/lib/api";
 import { invalidate, useQuery } from "@/lib/query";
@@ -16,7 +17,8 @@ export default function IndexersScreen() {
   const q = useQuery("sources", () => api<{ sources: Source[] }>("/v1/sources"), { staleMs: 60_000 });
   const mine = useSettings((s) => s.sources);
   const showAdult = useSettings((s) => s.showAdult);
-  const defaults = mine ?? BUILTIN_SOURCES;
+  const { defaultSources } = useConfig();
+  const defaults = mine ?? defaultSources;
   const [busy, setBusy] = useState<number | null>(null);
   const all = q.data?.sources ?? [];
   const toggleDefault = (id: string) => setSettings({ sources: defaults.includes(id) ? defaults.filter((x) => x !== id) : [...defaults, id] });
