@@ -1,5 +1,5 @@
-// AI settings: API key, endpoint (an Anthropic-compatible base URL), model, web search. Each comes from the
-// server environment (AI_API_KEY, AI_BASE_URL, AI_MODEL) or is set from the app / /admin, which wins and is
+// AI settings: API key, endpoint (an Anthropic-compatible base URL), model, thinking effort, web search. Each comes
+// from the server environment (AI_API_KEY, AI_BASE_URL, AI_MODEL, AI_EFFORT) or is set from the app / /admin, which wins and is
 // stored in DATA_DIR/ai/settings.json (mode 600). Clearing a stored value falls back to the environment.
 //
 // Model calls always go out through AI_PROXY (an http(s):// or socks5:// proxy, e.g. a residential exit);
@@ -8,7 +8,17 @@ import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.ts";
 
-export interface Stored { apiKey?: string; baseUrl?: string; model?: string; webSearch?: boolean }
+export type Effort = "low" | "medium" | "high";
+export interface Stored { apiKey?: string; baseUrl?: string; model?: string; effort?: Effort; webSearch?: boolean }
+
+// How hard the model thinks (adaptive thinking's effort): fewer thinking tokens at lower levels.
+export const DEFAULT_EFFORT: Effort = "medium";
+export const EFFORTS = [
+  { value: "low", label: "低" },
+  { value: "medium", label: "中" },
+  { value: "high", label: "高" },
+];
+const isEffort = (v: unknown): v is Effort => v === "low" || v === "medium" || v === "high";
 
 export const DEFAULT_MODEL = "claude-sonnet-5";
 export const MODELS = [
@@ -28,7 +38,7 @@ async function load(): Promise<Stored> {
   return stored;
 }
 
-export interface Effective { apiKey: string; baseUrl: string; model: string; webSearch: boolean; proxy: string }
+export interface Effective { apiKey: string; baseUrl: string; model: string; effort: Effort; webSearch: boolean; proxy: string }
 
 export async function effective(): Promise<Effective> {
   const s = await load();
@@ -36,6 +46,7 @@ export async function effective(): Promise<Effective> {
     apiKey: s.apiKey || process.env.AI_API_KEY || "",
     baseUrl: s.baseUrl || process.env.AI_BASE_URL || "",
     model: s.model || process.env.AI_MODEL || DEFAULT_MODEL,
+    effort: s.effort ?? (isEffort(process.env.AI_EFFORT) ? process.env.AI_EFFORT : DEFAULT_EFFORT),
     webSearch: s.webSearch ?? process.env.AI_WEB_SEARCH !== "0",
     proxy: process.env.AI_PROXY || "",
   };
@@ -63,6 +74,9 @@ export async function status() {
     baseUrlFrom: s.baseUrl ? "app" : process.env.AI_BASE_URL ? "server" : null,
     model: e.model,
     modelFrom: s.model ? "app" : process.env.AI_MODEL ? "server" : null,
+    effort: e.effort,
+    effortFrom: s.effort ? "app" : isEffort(process.env.AI_EFFORT) ? "server" : null,
+    efforts: EFFORTS,
     webSearch: e.webSearch,
     proxy: e.proxy ? proxyLabel(e.proxy) : null,
     models: MODELS,
@@ -70,7 +84,7 @@ export async function status() {
 }
 
 /** Partial update; "" clears a stored value (back to the server environment). */
-export async function update(patch: { apiKey?: string; baseUrl?: string; model?: string; webSearch?: boolean | null }) {
+export async function update(patch: { apiKey?: string; baseUrl?: string; model?: string; effort?: Effort | null; webSearch?: boolean | null }) {
   const s = { ...(await load()) };
   for (const k of ["apiKey", "baseUrl", "model"] as const) {
     const v = patch[k];
@@ -78,6 +92,8 @@ export async function update(patch: { apiKey?: string; baseUrl?: string; model?:
     if (v.trim()) s[k] = v.trim();
     else delete s[k];
   }
+  if (patch.effort === null) delete s.effort;
+  else if (patch.effort !== undefined) s.effort = patch.effort;
   if (patch.webSearch === null) delete s.webSearch;
   else if (patch.webSearch !== undefined) s.webSearch = patch.webSearch;
   if (s.baseUrl && !/^https?:\/\/[^\s]+$/.test(s.baseUrl)) throw Object.assign(new Error("接口地址要以 http:// 或 https:// 开头"), { statusCode: 400 });

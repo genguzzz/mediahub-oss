@@ -13,7 +13,7 @@ import { colors, radius } from "@/lib/theme";
 const log = logger("ai-settings");
 interface Status {
   configured: boolean; apiKey: string; apiKeyFrom: "app" | "server" | null; baseUrl: string; baseUrlFrom: "app" | "server" | null;
-  model: string; modelFrom: "app" | "server" | null; webSearch: boolean; proxy: string | null; models: { value: string; label: string }[];
+  model: string; modelFrom: "app" | "server" | null; effort: string; effortFrom: "app" | "server" | null; efforts: { value: string; label: string }[]; webSearch: boolean; proxy: string | null; models: { value: string; label: string }[];
 }
 const FROM = { app: "在 App 里设置", server: "来自服务端配置" } as const;
 
@@ -60,6 +60,9 @@ export function AiSettings() {
 
       <Text style={[styles.faint, { marginTop: 14 }]}>默认模型{s.modelFrom ? ` · ${FROM[s.modelFrom]}` : ""}</Text>
       <Segmented value={s.models.some((m) => m.value === s.model) ? s.model : s.models[0].value} options={s.models} onChange={(v) => { tap(); void save({ model: v }); }} style={{ marginTop: 6 }} />
+
+      <Text style={[styles.faint, { marginTop: 14 }]}>思考程度（越低越省 token、越快；复杂的找片和推荐用中或高）{s.effortFrom ? ` · ${FROM[s.effortFrom]}` : ""}</Text>
+      {s.efforts?.length ? <Segmented value={s.effort} options={s.efforts} onChange={(v) => { tap(); void save({ effort: v }); }} style={{ marginTop: 6 }} /> : null}
 
       <View style={{ flexDirection: "row", alignItems: "center", marginTop: 14 }}>
         <View style={{ flex: 1 }}>

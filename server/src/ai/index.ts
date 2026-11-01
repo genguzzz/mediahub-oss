@@ -35,6 +35,7 @@ const Settings = z.object({
   apiKey: z.string().max(400).optional(),
   baseUrl: z.string().max(300).optional(),
   model: z.string().max(80).optional(),
+  effort: z.enum(["low", "medium", "high"]).nullable().optional(),
   webSearch: z.boolean().nullable().optional(),
 });
 

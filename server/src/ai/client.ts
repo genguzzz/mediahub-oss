@@ -3,7 +3,7 @@
 // call from the server's datacenter address.
 import Anthropic from "@anthropic-ai/sdk";
 import { fetch as undiciFetch, ProxyAgent, Socks5ProxyAgent, type Dispatcher } from "undici";
-import { effective } from "./settings.ts";
+import { effective, type Effective } from "./settings.ts";
 
 export class AiNotReady extends Error {
   statusCode = 503;
@@ -22,7 +22,7 @@ function dispatcher(proxy: string): Dispatcher {
 
 let cached: { key: string; client: Anthropic } | null = null;
 
-export async function aiClient(): Promise<{ client: Anthropic; model: string; webSearch: boolean }> {
+export async function aiClient(): Promise<{ client: Anthropic; model: string; effort: Effective["effort"]; webSearch: boolean }> {
   const e = await effective();
   if (!e.apiKey) throw new AiNotReady("还没有配置 AI：设置 → AI 助手里填 API Key");
   if (!e.proxy) throw new AiNotReady("服务端没有配置 AI_PROXY：模型请求必须经代理发出，不会直连");
@@ -33,5 +33,5 @@ export async function aiClient(): Promise<{ client: Anthropic; model: string; we
       undiciFetch(input, { ...init, dispatcher: d })) as unknown as typeof globalThis.fetch;
     cached = { key, client: new Anthropic({ apiKey: e.apiKey, ...(e.baseUrl ? { baseURL: e.baseUrl } : {}), maxRetries: 2, timeout: 180_000, fetch: proxied }) };
   }
-  return { client: cached.client, model: e.model, webSearch: e.webSearch };
+  return { client: cached.client, model: e.model, effort: e.effort, webSearch: e.webSearch };
 }

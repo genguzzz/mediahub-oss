@@ -209,7 +209,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
   const ev = (e: Record<string, unknown>) => emit(id, e);
   let text = "";
   try {
-    const { client, model: defModel, webSearch } = await aiClient();
+    const { client, model: defModel, effort, webSearch } = await aiClient();
     const ctx: ToolCtx = {
       app, adult: context.adult, refs: c.refs,
       saved: (text, replaces) => ev({ type: "memory", text, replaces }),
@@ -229,6 +229,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
         messages,
         tools,
         thinking: { type: "adaptive", display: "summarized" } as never,
+        output_config: { effort } as never,
       }, { signal: run.abort.signal });
       // Map the stream to the app's events; each content block becomes one step.
       const blockStep = new Map<number, Step>();
