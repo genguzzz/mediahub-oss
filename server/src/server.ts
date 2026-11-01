@@ -14,6 +14,7 @@ import { embyEvents, startEmbyEvents } from "./embyEvents.ts";
 import { egressSummary } from "./egress.ts";
 import { cacheHeaders, cacheStatus, clearAllCaches, loadCacheControl, onClearCaches } from "./cacheControl.ts";
 import { configView, loadAppConfig, updateAppConfig } from "./appConfig.ts";
+import { doubanFind, doubanReviews } from "./reviews.ts";
 import { bilibiliLiveSearch, bilibiliLiveStatus, bilibiliUploads, bilibiliUsers, searchVideos, youtubeChannels, youtubeUploads } from "./ugc.ts";
 import { initLog } from "./log.ts";
 
@@ -650,6 +651,21 @@ app.get("/v1/douban/related", async (req) => {
     return { ...brief({ ...m, ...(hit ?? {}) } as MpMedia), doubanRating: m.vote_average ?? null };
   }));
   return { items: await withLib(items) };
+});
+
+// What people say about a work (reviews.ts): Douban stars, want / watched counts, hot short comments, top
+// reviews. By Douban id, or found by title + year (+ season for shows).
+app.get("/v1/reviews", async (req) => {
+  const q = z.object({
+    type: z.enum(["movie", "tv"]).default("movie"), title: z.string().max(200).default(""), year: z.string().max(8).default(""),
+    season: z.coerce.number().int().min(1).max(50).optional(), doubanId: z.string().regex(/^\d{4,10}$/).optional(),
+  }).parse(req.query);
+  if (!q.doubanId && !q.title) throw Object.assign(new Error("需要 title 或 doubanId"), { statusCode: 400 });
+  const subject = q.doubanId
+    ? { id: q.doubanId, type: q.type, title: q.title, year: q.year, rating: null, card: "" }
+    : await remember(`dbfind:${q.type}:${q.title}:${q.year}:${q.season ?? ""}`, 7 * 86400_000, () => doubanFind(q.title, q.year, q.type, q.season));
+  if (!subject) throw Object.assign(new Error("豆瓣上没找到这部作品"), { statusCode: 404 });
+  return remember(`dbrev:${subject.type}:${subject.id}`, 12 * 3600_000, () => doubanReviews(subject));
 });
 
 // Bilibili / YouTube video search (ugc.ts): talks, reviews, explainers, clips, trailers.

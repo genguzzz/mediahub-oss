@@ -276,6 +276,16 @@ export const TOOLS: Record<string, Def> = {
       return { media: r.media, season: r.season, library: r.library, results: list };
     },
   },
+  community_reviews: {
+    tier: "read",
+    description: "大家怎么评价一部作品（不只看分数）：豆瓣的星级分布、看过/在看/想看人数、热门短评（每条带评论者给的星级和有用数）和最有用的长评摘要。按 title + year + type 找（剧集可给 season，豆瓣每季单独一个条目），或直接给 doubanId。推荐前用它确认口碑和适合什么人、有什么争议，比较几部时并行调用；短评就是评论者原话，引用时别改写成事实。",
+    input: z.object({ title: z.string().max(200).optional(), year: z.string().max(8).optional(), type: z.enum(["movie", "tv"]).optional(), season: z.number().int().min(1).max(50).optional(), doubanId: z.string().regex(/^\d{4,10}$/).optional(), limit: z.number().int().min(3).max(20).optional() }),
+    label: (a) => `看「${a.title ?? a.doubanId}」的口碑`,
+    run: async (ctx, a) => {
+      const r = await call(ctx, "GET", `/v1/reviews${qs({ title: a.title, year: a.year, type: a.type, season: a.season, doubanId: a.doubanId })}`);
+      return { ...r, comments: (r.comments ?? []).slice(0, a.limit ?? 12) };
+    },
+  },
   video_search: {
     tier: "read",
     description: "搜 B 站 / YouTube 视频（解说、影评、剪辑、预告、访谈、教程等 UGC）。site = bilibili | youtube | both（默认 both，两边并行）；sort = relevance | latest | views。返回 site、id、标题、UP 主/频道、封面、时长、播放量、发布时间。展示用 video 卡片块。",
