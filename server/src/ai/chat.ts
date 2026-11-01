@@ -104,6 +104,57 @@ export async function getChat(id: number) {
   return { id: c.id, title: c.title, running, interrupted: !running && lastMsg?.role === "user", messages: c.msgs };
 }
 
+// ---------- past conversations, for the assistant's list_chats / read_chat ----------
+
+// Poster-card blocks become their works in order ("[卡片：1.《无双》(movie 531384) 2.…]"), so "上次推荐的第一部" resolves.
+function cardsText(json: string) {
+  try {
+    const list = JSON.parse(json) as { type?: string; tmdbid?: number; title?: string; year?: string }[];
+    return `[卡片：${list.map((w, i) => `${i + 1}.《${w.title}》(${w.year ?? ""} ${w.type} ${w.tmdbid})`).join(" ")}]`;
+  } catch {
+    return "[卡片]";
+  }
+}
+const plain = (m: StoredMsg) => (m.content || m.steps.filter((s) => s.t === "text").map((s) => (s as { v: string }).v).join("\n")).replace(/```media\s*([\s\S]*?)```/g, (_, j: string) => cardsText(j));
+
+async function searchChats(query: string, limit: number, except: number) {
+  await load();
+  const q = query.trim().toLowerCase();
+  const out: { id: number; title: string; updated: string; questions: number; hit?: string }[] = [];
+  for (const c of [...chats.values()].sort((a, b) => b.updated - a.updated)) {
+    if (c.id === except) continue;
+    let hit: string | undefined;
+    if (q) {
+      const m = c.msgs.find((x) => plain(x).toLowerCase().includes(q));
+      if (!m && !c.title.toLowerCase().includes(q)) continue;
+      if (m) {
+        const t = plain(m);
+        const i = t.toLowerCase().indexOf(q);
+        hit = `${m.role === "user" ? "问" : "答"}：…${t.slice(Math.max(0, i - 40), i + 80).replace(/\s+/g, " ")}…`;
+      }
+    }
+    out.push({ id: c.id, title: c.title, updated: new Date(c.updated).toISOString().slice(0, 16), questions: c.msgs.filter((x) => x.role === "user").length, ...(hit ? { hit } : {}) });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+async function readChat(id: number, maxChars: number) {
+  await load();
+  const c = chats.get(id);
+  if (!c) throw new Error(`没有对话 ${id}`);
+  let text = c.msgs.map((m) => `${m.role === "user" ? "主人" : "助手"}：${plain(m)}`).join("\n\n");
+  if (text.length > maxChars) text = `…（前面略）\n${text.slice(-maxChars)}`;
+  return { id: c.id, title: c.title, updated: new Date(c.updated).toISOString().slice(0, 16), text };
+}
+
+/** The last few conversations (titles only), so the assistant knows what was talked about lately. */
+export async function recentTitles(except: number, n = 6) {
+  await load();
+  return [...chats.values()].filter((c) => c.id !== except).sort((a, b) => b.updated - a.updated).slice(0, n)
+    .map((c) => ({ id: c.id, title: c.title, updated: new Date(c.updated).toISOString().slice(0, 10) }));
+}
+
 export async function removeChat(id: number) {
   await load();
   runs.get(id)?.abort.abort();
@@ -188,8 +239,9 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
     const ctx: ToolCtx = {
       app, adult: context.adult, refs: c.refs,
       remember: (t, replaces) => void addNote(t, "ai", replaces).then((n) => ev({ type: "memory", text: n.text, replaces })).catch((e) => log.warn({ err: String(e) }, "remember failed")),
+      chats: { list: (q, n) => searchChats(q, n, id), read: (cid, n) => readChat(cid, n) },
     };
-    const system = systemPrompt({ notes: await getNotes(), context, now: new Date() });
+    const system = systemPrompt({ notes: await getNotes(), recent: await recentTitles(id), context, now: new Date() });
     const tools = toolList(context.adult, webSearch);
     const messages: Msg[] = [...trim(c.history), { role: "user", content: question }];
     for (let round = 0; round < 30; round++) {
@@ -221,7 +273,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
             ev({ type: "text_start" });
           } else if (b.type === "tool_use" || b.type === "server_tool_use") {
             const name = b.name;
-            const s: Step = { t: "tool", id: b.id, name, label: name === "web_search" ? "联网搜索" : labelOf(name, {}), input: "", ok: null };
+            const s: Step = { t: "tool", id: b.id, name, label: name === "web_search" ? "联网搜索" : name === "web_fetch" ? "读取网页" : labelOf(name, {}), input: "", ok: null };
             steps.push(s);
             blockStep.set(e.index, s);
             ev({ type: "tool", id: b.id, name, label: s.label });
@@ -252,16 +304,27 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
       for (const b of msg.content) {
         if (b.type === "server_tool_use") {
           const s = steps.find((x): x is Extract<Step, { t: "tool" }> => x.t === "tool" && x.id === b.id);
-          const q = (b.input as { query?: string })?.query ?? "";
+          const inp = (b.input ?? {}) as { query?: string; url?: string };
           if (s) {
             s.input = JSON.stringify(b.input);
-            s.label = q ? `联网搜索「${q.slice(0, 24)}」` : "联网搜索";
+            if (b.name === "web_fetch") {
+              let host = inp.url ?? "";
+              try { host = new URL(host).hostname.replace(/^www\./, ""); } catch { /* keep as given */ }
+              s.label = host ? `读取网页 ${host}` : "读取网页";
+            } else s.label = inp.query ? `联网搜索「${inp.query.slice(0, 24)}」` : "联网搜索";
           }
           ev({ type: "tool_input", id: b.id, input: JSON.stringify(b.input), label: s?.label });
         } else if (b.type === "web_search_tool_result") {
           const s = steps.find((x): x is Extract<Step, { t: "tool" }> => x.t === "tool" && x.id === b.tool_use_id);
           const ok = Array.isArray(b.content);
           const output = ok ? (b.content as { title?: string; url?: string }[]).slice(0, 8).map((r) => `${r.title ?? ""} ${r.url ?? ""}`).join("\n") : "搜索失败";
+          if (s) Object.assign(s, { ok, output });
+          ev({ type: "tool_done", id: b.tool_use_id, ok, output });
+        } else if (b.type === "web_fetch_tool_result") {
+          const s = steps.find((x): x is Extract<Step, { t: "tool" }> => x.t === "tool" && x.id === b.tool_use_id);
+          const c = b.content as { type?: string; url?: string; error_code?: string; content?: { title?: string } };
+          const ok = c?.type === "web_fetch_result";
+          const output = ok ? `${c.content?.title ?? ""} ${c.url ?? ""}`.trim() : `读取失败${c?.error_code ? `：${c.error_code}` : ""}`;
           if (s) Object.assign(s, { ok, output });
           ev({ type: "tool_done", id: b.tool_use_id, ok, output });
         } else if (b.type === "tool_use") uses.push(b);

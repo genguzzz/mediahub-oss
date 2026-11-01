@@ -18,6 +18,8 @@ export interface ToolCtx {
   /** resources found by find_resources in this chat, by ref ("r1"…) */
   refs: Record<string, Resource>;
   remember: (text: string, replaces?: number) => void;
+  /** past conversations (chat.ts): search titles + questions, read one */
+  chats: { list: (query: string, limit: number) => Promise<unknown>; read: (id: number, maxChars: number) => Promise<unknown> };
 }
 
 export interface Resource {
@@ -324,6 +326,20 @@ export const TOOLS: Record<string, Def> = {
     label: () => "刷新媒体库条目",
     run: async (ctx, a) => call(ctx, "POST", `/v1/emby/item/${a.embyId}/refresh`, {}),
   },
+  list_chats: {
+    tier: "read",
+    description: "主人和你以前的对话：按关键词（片名、话题）搜标题和问答内容，返回对话 id、标题、时间、命中的片段。主人说『上次』『之前问过』『你推荐过的那几部』时先用它，再用 read_chat 看全文。",
+    input: z.object({ query: z.string().optional(), limit: z.number().int().min(1).max(30).optional() }),
+    label: (a) => (a.query ? `翻以前的对话「${a.query}」` : "翻以前的对话"),
+    run: async (ctx, a) => ctx.chats.list(a.query ?? "", a.limit ?? 10),
+  },
+  read_chat: {
+    tier: "read",
+    description: "读一次以前对话的问答原文（id 来自 list_chats；当前对话不用读，已在上下文里）。",
+    input: z.object({ id: z.number().int().positive(), maxChars: z.number().int().min(500).max(12000).optional() }),
+    label: () => "读以前的对话",
+    run: async (ctx, a) => ctx.chats.read(a.id, a.maxChars ?? 6000),
+  },
   remember: {
     tier: "memory",
     description: "记住主人的一条长期偏好或事实（口味、不喜欢的类型、画质/字幕要求、在追的剧等），以后每次对话都会带上。replaces = 要替换的旧偏好编号。只记主人明确表达的、长期有用的内容。",
@@ -340,7 +356,11 @@ export function toolList(adult: boolean, webSearch: boolean): Anthropic.Beta.Bet
   const list: Anthropic.Beta.BetaToolUnion[] = Object.entries(TOOLS)
     .filter(([, d]) => adult || !d.adult)
     .map(([name, d]) => ({ name, description: d.description, input_schema: z.toJSONSchema(d.input) as Anthropic.Beta.BetaTool.InputSchema }));
-  if (webSearch) list.push({ type: "web_search_20260209", name: "web_search", max_uses: 6 } as Anthropic.Beta.BetaToolUnion);
+  if (webSearch) {
+    list.push({ type: "web_search_20260209", name: "web_search", max_uses: 6 } as Anthropic.Beta.BetaToolUnion);
+    // read a page found by search (or a link the owner gave): plot write-ups, Douban / Wikipedia pages
+    list.push({ type: "web_fetch_20260209", name: "web_fetch", max_uses: 5, max_content_tokens: 8000 } as Anthropic.Beta.BetaToolUnion);
+  }
   return list;
 }
 
