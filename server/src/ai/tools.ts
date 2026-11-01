@@ -8,7 +8,7 @@
 //   never  — nothing that deletes, cancels, stops a service, changes configuration or reads credentials
 //            (e.g. /v1/emby/account) is reachable: only the routes listed here are.
 import type { FastifyInstance } from "fastify";
-import type Anthropic from "@anthropic-ai/sdk";
+import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { config } from "../config.ts";
 import { readKnowledge, TOPICS, type Topic } from "./knowledge.ts";
@@ -130,7 +130,7 @@ const Type = z.enum(["movie", "tv"]);
 export const TOOLS: Record<string, Def> = {
   search_media: {
     tier: "read",
-    description: "按一个片名/人名搜索影视（TMDb，经 MoviePilot），返回候选作品（type、tmdbid、年份、评分、简介、是否已入库 inLibrary）和人物（personId）。用于不确定是哪部、要看候选时；已知一串片名用 lookup_titles 一次查完。模糊描述先 web_search 找到片名。",
+    description: "按一个片名/人名搜索影视（TMDb，经 MoviePilot），返回候选作品（type、tmdbid、年份、评分、简介、是否已入库 inLibrary）和人物（personId）。用于不确定是哪部、要看候选时；已知一串片名用 lookup_titles 一次查完。模糊描述先 WebSearch 找到片名。",
     input: z.object({ query: z.string().min(1).describe("片名或人名"), page: z.number().int().min(1).max(5).optional() }),
     label: (a) => `搜索「${a.query}」`,
     run: async (ctx, a) => {
@@ -150,7 +150,7 @@ export const TOOLS: Record<string, Def> = {
   },
   douban_related: {
     tier: "read",
-    description: "豆瓣『喜欢这部的人也喜欢』：给豆瓣条目 id（从 web_search 搜『片名 豆瓣』的 movie.douban.com/subject/<id> 链接里拿），返回相似作品，已对上 TMDb（tmdbid、海报、豆瓣评分、是否已入库）。主人提到豆瓣、或想要华语口碑向推荐时优先用。",
+    description: "豆瓣『喜欢这部的人也喜欢』：给豆瓣条目 id（从 WebSearch 搜『片名 豆瓣』的 movie.douban.com/subject/<id> 链接里拿），返回相似作品，已对上 TMDb（tmdbid、海报、豆瓣评分、是否已入库）。主人提到豆瓣、或想要华语口碑向推荐时优先用。",
     input: z.object({ doubanId: z.string().regex(/^\d{4,10}$/), type: Type }),
     label: () => "读豆瓣相似推荐",
     run: async (ctx, a) => ((await call(ctx, "GET", `/v1/douban/related${qs({ id: a.doubanId, type: a.type })}`)).items ?? []).map((m: any) => ({ ...work(ctx, m, 40), ...(m.doubanRating ? { douban: m.doubanRating } : {}) })),
@@ -695,16 +695,18 @@ export const TOOLS: Record<string, Def> = {
   },
 };
 
-export function toolList(adult: boolean, webSearch: boolean): Anthropic.Beta.BetaToolUnion[] {
-  const list: Anthropic.Beta.BetaToolUnion[] = Object.entries(TOOLS)
-    .filter(([, d]) => adult || !d.adult)
-    .map(([name, d]) => ({ name, description: d.description, input_schema: z.toJSONSchema(d.input) as Anthropic.Beta.BetaTool.InputSchema }));
-  if (webSearch) {
-    list.push({ type: "web_search_20260209", name: "web_search", max_uses: 6 } as Anthropic.Beta.BetaToolUnion);
-    // read a page found by search (or a link the owner gave): plot write-ups, Douban / Wikipedia pages
-    list.push({ type: "web_fetch_20260209", name: "web_fetch", max_uses: 5, max_content_tokens: 8000 } as Anthropic.Beta.BetaToolUnion);
-  }
-  return list;
+/** Our tools as the in-process MCP server the Agent SDK runs (tool names reach the model as mcp__mediahub__<name>). */
+export function mcpServer(ctx: ToolCtx) {
+  return createSdkMcpServer({
+    name: "mediahub",
+    version: "1.0.0",
+    tools: Object.entries(TOOLS)
+      .filter(([, d]) => ctx.adult || !d.adult)
+      .map(([name, d]) => tool(name, d.description, d.input.shape, async (args) => {
+        const r = await runTool(ctx, name, args);
+        return { content: [{ type: "text" as const, text: r.content }], ...(r.ok ? {} : { isError: true }) };
+      })),
+  });
 }
 
 export function labelOf(name: string, input: unknown): string {

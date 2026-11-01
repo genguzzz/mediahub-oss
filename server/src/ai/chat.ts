@@ -1,23 +1,23 @@
 // Chats with the assistant (same protocol as the app's other AI clients): a turn runs detached from the
 // HTTP request, its events are buffered and fanned out over Server-Sent Events, and the app can re-attach
 // (/stream replays the turn from its start), stop it, or retry a question left unanswered by a restart.
-// Storage: DATA_DIR/ai/chats/<id>.json (messages for the app + the model's own history, trimmed) and
+// Storage: DATA_DIR/ai/chats/<id>.json (messages for the app + the Agent SDK session id; the session itself is
+// the SDK's transcript under DATA_DIR/ai/claude) and
 // memory.ts (profile always in the prompt, archival memories recalled per question).
 import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
-import type Anthropic from "@anthropic-ai/sdk";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.ts";
 import { logger } from "../log.ts";
-import { aiClient } from "./client.ts";
+import { agentOptions, aiConfig } from "./client.ts";
 import { costOf, type Usage } from "./settings.ts";
 import { systemPrompt } from "./prompt.ts";
 import { lookup as lookupCard, refsIn, type Card, type CardStore } from "./cards.ts";
-import { labelOf, runTool, toolList, type Resource, type ToolCtx } from "./tools.ts";
+import { labelOf, mcpServer, type Resource, type ToolCtx } from "./tools.ts";
 import { profile, recall } from "./memory.ts";
 
 const log = logger("ai");
-type Msg = Anthropic.Beta.BetaMessageParam;
 
 export type Step =
   | { t: "text"; v: string }
@@ -25,7 +25,7 @@ export type Step =
   | { t: "tool"; id: string; name: string; label: string; input: string; ok: boolean | null; output?: string };
 
 interface StoredMsg { id: number; ts: number; role: "user" | "assistant"; content: string; steps: Step[]; latencyMs?: number; error?: string; costUsd?: number; usage?: Usage; cards?: Record<string, Card | null> }
-interface Chat { id: number; created: number; updated: number; title: string; msgs: StoredMsg[]; history: Msg[]; refs: Record<string, Resource>; cards?: CardStore }
+interface Chat { id: number; created: number; updated: number; title: string; msgs: StoredMsg[]; /** the Agent SDK session (resumed each turn) */ sessionId?: string; /** pre-SDK model history, unused now */ history?: unknown[]; refs: Record<string, Resource>; cards?: CardStore }
 export interface Context {
   adult: boolean; screen?: string;
   /** this turn's thinking effort and web search, picked in the app; unset = the server's settings */
@@ -194,7 +194,7 @@ export async function startChat(app: FastifyInstance, req: { chatId?: number; me
   const now = Date.now();
   if (!c) {
     const id = Math.max(0, ...chats.keys()) + 1;
-    c = { id, created: now, updated: now, title: req.message.slice(0, 40), msgs: [], history: [], refs: {} };
+    c = { id, created: now, updated: now, title: req.message.slice(0, 40), msgs: [], refs: {} };
     chats.set(id, c);
   }
   let question = req.message.trim();
@@ -223,13 +223,27 @@ export async function startChat(app: FastifyInstance, req: { chatId?: number; me
   return c.id;
 }
 
-/** Keep the model's history bounded: the last ~40 messages, starting at a plain user question. */
-function trim(h: Msg[]): Msg[] {
-  let start = Math.max(0, h.length - 40);
-  while (start < h.length && !(h[start].role === "user" && typeof h[start].content === "string")) start++;
-  return h.slice(start);
+// Chats made before the Agent SDK have no session: their last exchanges go into the first question once.
+function earlier(c: Chat): string {
+  const past = c.msgs.slice(0, -1).slice(-8).map((m) => `${m.role === "user" ? "主人" : "你"}：${plain(m).slice(0, 600)}`).join("\n");
+  return past ? `<earlier_in_this_chat>\n${past}\n</earlier_in_this_chat>\n\n` : "";
 }
 
+const toolName = (n: string) => n.replace(/^mcp__mediahub__/, "");
+const webLabel = (name: string, input: { query?: string; url?: string }) => {
+  if (name === "WebFetch") {
+    let host = input.url ?? "";
+    try { host = new URL(host).hostname.replace(/^www\./, ""); } catch { /* keep as given */ }
+    return host ? `读取网页 ${host}` : "读取网页";
+  }
+  return input.query ? `联网搜索「${input.query.slice(0, 24)}」` : "联网搜索";
+};
+const isWeb = (n: string) => n === "WebSearch" || n === "WebFetch";
+const resultText = (c: unknown): string => typeof c === "string" ? c : Array.isArray(c) ? c.map((b: any) => (b?.type === "text" ? b.text : "")).join("") : "";
+
+// One turn = one Claude Agent SDK query (the Claude Code harness, like OKX Helper): our tools are an in-process
+// MCP server, the conversation is the SDK session (resumed by id, compacted by the harness when long), so a
+// stopped or failed turn keeps its context too. The session id is stored as soon as it is known.
 async function turn(app: FastifyInstance, c: Chat, question: string, model: string | undefined, context: Context, run: Run) {
   const t0 = Date.now();
   const steps: Step[] = [];
@@ -253,16 +267,17 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
       }));
     }
   };
-  // the model's history for this turn; kept even when the turn is stopped or fails, so the next question has its context
-  let messages: Msg[] = [...trim(c.history), { role: "user", content: question }];
-  const usage: Usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, searches: 0 };
+  let usage: Usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, searches: 0 };
   let usedModel = model ?? "";
+  let sdkCost: number | null = null;
   const priced = () => {
-    const c = costOf(usedModel, usage);
+    const c = sdkCost ?? costOf(usedModel, usage);
     return { usage, ...(c != null ? { costUsd: Math.round(c * 10000) / 10000 } : {}) };
   };
+  const findTool = (tid: string) => steps.find((x): x is Extract<Step, { t: "tool" }> => x.t === "tool" && x.id === tid);
   try {
-    const { client, model: defModel, effort, webSearch } = await aiClient();
+    const e = await aiConfig();
+    usedModel = model || e.model;
     const ctx: ToolCtx = {
       app, adult: context.adult, refs: c.refs, cards: (c.cards ??= {}),
       saved: (text, replaces) => ev({ type: "memory", text, replaces }),
@@ -280,29 +295,32 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
       }),
       chats: { list: (q, n) => searchChats(q, n, id), read: (cid, n) => readChat(cid, n) },
     };
-    // memory: the core profile always; archival memories relevant to this question (and the chat's title)
+    // memory: the core profile always; archival memories relevant to this question (and the chat's title).
+    // The stable part is the system prompt; time, memory, recent chats and the screen go with the question.
     const [core, recalled] = await Promise.all([profile(), recall(`${c.title} ${question}`)]);
     const system = systemPrompt({ profile: core, recalled, recent: await recentTitles(id), context, now: new Date() });
-    const tools = toolList(context.adult, context.webSearch ?? webSearch);
-    usedModel = model || defModel;
-    for (let round = 0; round < 30; round++) {
-      if (run.abort.signal.aborted) throw new Error("已停止");
-      const stream = client.beta.messages.stream({
-        model: model || defModel,
-        max_tokens: 16_000,
-        system: [{ type: "text", text: system.stable, cache_control: { type: "ephemeral" } }, { type: "text", text: system.turn }],
-        messages,
-        tools,
-        // "off": no thinking at all; otherwise adaptive thinking at this effort
-        ...((context.effort ?? effort) === "off"
-          ? { thinking: { type: "disabled" } as never }
-          : { thinking: { type: "adaptive", display: "summarized" } as never, output_config: { effort: context.effort ?? effort } as never }),
-      }, { signal: run.abort.signal });
-      // Map the stream to the app's events; each content block becomes one step.
-      const blockStep = new Map<number, Step>();
-      const thinkStart = new Map<number, number>();
-      stream.on("streamEvent", (e) => {
-        if (e.type === "content_block_start") {
+    const web = context.webSearch ?? e.webSearch;
+    const effort = context.effort ?? e.effort;
+    const prompt = `<turn_context>\n${system.turn}\n</turn_context>\n\n${c.sessionId ? "" : earlier(c)}${question}`;
+    const stream = query({
+      prompt,
+      options: agentOptions({ e, model: usedModel, system: system.stable, web, effort, resume: c.sessionId, abort: run.abort, mcp: mcpServer(ctx) }),
+    });
+    // a content block's step, by its index in the current API message (reset at each message_start)
+    let blockStep = new Map<number, Step>();
+    const thinkStart = new Map<number, number>();
+    for await (const m of stream) {
+      if (m.session_id && m.session_id !== c.sessionId) {
+        c.sessionId = m.session_id;
+        void save(c);
+      }
+      if ("parent_tool_use_id" in m && m.parent_tool_use_id) continue;
+      if (m.type === "stream_event") {
+        const e = m.event;
+        if (e.type === "message_start") {
+          blockStep = new Map();
+          thinkStart.clear();
+        } else if (e.type === "content_block_start") {
           const b = e.content_block;
           if (b.type === "thinking") {
             const s: Step = { t: "think", v: "" };
@@ -311,8 +329,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
             thinkStart.set(e.index, Date.now());
             ev({ type: "think_start" });
           } else if (b.type === "text") {
-            // web search answers come as many text blocks (split at each citation): a block right after
-            // another text block continues it, so a sentence and its 。 stay in one paragraph
+            // a text block right after another continues it (web search answers split at each citation)
             const prev = steps[steps.length - 1];
             if (prev?.t === "text") blockStep.set(e.index, prev);
             else {
@@ -322,8 +339,8 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
               ev({ type: "text_start" });
             }
           } else if (b.type === "tool_use" || b.type === "server_tool_use") {
-            const name = b.name;
-            const s: Step = { t: "tool", id: b.id, name, label: name === "web_search" ? "联网搜索" : name === "web_fetch" ? "读取网页" : labelOf(name, {}), input: "", ok: null };
+            const name = toolName(b.name);
+            const s: Step = { t: "tool", id: b.id, name, label: isWeb(name) ? webLabel(name, {}) : labelOf(name, {}), input: "", ok: null };
             steps.push(s);
             blockStep.set(e.index, s);
             ev({ type: "tool", id: b.id, name, label: s.label });
@@ -346,77 +363,49 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
             ev({ type: "think_end", ms: s.ms });
           }
         }
-      });
-      const msg = await stream.finalMessage();
-      // every round is billed: add up its tokens (and web searches) for the turn's usage and cost
-      const u = msg.usage as Anthropic.Beta.BetaUsage | undefined;
-      if (u) {
-        usage.input += u.input_tokens ?? 0;
-        usage.output += u.output_tokens ?? 0;
-        usage.cacheWrite += u.cache_creation_input_tokens ?? 0;
-        usage.cacheRead += u.cache_read_input_tokens ?? 0;
-        usage.searches += u.server_tool_use?.web_search_requests ?? 0;
-      }
-      if (msg.stop_reason === "refusal") throw new Error("模型拒绝回答这个问题");
-      // Tool inputs are complete only now: label them, run ours, mark web searches done.
-      const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
-      const uses: Anthropic.Beta.BetaToolUseBlock[] = [];
-      for (const b of msg.content) {
-        if (b.type === "server_tool_use") {
-          const s = steps.find((x): x is Extract<Step, { t: "tool" }> => x.t === "tool" && x.id === b.id);
-          const inp = (b.input ?? {}) as { query?: string; url?: string };
-          if (s) {
-            s.input = JSON.stringify(b.input);
-            if (b.name === "web_fetch") {
-              let host = inp.url ?? "";
-              try { host = new URL(host).hostname.replace(/^www\./, ""); } catch { /* keep as given */ }
-              s.label = host ? `读取网页 ${host}` : "读取网页";
-            } else s.label = inp.query ? `联网搜索「${inp.query.slice(0, 24)}」` : "联网搜索";
-          }
-          ev({ type: "tool_input", id: b.id, input: JSON.stringify(b.input), label: s?.label });
-        } else if (b.type === "web_search_tool_result") {
-          const s = steps.find((x): x is Extract<Step, { t: "tool" }> => x.t === "tool" && x.id === b.tool_use_id);
-          const ok = Array.isArray(b.content);
-          const output = ok ? (b.content as { title?: string; url?: string }[]).slice(0, 8).map((r) => `${r.title ?? ""} ${r.url ?? ""}`).join("\n") : "搜索失败";
+      } else if (m.type === "assistant") {
+        // complete tool inputs: label them
+        for (const b of m.message.content) {
+          if (b.type !== "tool_use") continue;
+          const name = toolName(b.name);
+          const input = JSON.stringify(b.input);
+          const label = isWeb(name) ? webLabel(name, b.input as never) : labelOf(name, b.input);
+          const s = findTool(b.id);
+          if (s) Object.assign(s, { label, input });
+          else steps.push({ t: "tool", id: b.id, name, label, input, ok: null });
+          ev({ type: "tool_input", id: b.id, input, label });
+        }
+      } else if (m.type === "user") {
+        const content = m.message.content;
+        if (!Array.isArray(content)) continue;
+        for (const b of content) {
+          if (b.type !== "tool_result") continue;
+          const s = findTool(b.tool_use_id);
+          const ok = !b.is_error;
+          const full = resultText(b.content);
+          const output = full.length > 3000 ? `${full.slice(0, 3000)}…` : full;
           if (s) Object.assign(s, { ok, output });
           ev({ type: "tool_done", id: b.tool_use_id, ok, output });
-        } else if (b.type === "web_fetch_tool_result") {
-          const s = steps.find((x): x is Extract<Step, { t: "tool" }> => x.t === "tool" && x.id === b.tool_use_id);
-          const c = b.content as { type?: string; url?: string; error_code?: string; content?: { title?: string } };
-          const ok = c?.type === "web_fetch_result";
-          const output = ok ? `${c.content?.title ?? ""} ${c.url ?? ""}`.trim() : `读取失败${c?.error_code ? `：${c.error_code}` : ""}`;
-          if (s) Object.assign(s, { ok, output });
-          ev({ type: "tool_done", id: b.tool_use_id, ok, output });
-        } else if (b.type === "tool_use") uses.push(b);
+          if (s) log.info({ chat: id, tool: s.name, ok, len: full.length }, "ai tool");
+        }
+      } else if (m.type === "result") {
+        const u = m.usage;
+        usage = {
+          input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0,
+          cacheRead: u.cache_read_input_tokens ?? 0, searches: u.server_tool_use?.web_search_requests ?? 0,
+        };
+        sdkCost = typeof m.total_cost_usd === "number" ? m.total_cost_usd : null;
+        if (m.subtype !== "success" || m.is_error) {
+          const detail = "errors" in m && Array.isArray(m.errors) ? m.errors.join("; ") : "result" in m ? String(m.result ?? "") : "";
+          throw new Error(m.subtype === "error_max_turns" ? "步骤太多，没做完" : detail || `模型调用失败（${m.subtype}）`);
+        }
       }
-      if (msg.stop_reason === "pause_turn") {
-        messages.push({ role: "assistant", content: msg.content });
-        continue;
-      }
-      if (!uses.length) {
-        messages.push({ role: "assistant", content: msg.content });
-        break;
-      }
-      if (msg.stop_reason === "max_tokens") throw new Error("回答太长被截断了");
-      await Promise.all(uses.map(async (u) => {
-        const s = steps.find((x): x is Extract<Step, { t: "tool" }> => x.t === "tool" && x.id === u.id);
-        const label = labelOf(u.name, u.input);
-        const input = JSON.stringify(u.input);
-        if (s) Object.assign(s, { label, input });
-        ev({ type: "tool_input", id: u.id, input, label });
-        const r = await runTool(ctx, u.name, u.input);
-        const output = r.content.length > 3000 ? `${r.content.slice(0, 3000)}…` : r.content;
-        if (s) Object.assign(s, { ok: r.ok, output });
-        ev({ type: "tool_done", id: u.id, ok: r.ok, output });
-        log.info({ chat: id, tool: u.name, ok: r.ok, len: r.content.length }, "ai tool");
-        results.push({ type: "tool_result", tool_use_id: u.id, content: r.content, ...(r.ok ? {} : { is_error: true }) });
-      }));
-      messages.push({ role: "assistant", content: msg.content }, { role: "user", content: uses.map((u) => results.find((r) => r.tool_use_id === u.id)!) });
     }
+    if (run.abort.signal.aborted) throw new Error("已停止");
+    for (const s of steps) if (s.t === "tool" && s.ok == null) s.ok = true;
     showCards();
     await Promise.race([Promise.all(pending), new Promise((r) => setTimeout(r, 8000))]);
     const latencyMs = Date.now() - t0;
-    c.history = messages;
     const p = priced();
     c.msgs.push({ id: c.msgs.length + 1, ts: Date.now(), role: "assistant", content: text, steps: steps.filter((s) => s.t !== "text" || s.v), latencyMs, ...p, ...(Object.keys(shown).length ? { cards: shown } : {}) });
     c.updated = Date.now();
@@ -426,9 +415,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
   } catch (e) {
     const err = run.abort.signal.aborted ? "已停止" : e instanceof Error ? e.message : String(e);
     if (!run.abort.signal.aborted) log.warn({ chat: id, err }, "ai turn failed");
-    // completed rounds are valid pairs (a round's assistant message is added with its tool results), so the
-    // history ends on the question or on tool results: close it with what was said and how it ended
-    c.history = [...messages, { role: "assistant", content: `${text.trim() ? `${text.trim()}\n\n` : ""}（这次回答没有完成：${err}）` }];
+    for (const s of steps) if (s.t === "tool" && s.ok == null) s.ok = false;
     c.msgs.push({ id: c.msgs.length + 1, ts: Date.now(), role: "assistant", content: text, steps: steps.filter((s) => s.t !== "text" || s.v), error: err, latencyMs: Date.now() - t0, ...priced(), ...(Object.keys(shown).length ? { cards: shown } : {}) });
     c.updated = Date.now();
     await save(c);
