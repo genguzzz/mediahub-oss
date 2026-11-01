@@ -27,7 +27,7 @@ interface Chat { id: number; created: number; updated: number; title: string; ms
 export interface Context {
   adult: boolean; screen?: string;
   /** this turn's thinking effort and web search, picked in the app; unset = the server's settings */
-  effort?: "low" | "medium" | "high"; webSearch?: boolean;
+  effort?: "off" | "low" | "medium" | "high"; webSearch?: boolean;
 }
 
 const dir = path.join(config.dataDir, "ai");
@@ -257,8 +257,10 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
         system: [{ type: "text", text: system.stable, cache_control: { type: "ephemeral" } }, { type: "text", text: system.turn }],
         messages,
         tools,
-        thinking: { type: "adaptive", display: "summarized" } as never,
-        output_config: { effort: context.effort ?? effort } as never,
+        // "off": no thinking at all; otherwise adaptive thinking at this effort
+        ...((context.effort ?? effort) === "off"
+          ? { thinking: { type: "disabled" } as never }
+          : { thinking: { type: "adaptive", display: "summarized" } as never, output_config: { effort: context.effort ?? effort } as never }),
       }, { signal: run.abort.signal });
       // Map the stream to the app's events; each content block becomes one step.
       const blockStep = new Map<number, Step>();

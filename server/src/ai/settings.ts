@@ -8,22 +8,24 @@ import { mkdir, readFile, writeFile, chmod } from "node:fs/promises";
 import path from "node:path";
 import { config } from "../config.ts";
 
-export type Effort = "low" | "medium" | "high";
+export type Effort = "off" | "low" | "medium" | "high";
 export interface Stored { apiKey?: string; baseUrl?: string; model?: string; effort?: Effort; webSearch?: boolean }
 
-// How hard the model thinks (adaptive thinking's effort): fewer thinking tokens at lower levels.
+// How hard the model thinks (adaptive thinking's effort; "off" = no thinking): fewer thinking tokens at lower
+// levels. The app's model menu shows these lists as given (chatOptions), so every app has the same choices.
 export const DEFAULT_EFFORT: Effort = "medium";
 export const EFFORTS = [
-  { value: "low", label: "低" },
-  { value: "medium", label: "中" },
-  { value: "high", label: "高" },
+  { value: "off", label: "关", hint: "不思考，最快最省，适合简单问答" },
+  { value: "low", label: "低", hint: "想得少，省 token" },
+  { value: "medium", label: "中", hint: "平衡，大多数找片和推荐" },
+  { value: "high", label: "高", hint: "想得最久，复杂的推荐和排查" },
 ];
-const isEffort = (v: unknown): v is Effort => v === "low" || v === "medium" || v === "high";
+export const isEffort = (v: unknown): v is Effort => EFFORTS.some((e) => e.value === v);
 
 export const DEFAULT_MODEL = "claude-sonnet-5";
 export const MODELS = [
-  { value: "claude-sonnet-5", label: "Sonnet" },
-  { value: "claude-opus-5-5", label: "Opus" },
+  { value: "claude-sonnet-5", label: "Sonnet", hint: "快，日常够用" },
+  { value: "claude-opus-5-5", label: "Opus", hint: "最强，慢一些、更费 token" },
 ];
 
 const dir = path.join(config.dataDir, "ai");
@@ -102,4 +104,16 @@ export async function update(patch: { apiKey?: string; baseUrl?: string; model?:
   await chmod(file, 0o600);
   stored = s;
   return status();
+}
+
+/** The app's model menu: models, thinking levels (the first, 默认 = "", sends nothing), web search default. */
+export async function chatOptions() {
+  const e = await effective();
+  const now = EFFORTS.find((x) => x.value === e.effort)?.label ?? e.effort;
+  return {
+    models: MODELS,
+    efforts: [{ value: "", label: "默认", hint: `不指定，用服务器的设置（现在是${now}）` }, ...EFFORTS],
+    webSearch: { default: e.webSearch, hint: "查剧情、新片时搜网页；关掉更省" },
+    defaults: { model: e.model, effort: "" },
+  };
 }

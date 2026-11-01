@@ -4,7 +4,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { attach, castResult, getChat, listChats, removeChat, startChat, stopChat } from "./chat.ts";
 import { allMemories, forget, saveMemory } from "./memory.ts";
-import { status, update } from "./settings.ts";
+import { chatOptions, status, update } from "./settings.ts";
 
 function sse(reply: FastifyReply, chatId: number, onClose?: () => void) {
   reply.hijack();
@@ -35,12 +35,14 @@ const Settings = z.object({
   apiKey: z.string().max(400).optional(),
   baseUrl: z.string().max(300).optional(),
   model: z.string().max(80).optional(),
-  effort: z.enum(["low", "medium", "high"]).nullable().optional(),
+  effort: z.enum(["off", "low", "medium", "high"]).nullable().optional(),
   webSearch: z.boolean().nullable().optional(),
 });
 
 export function registerAi(app: FastifyInstance) {
   app.get("/v1/ai/settings", async () => status());
+  // the chat's model menu (both apps render these lists as given)
+  app.get("/v1/ai/options", async () => chatOptions());
   app.put("/v1/ai/settings", async (req) => update(Settings.parse(req.body ?? {})));
   app.get("/admin/ai/settings", async () => status());
   app.put("/admin/ai/settings", async (req) => update(Settings.parse(req.body ?? {})));
@@ -54,7 +56,7 @@ export function registerAi(app: FastifyInstance) {
       model: z.string().max(80).optional(),
       adult: z.boolean().default(false),
       screen: z.string().max(300).optional(),
-      effort: z.enum(["low", "medium", "high"]).optional(),
+      effort: z.enum(["off", "low", "medium", "high"]).optional(),
       webSearch: z.boolean().optional(),
     }).parse(req.body ?? {});
     const id = await startChat(app, { chatId: b.chatId || undefined, message: b.message, retry: b.retry, voice: b.voice, model: b.model, context: { adult: b.adult, screen: b.screen, effort: b.effort, webSearch: b.webSearch } });

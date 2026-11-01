@@ -21,16 +21,10 @@ export interface Msg { id?: number; role: "user" | "assistant"; parts: Part[]; e
 export interface ChatSummary { id: number; title: string; updated: number; costUsd: number; running: boolean }
 export interface Note { id: number; ts: number; text: string; by: "ai" | "owner" }
 
-export const AI_MODELS = [
-  { value: "claude-sonnet-5", label: "Sonnet", hint: "快，日常够用" },
-  { value: "claude-opus-5-5", label: "Opus", hint: "最强，慢一些、更费 token" },
-];
-export type Effort = "low" | "medium" | "high";
-export const AI_EFFORTS: { value: Effort; label: string; hint: string }[] = [
-  { value: "low", label: "低", hint: "最省 token、最快，适合简单问答" },
-  { value: "medium", label: "中", hint: "平衡，大多数找片和推荐" },
-  { value: "high", label: "高", hint: "想得最久，复杂的推荐和排查" },
-];
+// The model menu's choices (models, thinking levels, web search default) come from the server — see
+// components/ai/ModelMenu.tsx. Here only what this phone picked is kept.
+export interface ChatOption { value: string; label: string; hint: string }
+export interface ChatOptions { models: ChatOption[]; efforts: ChatOption[]; webSearch: { default: boolean; hint: string }; defaults: { model: string; effort: string } }
 
 export const ai = {
   /** the AI sheet is on screen */
@@ -51,10 +45,9 @@ export const ai = {
   interrupted: false,
   /** the screen the chat was opened from ("影视详情：绝命毒师（tv 1396）"), sent as context */
   screen: "",
-  /** model for the next turn (remembered on this device) */
-  model: "claude-sonnet-5",
-  /** thinking effort and web search for the next turns, picked on this device; null = the server's default */
-  effort: null as Effort | null,
+  /** model, thinking effort, web search picked on this device; null = not sent, the server's default applies */
+  model: null as string | null,
+  effort: null as string | null,
   webSearch: null as boolean | null,
   notes: [] as Note[],
 };
@@ -111,13 +104,13 @@ function setChat(id: number) {
 function setPending(id: number) {
   put(PENDING_KEY, id ? String(id) : "");
 }
-export function setModel(m: string) {
-  ai.model = m;
-  put(MODEL_KEY, m);
+export function setModel(m: string | null) {
+  ai.model = m || null;
+  put(MODEL_KEY, m ?? "");
   emit();
 }
-export function setEffort(e: Effort | null) {
-  ai.effort = e;
+export function setEffort(e: string | null) {
+  ai.effort = e || null;
   put(EFFORT_KEY, e ?? "");
   emit();
 }
@@ -384,7 +377,7 @@ export async function send(text: string, retrying = false, voice = false) {
   ai.reconnecting = false;
   syncSeq++;
   track("ai.send", { model: ai.model, screen: ai.screen ? 1 : undefined, retry: retrying || undefined, len: text.length });
-  const body = JSON.stringify({ chatId: ai.chatId || 0, message: text, screen: ai.screen || undefined, model: ai.model, effort: ai.effort ?? undefined, webSearch: ai.webSearch ?? undefined, retry: retrying, voice: voice || undefined, adult: getSettings().showAdult });
+  const body = JSON.stringify({ chatId: ai.chatId || 0, message: text, screen: ai.screen || undefined, model: ai.model ?? undefined, effort: ai.effort ?? undefined, webSearch: ai.webSearch ?? undefined, retry: retrying, voice: voice || undefined, adult: getSettings().showAdult });
   const f = await streamFetch();
   const end = await stream((signal) => kfetch("/v1/ai/chat", { method: "POST", body, headers: { "Content-Type": "application/json", accept: "text/event-stream" }, signal }, f));
   if (end === "replaced") return;
@@ -547,11 +540,11 @@ export async function initAi() {
   started = true;
   try {
     const [c, p, m, e, w] = await Promise.all([kv.get(CHAT_KEY), kv.get(PENDING_KEY), kv.get(MODEL_KEY), kv.get(EFFORT_KEY), kv.get(WEB_KEY)]);
-    if (e && AI_EFFORTS.some((x) => x.value === e)) ai.effort = e as Effort;
+    if (e) ai.effort = e;
     if (w === "1" || w === "0") ai.webSearch = w === "1";
     savedVals[CHAT_KEY] = c ?? "";
     savedVals[PENDING_KEY] = p ?? "";
-    if (m && AI_MODELS.some((x) => x.value === m)) ai.model = m;
+    if (m) ai.model = m;
   } catch (e) {
     log.warn("load failed", e);
   }
