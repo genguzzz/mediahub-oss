@@ -38,6 +38,7 @@ One task per torrent hash for every kind (`meta.kind`: media / av / hentai). Six
 
 - **Emby push**: Emby sends `LibraryChanged` only to signed-in user sessions (an API-key socket gets nothing; Webhooks need Premiere). The server signs in with the app's Emby account (`server/src/embyEvents.ts`), debounces 3 s and forwards item ids to `/hub/emby/changed`. The plugin confirms waiting tasks for those folders and identifies new 里番 by their `[bangumiid=N]` at once. Status: `GET /admin/emby/events`.
 - **Stats** (`/v1/stats`, 概览 存储/媒体库): Emby counts per library, 115 space, NAS download disk, task counts. Refreshed only when requested and the cache is older than 10 min; one snapshot per day.
+- **Cache control** (`server/src/cacheControl.ts`): every `/v1` answer carries `x-cache-epoch` and, when set, `x-cache-max-age` (seconds). The app (`lib/query.ts` `noteCacheHeaders`) drops its whole query cache — memory and the disk mirror — when the epoch changes, and never keeps a list fresh longer than max-age. Bump the epoch (also empties the server's own caches) from 设置 → 清除缓存 (`POST /v1/cache/clear`) or `POST /admin/cache {clear:true}`; set the cap with `{maxAge: N}` (`null` removes it). Use it when bad upstream data was cached (2026-11-01: vandalised TMDb titles).
 - **Health** (`/v1/health`, 概览 需要处理): the only scheduled job, every 6 h, read-only — unconfirmed scrapes, stalled and failed tasks, MDC failures, 里番 whose Emby id differs from the folder, missing posters. Fixes are explicit (`/v1/health/fix`: identify / re-check).
 
 ## Traps

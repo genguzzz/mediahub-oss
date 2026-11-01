@@ -84,6 +84,61 @@ export function mutate<T>(key: string, fn: (d: T | undefined) => T | undefined) 
   set(key, { data: fn(cur?.data) });
 }
 
+// ---------- clearing, and the server's say over the cache ----------
+// clearAll empties memory and the disk mirror; mounted screens load again at once (generation bump). The server
+// sends `x-cache-epoch` with every answer: a new epoch means "drop what you cached" (api.ts → noteCacheHeaders),
+// and `x-cache-max-age` caps how long any list counts as fresh.
+let generation = 0;
+const genListeners = new Set<() => void>();
+let maxAgeMs = Infinity;
+const epochFile = Platform.OS === "web" ? null : new File(Paths.document, "cache-epoch.txt");
+let epoch: string | null = (() => {
+  try {
+    return epochFile?.exists ? epochFile.textSync().trim() : null;
+  } catch {
+    return null;
+  }
+})();
+
+export function clearAll() {
+  entries.clear();
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = null;
+  try {
+    if (store?.exists) store.delete();
+  } catch {
+    // nothing to delete
+  }
+  generation++;
+  genListeners.forEach((l) => l());
+  for (const k of listeners.keys()) emit(k);
+}
+
+export function noteCacheHeaders(epochHeader: string | null, maxAgeHeader: string | null) {
+  const secs = Number(maxAgeHeader);
+  maxAgeMs = maxAgeHeader && secs > 0 ? secs * 1000 : Infinity;
+  if (!epochHeader || epochHeader === epoch) return;
+  const first = epoch === null;
+  epoch = epochHeader;
+  try {
+    if (epochFile && !epochFile.exists) epochFile.create({ intermediates: true });
+    epochFile?.write(epochHeader);
+  } catch {
+    // keeps working from memory
+  }
+  if (!first || entries.size) clearAll();
+}
+
+function useGeneration() {
+  return useSyncExternalStore(
+    (l) => {
+      genListeners.add(l);
+      return () => genListeners.delete(l);
+    },
+    () => generation,
+  );
+}
+
 export function invalidate(prefix: string) {
   for (const k of entries.keys()) if (k.startsWith(prefix)) set(k, { at: 0 });
 }
@@ -111,7 +166,12 @@ export function useQuery<T>(key: string | null, fn: () => Promise<T>, opts: { in
   const refresh = useCallback(async () => {
     if (key) await load(k, () => fnRef.current());
   }, [key, k]);
-  const stale = opts.staleMs ?? 15_000;
+  const stale = Math.min(opts.staleMs ?? 15_000, maxAgeMs);
+  // the whole cache was cleared (设置 → 清除缓存, or a new server epoch): load again even though nothing refocused
+  const gen = useGeneration();
+  useEffect(() => {
+    if (gen && key && !entries.get(k)) void refresh();
+  }, [gen, key, k, refresh]);
 
   useFocusEffect(
     useCallback(() => {

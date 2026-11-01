@@ -1,6 +1,7 @@
 // Backend client (mediahub backend → MoviePilot + Prowlarr115 plugin). Every call carries
 // the app token and a request id that the server logs (`journalctl -u mediahub | grep <rid>`).
 import * as Application from "expo-application";
+import { noteCacheHeaders } from "./query";
 import { getSettings } from "./settings";
 import { logger } from "./log";
 import { runningLabel } from "./updates";
@@ -41,6 +42,7 @@ export async function api<T>(path: string, opts: { method?: string; body?: unkno
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
       signal: ctrl.signal,
     });
+    noteCacheHeaders(res.headers.get("x-cache-epoch"), res.headers.get("x-cache-max-age"));
     const text = await res.text();
     let data: unknown = null;
     try {

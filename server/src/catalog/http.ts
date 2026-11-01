@@ -12,6 +12,8 @@
 import { Agent, fetch as ufetch } from "undici";
 import { dispatcherFor, type Source } from "../egress.ts";
 import { errText, logger } from "../log.ts";
+import { onClearCaches } from "../cacheControl.ts";
+
 
 const log = logger("catalog-http");
 const SLOW_MS = 8000;
@@ -34,6 +36,7 @@ const FLARE = process.env.FLARESOLVERR_URL ?? "http://127.0.0.1:8191/v1";
 export const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
 
 const cache = new Map<string, { at: number; ttl: number; value: Promise<string> }>();
+onClearCaches(() => cache.clear());
 function remember(key: string, ttlMs: number, fn: () => Promise<string>): Promise<string> {
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < hit.ttl) return hit.value;

@@ -26,6 +26,7 @@ ops.sh feedback-done <id> [note]  mark a report handled (shown in the app)
 ops.sh logs | events [YYYY-MM-DD] uploaded app logs / usage events
 ops.sh log <id> [grep] [tail]     one uploaded app log (e.g. `log 752269c1 img`)
 ops.sh srvlog [pattern] [since]   server log lines (journald JSON), e.g. `srvlog '"mod":"images"' '2 hours ago'`
+ops.sh cache [clear | maxage <秒> | off]   app/server cache control: show; clear (new epoch: every app drops its cached lists, server caches emptied); cap list freshness
 ops.sh img <path>                 fetch one backend image: status, type, bytes, time
 ops.sh subs | sub <id>            MP subscriptions / one subscription's per-episode state
 ops.sh blacklist                  releases the pipeline will not pick again

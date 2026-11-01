@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Application from "expo-application";
+import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import { JavdbAccount } from "@/components/JavdbAccount";
 import { AiSettings } from "@/components/AiSettings";
@@ -10,7 +11,7 @@ import { api, appVersion, type Overview } from "@/lib/api";
 import { embyApi, login, logout } from "@/lib/emby";
 import { collectLogs } from "@/lib/log";
 import { ensureNotifyPermission } from "@/lib/notify";
-import { invalidate } from "@/lib/query";
+import { clearAll, invalidate } from "@/lib/query";
 import { DEFAULT_EMBY_SERVER } from "@/lib/instance";
 import { DEFAULT_SERVER, setSettings, useSettings } from "@/lib/settings";
 import { STYLES, colors, radius, scheme, type StyleId } from "@/lib/theme";
@@ -72,6 +73,21 @@ export default function SettingsScreen() {
         toastError("未能登录 Emby", e);
       }
     });
+
+  // 清除缓存: lists and details cached on the phone (memory and disk), the image cache, and the server's own
+  // caches. The server answers with a new cache epoch, which also tells the phone (and any other) to drop its lists.
+  const clearCaches = () => confirm("清除缓存？", "清掉手机上缓存的列表、详情和图片，以及服务器的缓存；之后的页面会重新加载。", "清除", async () => {
+    setBusy("cache");
+    try {
+      await api("/v1/cache/clear", { body: {} }).catch((e) => toastError("服务器缓存未能清除，已清本机缓存", e));
+      clearAll();
+      await Promise.all([Image.clearMemoryCache(), Image.clearDiskCache()]).catch(() => false);
+      track("settings.clear_cache");
+      toast("已清除缓存");
+    } finally {
+      setBusy(null);
+    }
+  });
 
   const upload = () =>
     run("log", async () => {
@@ -203,6 +219,7 @@ export default function SettingsScreen() {
             <PillButton small variant="soft" icon="cloud-download-outline" label="检查更新" loading={busy === "update"} onPress={update} style={{ flex: 1 }} />
             <PillButton small variant="soft" icon="document-text-outline" label="上传日志" loading={busy === "log"} onPress={upload} style={{ flex: 1 }} />
           </View>
+          <PillButton small variant="soft" icon="trash-outline" label="清除缓存" loading={busy === "cache"} onPress={clearCaches} style={{ marginTop: 10 }} />
           <PillButton small variant="soft" icon="construct-outline" label="能力自检" onPress={() => router.push("/diagnostics")} style={{ marginTop: 10 }} />
           <PillButton small variant="soft" icon="flag-outline" label="问题反馈记录" onPress={() => router.push("/feedback")} style={{ marginTop: 10 }} />
         </Card>

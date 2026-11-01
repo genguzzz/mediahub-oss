@@ -12,6 +12,7 @@ import { registerCatalog } from "./catalog/index.ts";
 import { registerAi } from "./ai/index.ts";
 import { embyEvents, startEmbyEvents } from "./embyEvents.ts";
 import { egressSummary } from "./egress.ts";
+import { cacheHeaders, cacheStatus, clearAllCaches, loadCacheControl, onClearCaches, setMaxAge } from "./cacheControl.ts";
 import { bilibiliLiveSearch, bilibiliLiveStatus, bilibiliUploads, bilibiliUsers, searchVideos, youtubeChannels, youtubeUploads } from "./ugc.ts";
 import { initLog } from "./log.ts";
 
@@ -33,7 +34,7 @@ await app.register(multipart, { limits: { fileSize: 60 * 1024 * 1024, files: 1 }
 
 // CORS for the web preview build; auth is a bearer token, never cookies.
 app.addHook("onRequest", async (req, reply) => {
-  reply.header("access-control-allow-origin", "*").header("access-control-expose-headers", "x-request-id");
+  reply.header("access-control-allow-origin", "*").header("access-control-expose-headers", "x-request-id, x-cache-epoch, x-cache-max-age");
   if (req.method === "OPTIONS") {
     return reply.code(204).header("access-control-allow-methods", "GET,POST,PUT,DELETE").header("access-control-allow-headers", "authorization,content-type,x-request-id,x-app-version").header("access-control-max-age", "86400").send();
   }
@@ -74,6 +75,20 @@ app.setErrorHandler((err, req, reply) => {
 
 app.get("/health", async () => ({ ok: true }));
 
+// ---------- cache control (cacheControl.ts) ----------
+
+await loadCacheControl();
+app.addHook("onSend", async (req, reply) => {
+  if (req.url.startsWith("/v1/")) for (const [k, v] of Object.entries(cacheHeaders())) reply.header(k, v);
+});
+app.post("/v1/cache/clear", async () => clearAllCaches("app"));
+app.get("/admin/cache", async () => cacheStatus());
+app.post("/admin/cache", async (req) => {
+  const b = z.object({ clear: z.boolean().default(false), maxAge: z.number().int().min(0).max(30 * 86400).nullable().optional() }).parse(req.body ?? {});
+  if (b.maxAge !== undefined) await setMaxAge(b.maxAge);
+  return b.clear ? clearAllCaches("admin") : cacheStatus();
+});
+
 // ---------- helpers ----------
 
 type Kind = "movie" | "tv";
@@ -83,6 +98,7 @@ const ADULT_LIBS = new Set(["AV", "里番"]);
 
 // Short-lived memo for slow, rarely changing upstream answers.
 const memo = new Map<string, { at: number; value: Promise<unknown> }>();
+onClearCaches(() => memo.clear());
 function remember<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
   const hit = memo.get(key);
   if (hit && Date.now() - hit.at < ttlMs) return hit.value as Promise<T>;
