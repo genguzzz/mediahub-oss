@@ -271,24 +271,33 @@ export const TOOLS: Record<string, Def> = {
   },
   subtitles: {
     tier: "write",
-    description: "媒体库条目（电影或某一集，embyId）的字幕。action：list 列出内封字幕轨和外挂字幕文件（媒体库 strm 旁边 where=library、115 视频旁边 where=115，带 path）；read 读一个字幕文件的台词和时间（path；q=要找的词，空格分隔多个词任一命中，返回命中行和前后各一句；不给 q 时从 from 秒开始读 limit 行）——找『某个镜头/某句台词在第几分钟』就用它，再用 tv_control seek 跳过去；online 在 sub_share（GitHub 开源中文字幕库，只收动画）找这部的字幕，返回每集的 source；install 把字幕装上（source = online 给的 sub_share:… | file:<list 给的 path> | url:https://…；target=library 写在 strm 旁边、Emby 直接认（默认），115 写在网盘视频旁边；ASS 默认按音轨自动校准时间轴，要几分钟）。内封字幕轨读不了（要下载整个视频），只能列出。",
+    description: "字幕：查、读、装。按台词/剧情找片段的位置（『跳到直升机撒钱那段』）：search 找这部的字幕 → files 列出字幕包里的文件（剧集挑对应 SxxExx 的那个）→ read 带 q（台词里可能出现的词，空格分隔多个，任一命中；多试几组同义词）拿到时间 → tv_control seek 跳过去。action：list（embyId）条目已有的字幕：内封轨（只能列，读不了）和外挂文件（path）；search（embyId 或 q=片名）在线搜：射手网（电影、剧集，中文为主，返回 source=assrt:<id> 的字幕包）和 sub_share（开源动画字幕库，直接给每集的 source）；files（source=assrt:<id>）字幕包里的文件，每个 source=assrt:<id>/<n>；read（path = list 的文件路径或在线文件的 source）读台词和时间：给 q 返回命中行和前后各一句，不给 q 从 from 秒读 limit 行；install（embyId + source）装上：target=library 写在 strm 旁边 Emby 直接认（默认），115 写在网盘视频旁边；ASS 默认按音轨校准时间轴（要几分钟）。读在线字幕不用先装。",
     input: z.object({
-      action: z.enum(["list", "read", "online", "install"]), embyId: z.string().regex(/^\w+$/).optional(), path: z.string().max(2000).optional(),
-      q: z.string().max(200).optional(), from: z.number().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
-      source: z.string().max(2000).optional(), target: z.enum(["library", "115"]).optional(), lang: z.string().regex(/^[a-z]{2,6}$/).optional(), align: z.boolean().optional(),
+      action: z.enum(["list", "search", "files", "read", "install"]), embyId: z.string().regex(/^\w+$/).optional(), q: z.string().max(200).optional(),
+      source: z.string().max(2000).optional(), path: z.string().max(2000).optional(), from: z.number().min(0).optional(), limit: z.number().int().min(1).max(200).optional(),
+      target: z.enum(["library", "115"]).optional(), lang: z.string().regex(/^[a-z]{2,6}$/).optional(), align: z.boolean().optional(),
     }),
-    label: (a) => ({ list: "看有哪些字幕", read: a.q ? `在字幕里找「${a.q}」` : "读字幕台词", online: "在线找字幕", install: "安装字幕" } as Record<string, string>)[a.action],
+    label: (a) => ({ list: "看有哪些字幕", search: "在线找字幕", files: "看字幕包里的文件", read: a.q ? `在字幕里找「${a.q}」` : "读字幕台词", install: "安装字幕" } as Record<string, string>)[a.action],
     run: async (ctx, a) => {
       const need = (k: string, v: unknown) => { if (v == null || v === "") throw new ToolError(`${a.action} 要给 ${k}`); };
-      if (a.action === "read") {
-        need("path", a.path);
-        return call(ctx, "GET", `/v1/subs/read${qs({ path: a.path, q: a.q, from: a.from, limit: a.limit })}`);
+      switch (a.action) {
+        case "read":
+          need("path", a.path ?? a.source);
+          return call(ctx, "GET", `/v1/subs/read${qs({ path: a.path ?? a.source, q: a.q, from: a.from, limit: a.limit })}`);
+        case "search":
+          if (!a.embyId) need("embyId 或 q", a.q);
+          return call(ctx, "GET", `/v1/subs/search${qs({ embyId: a.embyId, q: a.q })}`);
+        case "files":
+          need("source", a.source);
+          return call(ctx, "GET", `/v1/subs/files${qs({ source: a.source })}`);
+        case "list":
+          need("embyId", a.embyId);
+          return call(ctx, "GET", `/v1/emby/item/${a.embyId}/subtitles`);
+        default:
+          need("embyId", a.embyId);
+          need("source", a.source);
+          return call(ctx, "POST", `/v1/emby/item/${a.embyId}/subtitles/install`, { source: a.source, target: a.target, lang: a.lang, align: a.align });
       }
-      need("embyId", a.embyId);
-      if (a.action === "list") return call(ctx, "GET", `/v1/emby/item/${a.embyId}/subtitles`);
-      if (a.action === "online") return call(ctx, "GET", `/v1/emby/item/${a.embyId}/subtitles/online`);
-      need("source", a.source);
-      return call(ctx, "POST", `/v1/emby/item/${a.embyId}/subtitles/install`, { source: a.source, target: a.target, lang: a.lang, align: a.align });
     },
   },
   app_api: {

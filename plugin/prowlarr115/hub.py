@@ -196,7 +196,7 @@ class Hub:
             ("/hub/subs/file", self.subs_file, "GET", "读一个字幕文件（≤20MB）：path=115 路径或媒体库路径"),
             ("/hub/drive/list", self.drive_list, "GET", "列 115 媒体目录或媒体库里的一个目录：path（空=115 媒体根目录）"),
             ("/hub/subs/online", self.subs_online, "GET", "在 sub_share（开源中文字幕库，只有动画）找字幕：names（逗号分隔）, year, season, episodes（逗号分隔，空=全部）"),
-            ("/hub/subs/install", self.subs_install, "POST", "装一个字幕：strm（Emby 路径）, source（sub_share:<仓库路径> | file:<115/媒体库路径> | url:<https 链接>）, target=library|115, lang, align"),
+            ("/hub/subs/install", self.subs_install, "POST", "装一个字幕：strm（Emby 路径）, source（sub_share:<仓库路径> | file:<115/媒体库路径> | url:<http(s) 链接>）, target=library|115, lang, align"),
         ]
         return [{"path": p, "endpoint": fn, "methods": [m], "summary": s} for p, fn, m, s in r]
 
@@ -1668,13 +1668,13 @@ class Hub:
                 if ".." in f or not (f.startswith(p.root + "/") or f.startswith(p.lib_ol + "/")) or not f.lower().endswith(self.SUB_EXT):
                     return {"ok": False, "error": "file 只能是 115 或媒体库里的字幕文件"}
                 data, name = p.ol.read(f), f
-            elif source.startswith("url:https://"):
+            elif source.startswith(("url:https://", "url:http://")):
                 res = RequestUtils(timeout=60).get_res(source[4:])
                 if res is None or res.status_code != 200 or len(res.content) > 5 * 1024 * 1024:
                     return {"ok": False, "error": "下载字幕失败（或大于 5MB）"}
                 data, name = res.content, source.split("?")[0]
             else:
-                return {"ok": False, "error": "source 要以 sub_share: / file: / url:https:// 开头"}
+                return {"ok": False, "error": "source 要以 sub_share: / file: / url:http(s):// 开头"}
         except Exception as err:  # noqa: BLE001
             return {"ok": False, "error": f"取字幕失败：{err}"}
         ext = name.rsplit(".", 1)[-1].lower() if "." in name.rsplit("/", 1)[-1] else "ass"
