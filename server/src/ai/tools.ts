@@ -402,15 +402,15 @@ export const TOOLS: Record<string, Def> = {
   },
   video_search: {
     tier: "read",
-    description: "搜 B 站 / YouTube 视频（解说、影评、剪辑、预告、访谈、教程等 UGC）。site = bilibili | youtube | both（默认 both，两边并行）；sort = relevance | latest | views。返回 site、id、标题、UP 主/频道、封面、时长、播放量、发布时间。展示用 video 卡片块。",
-    input: z.object({ query: z.string().min(1).max(100), site: z.enum(["bilibili", "youtube", "both"]).optional(), sort: z.enum(["relevance", "latest", "views"]).optional(), limit: z.number().int().min(1).max(20).optional() }),
+    description: "搜 B 站 / YouTube 视频（解说、影评、剪辑、预告、访谈、教程等 UGC）。site = bilibili | youtube | both（默认 both，两边并行）；sort = relevance | latest | views；filter 按时长或时间筛（short 短视频 | medium | long 长视频 | today | week | month，给了 filter 就不按 sort 排）。返回 site、id、标题、UP 主/频道、封面、时长、播放量、发布时间。展示用 video 卡片块。",
+    input: z.object({ query: z.string().min(1).max(100), site: z.enum(["bilibili", "youtube", "both"]).optional(), sort: z.enum(["relevance", "latest", "views"]).optional(), filter: z.enum(["short", "medium", "long", "today", "week", "month"]).optional(), limit: z.number().int().min(1).max(20).optional() }),
     label: (a) => `搜视频「${a.query}」`,
     run: async (ctx, a) => {
       const sites = a.site && a.site !== "both" ? [a.site] : ["bilibili", "youtube"];
       const n = a.limit ?? (sites.length > 1 ? 6 : 10);
       const got = await Promise.all(sites.map(async (site: string) => {
         try {
-          const r = await call(ctx, "GET", `/v1/ugc/search${qs({ site, q: a.query, sort: a.sort })}`);
+          const r = await call(ctx, "GET", `/v1/ugc/search${qs({ site, q: a.query, sort: a.sort, filter: a.filter })}`);
           return (r.items ?? []).slice(0, n).map((v: any) => ({
             site: v.site, id: v.id, title: cut(v.title, 70), author: v.author, duration: v.duration || undefined,
             views: v.views ?? undefined, published: v.published || undefined,
@@ -480,10 +480,29 @@ export const TOOLS: Record<string, Def> = {
   },
   live_search: {
     tier: "read",
-    description: "搜 B 站直播间（主播名、游戏、赛事、话题，如『英雄联盟』『德云色』『LPL』）：返回正在直播的房间（roomId、标题、主播、分区、在线人数、封面），在播的、人多的在前。展示用 video 卡片块（live:true）。",
-    input: z.object({ query: z.string().min(1).max(60), limit: z.number().int().min(1).max(20).optional() }),
+    description: "搜正在直播的（主播名、游戏、赛事、话题，如『英雄联盟』『LPL』『vtuber』）：site = bilibili（B 站直播间）| youtube（YouTube 正在直播的视频）| both（默认，两边并行）。返回 site、roomId（B 站房间号 / YouTube 视频 id）、标题、主播、分区、在线人数、封面，人多的在前。展示用 video 卡片块（live:true）。",
+    input: z.object({ query: z.string().min(1).max(60), site: z.enum(["bilibili", "youtube", "both"]).optional(), limit: z.number().int().min(1).max(20).optional() }),
     label: (a) => `搜直播「${a.query}」`,
-    run: async (ctx, a) => ((await call(ctx, "GET", `/v1/ugc/live${qs({ q: a.query })}`)).items ?? []).slice(0, a.limit ?? 10).map(liveSlim),
+    run: async (ctx, a) => {
+      const sites = a.site && a.site !== "both" ? [a.site] : ["bilibili", "youtube"];
+      const n = a.limit ?? (sites.length > 1 ? 6 : 10);
+      return (await Promise.all(sites.map(async (site: string) => {
+        try {
+          return ((await call(ctx, "GET", `/v1/ugc/live${qs({ q: a.query, site })}`)).items ?? []).slice(0, n).map((l: any) => ({ site, ...liveSlim(l) }));
+        } catch (e) {
+          return [{ site, error: e instanceof Error ? e.message : String(e) }];
+        }
+      }))).flat();
+    },
+  },
+  video_content: {
+    tier: "read",
+    description: "一个 YouTube 视频的内容：action=comments 热门评论（作者、内容、点赞、回复数）；transcript 字幕（上传的或自动生成的，lang 默认 zh，没有就用视频自带的语言；给 q 按台词找位置，返回命中行的时间和前后句；不给 q 从 from 秒开始读 limit 行）——总结视频讲了什么、找『他什么时候说到 X』、看观众怎么评价时用。id = YouTube 视频 id（video_search / creator_videos 给的）。",
+    input: z.object({ action: z.enum(["comments", "transcript"]), id: z.string().regex(/^[\w-]{6,20}$/), q: z.string().max(200).optional(), from: z.number().min(0).optional(), limit: z.number().int().min(1).max(300).optional(), lang: z.string().regex(/^[\w-]{2,10}$/).optional() }),
+    label: (a) => (a.action === "comments" ? "看 YouTube 评论" : a.q ? `在视频字幕里找「${a.q}」` : "读 YouTube 字幕"),
+    run: async (ctx, a) => a.action === "comments"
+      ? (await call(ctx, "GET", `/v1/ugc/comments${qs({ id: a.id, limit: a.limit ?? 30 })}`)).items
+      : call(ctx, "GET", `/v1/ugc/transcript${qs({ id: a.id, lang: a.lang, q: a.q, from: a.from, limit: a.limit })}`),
   },
   creator_videos: {
     tier: "read",

@@ -32,15 +32,33 @@ export function segments(src: string, live: boolean): Segment[] {
     let data: any = null;
     let error = false;
     if (closed || !live) {
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        error = true;
-      }
+      data = parseBlock(raw);
+      error = data === null;
     }
     out.push({ k: "block", type: m[1] as BlockType, data, open: !closed && live, raw, error, key: `b${out.length}` });
     i = closed ? j : lines.length;
   }
   flush();
   return out;
+}
+
+// The model sometimes leaves stray text around a block's JSON (a tool-call tag like </parameter>, a word
+// before it): parse it as written, else the outermost JSON array / object inside it.
+function parseBlock(raw: string): any {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const t = raw.replace(/<\/?(parameter|invoke|antml:[\w-]+)[^>]*>/g, "");
+    for (const [open, close] of [["[", "]"], ["{", "}"]]) {
+      const a = t.indexOf(open);
+      const b = t.lastIndexOf(close);
+      if (a < 0 || b <= a) continue;
+      try {
+        return JSON.parse(t.slice(a, b + 1));
+      } catch {
+        // try the other shape
+      }
+    }
+    return null;
+  }
 }

@@ -18,7 +18,7 @@ import { doubanFind, doubanReviews } from "./reviews.ts";
 import { decodeSubtitle, parseSubtitles, searchCues } from "./subtitles.ts";
 import { assrtFiles } from "./assrt.ts";
 import { isOnlineSource, onlineSubtitle, onlineSubtitleUrl, searchSubtitles } from "./subsearch.ts";
-import { bilibiliLiveSearch, bilibiliLiveStatus, bilibiliUploads, bilibiliUsers, searchVideos, youtubeChannels, youtubeUploads } from "./ugc.ts";
+import { bilibiliLiveSearch, bilibiliLiveStatus, bilibiliUploads, bilibiliUsers, searchVideos, youtubeChannels, youtubeComments, youtubeLive, youtubeTranscript, youtubeUploads } from "./ugc.ts";
 import { initLog } from "./log.ts";
 
 const app = Fastify({
@@ -700,8 +700,22 @@ app.get("/v1/reviews", async (req) => {
 
 // Bilibili / YouTube video search (ugc.ts): talks, reviews, explainers, clips, trailers.
 app.get("/v1/ugc/search", async (req) => {
-  const q = z.object({ site: z.enum(["bilibili", "youtube"]), q: z.string().min(1).max(100), sort: z.enum(["relevance", "latest", "views", "favorites", "danmaku"]).default("relevance") }).parse(req.query);
-  return { items: await remember(`ugc:${q.site}:${q.sort}:${q.q}`, 10 * 60_000, () => searchVideos(q.site, q.q, q.sort)) };
+  const q = z.object({
+    site: z.enum(["bilibili", "youtube"]), q: z.string().min(1).max(100), sort: z.enum(["relevance", "latest", "views", "favorites", "danmaku"]).default("relevance"),
+    filter: z.enum(["short", "medium", "long", "today", "week", "month"]).optional(),
+  }).parse(req.query);
+  return { items: await remember(`ugc:${q.site}:${q.sort}:${q.filter ?? ""}:${q.q}`, 10 * 60_000, () => searchVideos(q.site, q.q, q.sort, q.filter)) };
+});
+
+// A YouTube video's top comments, and its captions as timed lines (search them with q, or read from a time).
+app.get("/v1/ugc/comments", async (req) => {
+  const q = z.object({ site: z.literal("youtube").default("youtube"), id: z.string().regex(/^[\w-]{6,20}$/), limit: z.coerce.number().int().min(1).max(100).default(30) }).parse(req.query);
+  return { items: await remember(`ugc:cm:${q.id}:${q.limit}`, 30 * 60_000, () => youtubeComments(q.id, q.limit)) };
+});
+app.get("/v1/ugc/transcript", async (req) => {
+  const q = z.object({ site: z.literal("youtube").default("youtube"), id: z.string().regex(/^[\w-]{6,20}$/), lang: z.string().regex(/^[\w-]{2,10}$/).default("zh"), q: z.string().max(200).optional(), from: z.coerce.number().min(0).optional(), limit: z.coerce.number().int().min(1).max(300).default(60) }).parse(req.query);
+  const t = await remember(`ugc:tr:${q.id}:${q.lang}`, 6 * 3600_000, () => youtubeTranscript(q.id, q.lang));
+  return { title: t.title, author: t.author, lengthSec: t.lengthSec, lang: t.lang, langs: t.langs, ...searchCues(t.cues, { q: q.q, from: q.from, limit: q.limit, around: 1 }) };
 });
 
 // Creators (UP 主 / YouTube channels): find accounts by name, then an account's latest uploads.
@@ -709,12 +723,12 @@ app.get("/v1/ugc/creators", async (req) => {
   const q = z.object({ site: z.enum(["bilibili", "youtube"]), q: z.string().min(1).max(60) }).parse(req.query);
   return { items: await remember(`ugc:who:${q.site}:${q.q}`, 3600_000, () => (q.site === "bilibili" ? bilibiliUsers(q.q) : youtubeChannels(q.q))) };
 });
-// Bilibili live: rooms by keyword (q), or the live state of UP 主 by uid (uids=1,2,3).
+// Live: rooms by keyword (q; site=bilibili rooms or youtube streams live now), or the live state of UP 主 by uid (uids=1,2,3).
 app.get("/v1/ugc/live", async (req) => {
-  const q = z.object({ q: z.string().max(60).optional(), uids: z.string().regex(/^\d+(,\d+){0,19}$/).optional() }).parse(req.query);
+  const q = z.object({ q: z.string().max(60).optional(), uids: z.string().regex(/^\d+(,\d+){0,19}$/).optional(), site: z.enum(["bilibili", "youtube"]).default("bilibili") }).parse(req.query);
   if (q.uids) return { status: await bilibiliLiveStatus(q.uids.split(",")) };
   if (!q.q) throw Object.assign(new Error("需要 q 或 uids"), { statusCode: 400 });
-  return { items: await remember(`ugc:live:${q.q}`, 2 * 60_000, () => bilibiliLiveSearch(q.q!)) };
+  return { items: await remember(`ugc:live:${q.site}:${q.q}`, 2 * 60_000, () => (q.site === "youtube" ? youtubeLive(q.q!) : bilibiliLiveSearch(q.q!))) };
 });
 app.get("/v1/ugc/uploads", async (req) => {
   // Bilibili needs the UP 主's name too (their uploads come from a search kept to their id)

@@ -31,10 +31,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const cookie = `buvid3=${randomBytes(18).toString("hex")}infoc; b_nut=${Math.floor(Date.now() / 1000)}; _uuid=${randomBytes(16).toString("hex")}`;
 const B_ORDER = { relevance: "", latest: "pubdate", views: "click", favorites: "stow", danmaku: "dm" } as const;
 export type Sort = keyof typeof B_ORDER;
+/** Narrowing a search: by length (short < 4–10 min, medium, long > 20–60 min) or upload time. */
+export type Filter = "short" | "medium" | "long" | "today" | "week" | "month";
+const B_DURATION: Partial<Record<Filter, number>> = { short: 1, medium: 2, long: 4 };   // <10, 10–30, >60 min
+const SINCE_DAYS: Partial<Record<Filter, number>> = { today: 1, week: 7, month: 31 };
 
-export async function bilibili(q: string, sort: Sort = "relevance", page = 1): Promise<Video[]> {
+export async function bilibili(q: string, sort: Sort = "relevance", page = 1, filter?: Filter): Promise<Video[]> {
   const order = B_ORDER[sort] ? `&order=${B_ORDER[sort]}` : "";
-  const url = `https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=${encodeURIComponent(q)}&page=${page}${order}`;
+  const now = Math.floor(Date.now() / 1000);
+  const narrow = (filter && B_DURATION[filter] ? `&duration=${B_DURATION[filter]}` : "")
+    + (filter && SINCE_DAYS[filter] ? `&pubtime_begin_s=${now - SINCE_DAYS[filter]! * 86400}&pubtime_end_s=${now}` : "");
+  const url = `https://api.bilibili.com/x/web-interface/search/type?search_type=video&keyword=${encodeURIComponent(q)}&page=${page}${order}${narrow}`;
   for (let attempt = 0; ; attempt++) {
     const r = await ufetch(url, { dispatcher: dispatcherFor("bilibili"), headers: { "user-agent": UA, referer: "https://www.bilibili.com/", cookie }, signal: AbortSignal.timeout(15_000) });
     const d = (await r.json().catch(() => ({}))) as { code?: number; message?: string; data?: { result?: Record<string, unknown>[] } };
@@ -65,6 +72,8 @@ export async function bilibili(q: string, sort: Sort = "relevance", page = 1): P
 
 const YT_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"; // the key youtube.com's own web client sends (public)
 const YT_SORT: Partial<Record<Sort, string>> = { latest: "CAI%3D", views: "CAM%3D" };
+// search filters (the "sp" of youtube.com's filter menu): a filter replaces the sort
+const YT_FILTER: Record<Filter | "live", string> = { today: "EgIIAg%3D%3D", week: "EgIIAw%3D%3D", month: "EgIIBA%3D%3D", short: "EgIYAQ%3D%3D", medium: "EgIYAw%3D%3D", long: "EgIYAg%3D%3D", live: "EgJAAQ%3D%3D" };
 type Runs = { runs?: { text?: string }[]; simpleText?: string };
 const text = (t?: Runs) => t?.simpleText ?? (t?.runs ?? []).map((r) => r.text ?? "").join("");
 
@@ -76,8 +85,7 @@ function ytViews(t: string): number | null {
   return Number.isFinite(n) ? Math.round(n * mul) : null;
 }
 
-export async function youtube(q: string, sort: Sort = "relevance"): Promise<Video[]> {
-  const params = YT_SORT[sort];
+async function ytSearch(q: string, params?: string): Promise<Record<string, any>[]> {
   const r = await ufetch(`https://www.youtube.com/youtubei/v1/search?key=${YT_KEY}&prettyPrint=false`, {
     method: "POST",
     dispatcher: dispatcherFor("youtube"),
@@ -88,26 +96,24 @@ export async function youtube(q: string, sort: Sort = "relevance"): Promise<Vide
   if (!r.ok) throw new Error(`YouTube 搜索失败：HTTP ${r.status}`);
   const d = (await r.json()) as Record<string, any>;
   const sections = d?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents ?? [];
-  const out: Video[] = [];
-  for (const sec of sections) {
-    for (const item of sec?.itemSectionRenderer?.contents ?? []) {
-      const v = item?.videoRenderer;
-      if (!v?.videoId) continue;
-      const views = text(v.viewCountText) || text(v.shortViewCountText);
-      out.push({
-        site: "youtube",
-        id: v.videoId,
-        title: text(v.title),
-        author: text(v.ownerText) || text(v.longBylineText),
-        cover: `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`,
-        duration: text(v.lengthText),
-        views: views ? ytViews(views) : null,
-        published: text(v.publishedTimeText),
-        url: `https://www.youtube.com/watch?v=${v.videoId}`,
-      });
-    }
-  }
-  return out;
+  return sections.flatMap((sec: any) => (sec?.itemSectionRenderer?.contents ?? []).map((i: any) => i?.videoRenderer).filter((v: any) => v?.videoId));
+}
+
+export async function youtube(q: string, sort: Sort = "relevance", filter?: Filter): Promise<Video[]> {
+  return (await ytSearch(q, filter ? YT_FILTER[filter] : YT_SORT[sort])).map((v) => {
+    const views = text(v.viewCountText) || text(v.shortViewCountText);
+    return {
+      site: "youtube" as const,
+      id: v.videoId,
+      title: text(v.title),
+      author: text(v.ownerText) || text(v.longBylineText),
+      cover: `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`,
+      duration: text(v.lengthText),
+      views: views ? ytViews(views) : null,
+      published: text(v.publishedTimeText),
+      url: `https://www.youtube.com/watch?v=${v.videoId}`,
+    };
+  });
 }
 
 // ---------- creators: find the account, list its latest uploads ----------
@@ -263,14 +269,100 @@ export async function youtubeUploads(channelId: string): Promise<Video[]> {
   return out.slice(0, 30);
 }
 
-export async function searchVideos(site: "bilibili" | "youtube", q: string, sort: Sort = "relevance"): Promise<Video[]> {
+export async function searchVideos(site: "bilibili" | "youtube", q: string, sort: Sort = "relevance", filter?: Filter): Promise<Video[]> {
   const t0 = Date.now();
   try {
-    const list = site === "bilibili" ? await bilibili(q, sort) : await youtube(q, sort);
+    const list = site === "bilibili" ? await bilibili(q, sort, 1, filter) : await youtube(q, sort, filter);
     log.info({ site, n: list.length, ms: Date.now() - t0 }, "video search");
     return list;
   } catch (e) {
     log.warn({ site, ms: Date.now() - t0, err: e instanceof Error ? e.message : String(e) }, "video search failed");
     throw Object.assign(e instanceof Error ? e : new Error(String(e)), { statusCode: 502 });
   }
+}
+
+// ---------- YouTube live, comments, captions (InnerTube, as youtube.com and the Android app call it) ----------
+
+const YT_WEB = { clientName: "WEB", clientVersion: "2.20250101.00.00", hl: "zh-CN", gl: "US" };
+
+async function innertube(endpoint: string, body: Record<string, unknown>, client: Record<string, unknown> = YT_WEB, ua = UA): Promise<Record<string, any>> {
+  const r = await ufetch(`https://www.youtube.com/youtubei/v1/${endpoint}?key=${YT_KEY}&prettyPrint=false`, {
+    method: "POST",
+    dispatcher: dispatcherFor("youtube"),
+    headers: { "content-type": "application/json", "user-agent": ua },
+    body: JSON.stringify({ context: { client }, ...body }),
+    signal: AbortSignal.timeout(20_000),
+  });
+  if (!r.ok) throw new Error(`YouTube 请求失败：HTTP ${r.status}`);
+  return (await r.json()) as Record<string, any>;
+}
+
+/** YouTube streams live now for a keyword (the search's Live filter), most watched first. */
+export async function youtubeLive(q: string): Promise<LiveRoom[]> {
+  const list = await ytSearch(q, YT_FILTER.live);
+  return list.map((v) => {
+    const watching = text(v.viewCountText) || text(v.shortViewCountText);
+    return {
+      roomId: String(v.videoId), live: true, title: text(v.title), online: watching ? ytViews(watching) : null, area: "",
+      cover: `https://i.ytimg.com/vi/${v.videoId}/mqdefault.jpg`, uname: text(v.ownerText) || text(v.longBylineText), uid: "", since: "", url: `https://www.youtube.com/watch?v=${v.videoId}`,
+    };
+  }).sort((a, b) => (b.online ?? 0) - (a.online ?? 0));
+}
+
+export interface Comment { author: string; text: string; likes: string; replies: number; published: string }
+
+/** A YouTube video's top comments (the comment panel's pages, as the web page loads them). */
+export async function youtubeComments(videoId: string, max = 30): Promise<Comment[]> {
+  const d = await innertube("next", { videoId });
+  let token: string | undefined;
+  for (const p of d.engagementPanels ?? []) {
+    const e = p.engagementPanelSectionListRenderer ?? {};
+    if (!String(e.panelIdentifier ?? "").toLowerCase().includes("comment")) continue;
+    for (const sec of e.content?.sectionListRenderer?.contents ?? []) {
+      for (const it of sec.itemSectionRenderer?.contents ?? []) token ??= it.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token;
+    }
+  }
+  if (!token) throw new Error("这个视频没有评论区（或评论已关闭）");
+  const out: Comment[] = [];
+  for (let page = 0; token && out.length < max && page < 5; page++) {
+    const c = await innertube("next", { continuation: token });
+    token = undefined;
+    for (const m of c.frameworkUpdates?.entityBatchUpdate?.mutations ?? []) {
+      const p = m.payload?.commentEntityPayload;
+      if (!p) continue;
+      out.push({
+        author: String(p.author?.displayName ?? ""), text: String(p.properties?.content?.content ?? "").slice(0, 500),
+        likes: String(p.toolbar?.likeCountNotliked ?? "").trim(), replies: Number(p.toolbar?.replyCount) || 0, published: String(p.properties?.publishedTime ?? ""),
+      });
+    }
+    for (const ep of c.onResponseReceivedEndpoints ?? []) {
+      const items = ep.reloadContinuationItemsCommand?.continuationItems ?? ep.appendContinuationItemsAction?.continuationItems ?? [];
+      for (const it of items) token = it.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token ?? token;
+    }
+  }
+  return out.slice(0, max);
+}
+
+export interface Transcript { title: string; author: string; lengthSec: number; lang: string; langs: string[]; cues: { start: number; end: number; text: string }[] }
+
+/** A YouTube video's captions (uploaded or auto), in the wanted language when there is one. */
+export async function youtubeTranscript(videoId: string, lang = "zh"): Promise<Transcript> {
+  const p = await innertube("player", { videoId }, { clientName: "ANDROID", clientVersion: "20.10.38", androidSdkVersion: 34, hl: "en", gl: "US" }, "com.google.android.youtube/20.10.38 (Linux; Android 14)");
+  const status = p.playabilityStatus?.status;
+  if (status && status !== "OK") throw new Error(`YouTube：${p.playabilityStatus?.reason || status}`);
+  const tracks = (p.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? []) as { languageCode: string; baseUrl: string; kind?: string }[];
+  if (!tracks.length) throw new Error("这个视频没有字幕");
+  // the wanted language (zh also matches zh-Hans / zh-CN …), uploaded before auto-generated, else the first
+  const want = tracks.filter((t) => t.languageCode.toLowerCase().startsWith(lang.toLowerCase()));
+  const t = want.find((x) => x.kind !== "asr") ?? want[0] ?? tracks.find((x) => x.kind !== "asr") ?? tracks[0];
+  const url = t.baseUrl.startsWith("/") ? `https://www.youtube.com${t.baseUrl}` : t.baseUrl;
+  const r = await ufetch(url, { dispatcher: dispatcherFor("youtube"), headers: { "user-agent": UA, referer: "https://www.youtube.com/" }, signal: AbortSignal.timeout(15_000) });
+  const xml = await r.text();
+  const cues: Transcript["cues"] = [];
+  for (const m of xml.matchAll(/<p t="(\d+)"(?: d="(\d+)")?[^>]*>([\s\S]*?)<\/p>/g)) {
+    const body = strip(m[3].replace(/<s[^>]*>/g, "").replace(/<\/s>/g, "")).replace(/\s+/g, " ");
+    if (body) cues.push({ start: Number(m[1]) / 1000, end: (Number(m[1]) + Number(m[2] ?? 0)) / 1000, text: body });
+  }
+  const vd = p.videoDetails ?? {};
+  return { title: String(vd.title ?? ""), author: String(vd.author ?? ""), lengthSec: Number(vd.lengthSeconds) || 0, lang: t.languageCode, langs: [...new Set(tracks.map((x) => x.languageCode))], cues };
 }

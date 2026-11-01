@@ -94,16 +94,17 @@ export function AiBlock({ seg }: { seg: Extract<Segment, { k: "block" }> }) {
 
 type Vid = { site?: string; id?: string; title?: string; author?: string; duration?: string; views?: number; cover?: string; published?: string; live?: boolean; online?: number; area?: string };
 const VW = 220;
-// videos: BV id / YouTube id; Bilibili live rooms: the numeric room id
-const okVid = (v: Vid) => !!v && (v.site === "bilibili" || v.site === "youtube") && !!v.id && (v.live ? /^\d{1,12}$/.test(String(v.id)) : /^[\w-]{6,20}$/.test(v.id));
+// videos: BV id / YouTube id; live: the Bilibili room number, or the YouTube video id of the stream
+const bLive = (v: Vid) => !!v.live && v.site === "bilibili";
+const okVid = (v: Vid) => !!v && (v.site === "bilibili" || v.site === "youtube") && !!v.id && (bLive(v) ? /^\d{1,12}$/.test(String(v.id)) : /^[\w-]{6,20}$/.test(String(v.id)));
 const coverOf = (v: Vid) => (v.site === "youtube" ? `https://i.ytimg.com/vi/${v.id}/mqdefault.jpg` : v.cover ? (/^https?:\/\//.test(v.cover) ? v.cover : `https://${v.cover.replace(/^\/+/, "")}`) : undefined);
 const count = (n?: number) => (n == null ? "" : n >= 1e8 ? `${(n / 1e8).toFixed(1)}亿` : n >= 1e4 ? `${(n / 1e4).toFixed(1)}万` : String(n));
 
 /** The site's app when installed (its URL scheme), else the page in the in-app browser. */
 async function openVideo(v: Vid) {
   tap();
-  const web = v.live ? `https://live.bilibili.com/${v.id}` : v.site === "bilibili" ? `https://www.bilibili.com/video/${v.id}` : `https://www.youtube.com/watch?v=${v.id}`;
-  const app = v.live ? `bilibili://live/${v.id}` : v.site === "bilibili" ? `bilibili://video/${v.id}` : `youtube://www.youtube.com/watch?v=${v.id}`;
+  const web = bLive(v) ? `https://live.bilibili.com/${v.id}` : v.site === "bilibili" ? `https://www.bilibili.com/video/${v.id}` : `https://www.youtube.com/watch?v=${v.id}`;
+  const app = bLive(v) ? `bilibili://live/${v.id}` : v.site === "bilibili" ? `bilibili://video/${v.id}` : `youtube://www.youtube.com/watch?v=${v.id}`;
   try {
     await Linking.openURL(app);
   } catch {
