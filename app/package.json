@@ -5,6 +5,7 @@
   "dependencies": {
     "@expo/metro-runtime": "~58.0.15",
     "@expo/vector-icons": "^15.0.2",
+    "@types/markdown-it": "^14.2.0",
     "expo": "~58.0.19",
     "expo-application": "~58.1.2",
     "expo-background-task": "~58.0.11",
@@ -39,6 +40,7 @@
     "expo-task-manager": "~58.0.12",
     "expo-updates": "~58.0.18",
     "expo-web-browser": "~58.0.6",
+    "markdown-it": "^14.3.3",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-native": "0.88.0",

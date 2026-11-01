@@ -6,8 +6,10 @@ import * as Device from "expo-device";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { PosterSheetHost } from "@/components/PosterSheet";
+import { FloatingOrb } from "@/components/ai/FloatingOrb";
 import { FullWindowOverlay } from "react-native-screens";
 import { ToastHost, toast } from "@/components/ui";
+import { initAi, useAiSelect } from "@/lib/ai";
 import { appVersion } from "@/lib/api";
 import { flush, installGlobalHandlers, logger, pruneLogs, sessionId } from "@/lib/log";
 import { installNotificationHandler, onNotificationTap, registerBackgroundCheck } from "@/lib/notify";
@@ -64,6 +66,15 @@ export default function RootLayout() {
     if (isUpdatePending) toast("新版本已就绪", "重启后生效", { label: "立即重启", onPress: () => void restartToApply() });
   }, [isUpdatePending]);
 
+  // The assistant: pick up a question left running; an answer that finished unseen gets a toast.
+  useEffect(() => {
+    if (loaded) void initAi();
+  }, [loaded]);
+  const aiUnread = useAiSelect((a) => a.unread && !a.open);
+  useEffect(() => {
+    if (aiUnread) toast("助手回答好了", undefined, { label: "查看", onPress: () => router.push("/ai") });
+  }, [aiUnread, router]);
+
   useEffect(() => {
     const sub = AppState.addEventListener("change", (s) => {
       if (s !== "active") void flush();
@@ -80,12 +91,14 @@ export default function RootLayout() {
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="settings" options={{ presentation: "modal" }} />
             <Stack.Screen name="player" options={{ presentation: "fullScreenModal", animation: "fade", gestureEnabled: false, orientation: "landscape" }} />
+            <Stack.Screen name="ai" options={{ presentation: "formSheet", sheetAllowedDetents: [0.6, 1], sheetInitialDetentIndex: "last", sheetGrabberVisible: true, sheetCornerRadius: 22, sheetExpandsWhenScrolledToEdge: false }} />
           </Stack>
         ) : (
           <View style={{ flex: 1, backgroundColor: colors.bg, alignItems: "center", justifyContent: "center" }}>
             <ActivityIndicator color={colors.primary} />
           </View>
         )}
+        {loaded ? <FloatingOrb /> : null}
         {loaded ? <PosterSheetHost /> : null}
         {/* iOS: toasts live in their own window above native sheets/modals (入库 sheet, settings), otherwise errors hide under them */}
         {loaded ? (Platform.OS === "ios" ? <FullWindowOverlay><ToastHost /></FullWindowOverlay> : <ToastHost />) : null}

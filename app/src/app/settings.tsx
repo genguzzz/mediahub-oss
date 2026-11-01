@@ -4,6 +4,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Application from "expo-application";
 import { useRouter } from "expo-router";
 import { JavdbAccount } from "@/components/JavdbAccount";
+import { AiSettings } from "@/components/AiSettings";
 import { Card, PillButton, Row, Screen, SectionTitle, Segmented, TopBar, confirm, styles, tap, toast, toastError } from "@/components/ui";
 import { api, appVersion, type Overview } from "@/lib/api";
 import { embyApi, login, logout } from "@/lib/emby";
@@ -162,6 +163,9 @@ export default function SettingsScreen() {
             <JavdbAccount />
           </>
         ) : null}
+
+        <SectionTitle title="AI 助手" />
+        <AiSettings />
 
         <SectionTitle title="搜索" />
         <Card>

@@ -23,6 +23,10 @@ const MODULES = {
   localization: "ExpoLocalization",
   player: "MediahubPlayer",
   airplay: "MediahubAirPlay",
+  haptics: "ExpoHaptics",
+  clipboard: "ExpoClipboard",
+  webBrowser: "ExpoWebBrowser",
+  notifications: "ExpoNotificationScheduler",
 } as const;
 export type Capability = keyof typeof MODULES;
 
@@ -35,6 +39,49 @@ export function has(c: Capability): boolean {
 
 export function capabilities(): Record<Capability, boolean> {
   return Object.fromEntries((Object.keys(MODULES) as Capability[]).map((c) => [c, has(c)])) as Record<Capability, boolean>;
+}
+
+// ---------- haptics, clipboard, links, local notifications (AI chat) ----------
+
+export async function haptic(kind: "light" | "medium" | "success" | "error" | "select" = "light") {
+  if (!has("haptics")) return;
+  const H = await import("expo-haptics");
+  try {
+    if (kind === "select") await H.selectionAsync();
+    else if (kind === "success" || kind === "error") await H.notificationAsync(kind === "success" ? H.NotificationFeedbackType.Success : H.NotificationFeedbackType.Error);
+    else await H.impactAsync(kind === "medium" ? H.ImpactFeedbackStyle.Medium : H.ImpactFeedbackStyle.Light);
+  } catch (e) {
+    log.debug("haptic failed", e);
+  }
+}
+
+export async function copy(text: string) {
+  if (!has("clipboard")) return false;
+  const m = await import("expo-clipboard");
+  await m.setStringAsync(text);
+  track("device.copy");
+  return true;
+}
+
+/** A web page in the in-app browser (falls back to the system browser). */
+export async function openPage(url: string) {
+  track("device.browser");
+  if (!has("webBrowser")) {
+    const L = await import("expo-linking");
+    return L.openURL(url);
+  }
+  const m = await import("expo-web-browser");
+  return m.openBrowserAsync(url);
+}
+
+export async function notify(title: string, body: string, data?: Record<string, unknown>): Promise<boolean> {
+  if (!has("notifications")) return false;
+  const N = await import("expo-notifications");
+  const perm = await N.getPermissionsAsync();
+  if (!perm.granted && !(await N.requestPermissionsAsync()).granted) return false;
+  await N.scheduleNotificationAsync({ content: { title, body, data }, trigger: null });
+  track("device.notify");
+  return true;
 }
 
 // ---------- keep awake (player) ----------
