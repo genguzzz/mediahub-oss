@@ -1,10 +1,13 @@
-// Renders the assistant's ```media blocks: a row of poster cards (tap → the work's page; long press → the
-// usual 更多 sheet), each with its one-line reason. Cards appear as soon as each object in the block has
-// streamed (the rest show shimmering placeholders). Works already in the library carry 已入库; the others
-// get 入库, and the row 全部入库 (one /v1/ingest/auto call for all of them, after a confirm).
+// Renders the assistant's blocks. ```media: a row of poster cards (tap → the work's page; long press → the
+// usual 更多 sheet), each with its one-line reason; works already in the library carry 已入库, the others
+// get 入库, and the row 全部入库 (one /v1/ingest/auto call for all of them, after a confirm). ```video:
+// Bilibili / YouTube cards that open the site's app (or the page in the in-app browser). Cards appear as
+// soon as each object in the block has streamed; the rest show shimmering placeholders.
 import { useEffect, useState } from "react";
-import { Animated, Easing, Pressable, ScrollView, Text, View } from "react-native";
-import { PosterTile, type CardData } from "@/components/media";
+import { Animated, Easing, Linking, Pressable, ScrollView, Text, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import { Img, PosterTile, type CardData } from "@/components/media";
+import { openPage } from "@/lib/device";
 import { confirm, tap, toast, toastError } from "@/components/ui";
 import { api } from "@/lib/api";
 import { logger } from "@/lib/log";
@@ -62,7 +65,7 @@ function card(w: Work, i: number, added: boolean): CardData {
   };
 }
 
-function Shimmer() {
+function Shimmer({ w = W, h = W * 1.5 }: { w?: number; h?: number }) {
   const [a] = useState(() => new Animated.Value(0));
   useEffect(() => {
     const l = Animated.loop(Animated.timing(a, { toValue: 1, duration: 1100, easing: Easing.inOut(Easing.quad), useNativeDriver: true }));
@@ -71,10 +74,10 @@ function Shimmer() {
   }, [a]);
   const opacity = a.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0.35, 0.8, 0.35] });
   return (
-    <Animated.View style={{ width: W, opacity }}>
-      <View style={{ width: W, height: W * 1.5, borderRadius: radius.md, backgroundColor: colors.raised }} />
-      <View style={{ width: W * 0.8, height: 11, borderRadius: 4, marginTop: 9, backgroundColor: colors.raised }} />
-      <View style={{ width: W * 0.5, height: 9, borderRadius: 4, marginTop: 6, backgroundColor: colors.raised }} />
+    <Animated.View style={{ width: w, opacity }}>
+      <View style={{ width: w, height: h, borderRadius: radius.md, backgroundColor: colors.raised }} />
+      <View style={{ width: w * 0.8, height: 11, borderRadius: 4, marginTop: 9, backgroundColor: colors.raised }} />
+      <View style={{ width: w * 0.5, height: 9, borderRadius: 4, marginTop: 6, backgroundColor: colors.raised }} />
     </Animated.View>
   );
 }
@@ -84,6 +87,63 @@ async function ingest(works: Work[]) {
 }
 
 export function AiBlock({ seg }: { seg: Extract<Segment, { k: "block" }> }) {
+  return seg.type === "video" ? <VideoBlock seg={seg} /> : <MediaBlock seg={seg} />;
+}
+
+// ---------- ```video ----------
+
+type Vid = { site?: string; id?: string; title?: string; author?: string; duration?: string; views?: number; cover?: string; published?: string };
+const VW = 220;
+const okVid = (v: Vid) => !!v && (v.site === "bilibili" || v.site === "youtube") && !!v.id && /^[\w-]{6,20}$/.test(v.id);
+const coverOf = (v: Vid) => (v.site === "youtube" ? `https://i.ytimg.com/vi/${v.id}/mqdefault.jpg` : v.cover ? (/^https?:\/\//.test(v.cover) ? v.cover : `https://${v.cover.replace(/^\/+/, "")}`) : undefined);
+const count = (n?: number) => (n == null ? "" : n >= 1e8 ? `${(n / 1e8).toFixed(1)}亿` : n >= 1e4 ? `${(n / 1e4).toFixed(1)}万` : String(n));
+
+/** The site's app when installed (its URL scheme), else the page in the in-app browser. */
+async function openVideo(v: Vid) {
+  tap();
+  const web = v.site === "bilibili" ? `https://www.bilibili.com/video/${v.id}` : `https://www.youtube.com/watch?v=${v.id}`;
+  const app = v.site === "bilibili" ? `bilibili://video/${v.id}` : `youtube://www.youtube.com/watch?v=${v.id}`;
+  try {
+    await Linking.openURL(app);
+  } catch {
+    void openPage(web);
+  }
+}
+
+function VideoBlock({ seg }: { seg: Extract<Segment, { k: "block" }> }) {
+  const list = (seg.open ? (completeObjects(seg.raw) as Vid[]) : Array.isArray(seg.data) ? (seg.data as Vid[]) : []).filter(okVid);
+  if (!seg.open && (seg.error || !list.length)) return <Text selectable style={{ fontSize: fs.sm, color: colors.textFaint, marginVertical: 6 }}>{seg.raw}</Text>;
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 8, marginHorizontal: -16 }} contentContainerStyle={{ paddingHorizontal: 16, gap: 12 }}>
+      {list.map((v, i) => {
+        const uri = coverOf(v);
+        return (
+          <Pressable key={`${v.site}:${v.id}:${i}`} onPress={() => void openVideo(v)} style={({ pressed }) => ({ width: VW, opacity: pressed ? 0.85 : 1 })}>
+            <View style={{ borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.raised }}>
+              <Img label={v.title} where="ai-video" source={uri ? { uri } : undefined} style={{ width: VW, height: VW * 0.5625 }} icon="play-circle-outline" />
+              <View style={{ position: "absolute", left: 8, top: 8, flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, backgroundColor: v.site === "bilibili" ? "rgba(251,114,153,0.92)" : "rgba(230,33,23,0.92)" }}>
+                <Ionicons name={v.site === "bilibili" ? "tv-outline" : "logo-youtube"} size={11} color="#fff" />
+                <Text style={{ fontSize: 10, fontWeight: "700", color: "#fff" }}>{v.site === "bilibili" ? "B站" : "YouTube"}</Text>
+              </View>
+              {v.duration ? (
+                <View style={{ position: "absolute", right: 8, bottom: 8, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, backgroundColor: "rgba(0,0,0,0.7)" }}>
+                  <Text style={{ fontSize: 11, color: "#fff", fontVariant: ["tabular-nums"] }}>{v.duration}</Text>
+                </View>
+              ) : null}
+            </View>
+            <Text numberOfLines={2} style={{ fontSize: fs.md, lineHeight: 18, fontWeight: "600", color: colors.text, marginTop: 7 }}>{v.title}</Text>
+            <Text numberOfLines={1} style={{ fontSize: fs.xs, color: colors.textFaint, marginTop: 2 }}>{[v.author, v.views != null ? `${count(v.views)}播放` : "", v.published].filter(Boolean).join(" · ")}</Text>
+          </Pressable>
+        );
+      })}
+      {seg.open ? <View style={{ width: VW, height: VW * 0.5625 + 44 }}><Shimmer w={VW} h={VW * 0.5625} /></View> : null}
+    </ScrollView>
+  );
+}
+
+// ---------- ```media ----------
+
+function MediaBlock({ seg }: { seg: Extract<Segment, { k: "block" }> }) {
   const [added, setAdded] = useState<Set<string>>(() => new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const list = (seg.open ? completeObjects(seg.raw) : Array.isArray(seg.data) ? (seg.data as Work[]) : []).filter(valid);

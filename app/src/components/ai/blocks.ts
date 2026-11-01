@@ -1,7 +1,7 @@
 // Blocks in the assistant's Markdown: a fenced block whose info string is a block type and whose body is
 // JSON renders as a component; everything else stays Markdown. While streaming, an unclosed block is
 // `open` (skeleton); a closed block with bad JSON falls back to its raw text. Schemas: server/src/ai/prompt.ts.
-export const BLOCK_TYPES = ["media"] as const;
+export const BLOCK_TYPES = ["media", "video"] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
 
 export type Segment =

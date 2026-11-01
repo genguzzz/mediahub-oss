@@ -11,6 +11,7 @@ import type { FastifyInstance } from "fastify";
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { config } from "../config.ts";
+import { readKnowledge, TOPICS, type Topic } from "./knowledge.ts";
 
 export interface ToolCtx {
   app: FastifyInstance;
@@ -242,12 +243,16 @@ export const TOOLS: Record<string, Def> = {
   },
   find_resources: {
     tier: "read",
-    description: "搜索可下载的资源（Prowlarr 各索引器 + 直连源），给出资源列表（ref、标题、大小、做种、分辨率、编码、字幕组、季集、评分、被排除的原因）。影视最好带 tmdbid+type(+season)，否则用 keyword。入库时把 ref 交给 ingest_resource。耗时可能 30-90 秒。",
-    input: z.object({ tmdbid: z.number().int().positive().optional(), type: Type.optional(), season: z.number().int().min(0).optional(), keyword: z.string().max(200).optional() }),
-    label: (a) => `搜资源${a.keyword ? `「${a.keyword}」` : ""}`,
+    description: "搜索可下载的资源，给出资源列表（ref、标题、大小、做种、分辨率、编码、字幕组、季集、评分、被排除的原因、来自哪个索引）。不给 sources = 智能搜索（MoviePilot 按作品搜所有启用的索引，要 tmdbid+type(+season)）；给 sources（list_sources 里的 id，如 nyaa、mikan、prowlarr:3）= 只搜这些源，配合 keywords 给 1-4 个关键词（中文名、英文名、罗马音、别名）。入库时把 ref 交给 ingest_resource。耗时 10-90 秒。",
+    input: z.object({
+      tmdbid: z.number().int().positive().optional(), type: Type.optional(), season: z.number().int().min(0).optional(),
+      keyword: z.string().max(200).optional(), keywords: z.array(z.string().min(1).max(200)).max(4).optional(),
+      sources: z.array(z.string().max(40)).max(20).optional(),
+    }),
+    label: (a) => `搜资源${a.keyword || a.keywords?.[0] ? `「${a.keyword || a.keywords[0]}」` : ""}${a.sources?.length ? `（${a.sources.length} 个源）` : ""}`,
     run: async (ctx, a) => {
-      if (!a.tmdbid && !a.keyword) throw new ToolError("需要 tmdbid 或 keyword");
-      const r = await call(ctx, "POST", "/v1/search", { tmdbid: a.tmdbid, type: a.type ?? "tv", season: a.season, keyword: a.keyword });
+      if (!a.tmdbid && !a.keyword && !a.keywords?.length) throw new ToolError("需要 tmdbid 或 keyword / keywords");
+      const r = await call(ctx, "POST", "/v1/search", { tmdbid: a.tmdbid, type: a.type ?? "tv", season: a.season, keyword: a.keyword, keywords: a.keywords, sources: a.sources });
       if (r.ok === false) throw new ToolError(r.error || "搜索失败");
       const start = Object.keys(ctx.refs).length;
       const list = (r.results ?? []).slice(0, 25).map((x: any, i: number) => {
@@ -259,6 +264,66 @@ export const TOOLS: Record<string, Def> = {
         };
       });
       return { media: r.media, season: r.season, library: r.library, results: list };
+    },
+  },
+  video_search: {
+    tier: "read",
+    description: "搜 B 站 / YouTube 视频（解说、影评、剪辑、预告、访谈、教程等 UGC）。site = bilibili | youtube | both（默认 both，两边并行）；sort = relevance | latest | views。返回 site、id、标题、UP 主/频道、封面、时长、播放量、发布时间。展示用 video 卡片块。",
+    input: z.object({ query: z.string().min(1).max(100), site: z.enum(["bilibili", "youtube", "both"]).optional(), sort: z.enum(["relevance", "latest", "views"]).optional(), limit: z.number().int().min(1).max(20).optional() }),
+    label: (a) => `搜视频「${a.query}」`,
+    run: async (ctx, a) => {
+      const sites = a.site && a.site !== "both" ? [a.site] : ["bilibili", "youtube"];
+      const n = a.limit ?? (sites.length > 1 ? 6 : 10);
+      const got = await Promise.all(sites.map(async (site: string) => {
+        try {
+          const r = await call(ctx, "GET", `/v1/ugc/search${qs({ site, q: a.query, sort: a.sort })}`);
+          return (r.items ?? []).slice(0, n).map((v: any) => ({
+            site: v.site, id: v.id, title: cut(v.title, 70), author: v.author, duration: v.duration || undefined,
+            views: v.views ?? undefined, published: v.published || undefined,
+            // YouTube covers follow from the id; Bilibili's are kept (host + path, no scheme)
+            ...(v.site === "bilibili" && v.cover ? { cover: String(v.cover).replace(/^https?:\/\//, "") } : {}),
+          }));
+        } catch (e) {
+          return [{ site, error: e instanceof Error ? e.message : String(e) }];
+        }
+      }));
+      return got.flat();
+    },
+  },
+  list_sources: {
+    tier: "read",
+    description: "所有资源搜索源：直连源（Nyaa、AnimeTosho、Mikan…）和 Prowlarr 索引器（id 形如 prowlarr:3），每个的语言、标签（动漫/影视/中文/外文…）、简介、是否启用。按来源搜索、或判断该开哪个索引前先看它。",
+    input: z.object({}),
+    label: () => "看资源搜索源",
+    run: async (ctx) => ((await call(ctx, "GET", "/v1/sources")).sources ?? []).filter((x: any) => ctx.adult || x.kind !== "adult" && !(x.tags ?? []).includes("成人")).map((x: any) => ({
+      id: x.id, name: x.name, kind: x.kind, lang: x.lang, tags: x.tags, enabled: x.enabled, privacy: x.privacy, note: cut(x.note, 40) || undefined, desc: cut(x.desc, 70) || undefined,
+    })),
+  },
+  browse_indexers: {
+    tier: "read",
+    description: "Prowlarr 可添加的公开索引器目录（几百个）：按 query（名字/简介关键词）、lang（zh/en/ja/ru…）、tag（动漫/影视/中文…）筛选，返回 definition（添加用）、语言、标签、简介、是否已添加（addedId）。主人想加新索引、或现有源搜不到某类资源时用。",
+    input: z.object({ query: z.string().max(60).optional(), lang: z.string().max(8).optional(), tag: z.string().max(20).optional(), addableOnly: z.boolean().optional().describe("只看公开、可直接添加的（默认 true；私有 PT 站需要账号，不能在这里加）"), limit: z.number().int().min(1).max(40).optional() }),
+    label: (a) => `查可添加的索引${a.query ? `「${a.query}」` : ""}`,
+    run: async (ctx, a) => {
+      const q = (a.query ?? "").toLowerCase();
+      const items = ((await call(ctx, "GET", "/v1/prowlarr/catalog")).items ?? []).filter((x: any) =>
+        (ctx.adult || !(x.tags ?? []).includes("成人")) && (a.addableOnly === false || x.addable) && (!a.lang || x.lang === a.lang) && (!a.tag || (x.tags ?? []).includes(a.tag)) &&
+        (!q || `${x.name} ${x.desc} ${x.definition}`.toLowerCase().includes(q)));
+      return { total: items.length, note: a.addableOnly === false ? undefined : "只列公开可添加的；addableOnly=false 看全部（含私有 PT）", items: items.slice(0, a.limit ?? 20).map((x: any) => ({ name: x.name, definition: x.definition, lang: x.lang, tags: x.tags, privacy: x.privacy, addable: x.addable, addedId: x.addedId ?? undefined, desc: cut(x.desc, 80) })) };
+    },
+  },
+  manage_indexer: {
+    tier: "write",
+    description: "管理 Prowlarr 索引器：add（按 browse_indexers 的 definition 添加一个公开索引器）、enable / disable（按 list_sources 里的 prowlarr:<id> 启用或停用）。只在主人要求时做；不能删除索引器（删除在 App 设置 → 索引源）。改完后可以用 find_resources 指定这个源试搜。",
+    input: z.object({ action: z.enum(["add", "enable", "disable"]), definition: z.string().max(80).optional(), id: z.string().regex(/^prowlarr:\d+$/).optional() }),
+    label: (a) => (a.action === "add" ? `添加索引 ${a.definition ?? ""}` : `${a.action === "enable" ? "启用" : "停用"}索引 ${a.id ?? ""}`),
+    run: async (ctx, a) => {
+      if (a.action === "add") {
+        if (!a.definition) throw new ToolError("add 需要 definition（来自 browse_indexers）");
+        return call(ctx, "POST", "/v1/prowlarr", { action: "add", definition: a.definition });
+      }
+      if (!a.id) throw new ToolError("enable / disable 需要 id（prowlarr:<数字>，来自 list_sources）");
+      return call(ctx, "POST", "/v1/prowlarr", { action: "update", id: Number(a.id.split(":")[1]), enable: a.action === "enable" });
     },
   },
   catalog_list: {
@@ -325,6 +390,37 @@ export const TOOLS: Record<string, Def> = {
     input: z.object({ embyId: z.string().regex(/^\w+$/) }),
     label: () => "刷新媒体库条目",
     run: async (ctx, a) => call(ctx, "POST", `/v1/emby/item/${a.embyId}/refresh`, {}),
+  },
+  read_knowledge: {
+    tier: "read",
+    description: "读一篇平台知识（主题见系统提示里的 knowledge 索引）。问到系统怎么运作、某个状态什么意思、去哪操作、为什么没入库时先读对应主题，再结合工具看真实状态。",
+    input: z.object({ topic: z.enum(Object.keys(TOPICS) as [Topic, ...Topic[]]) }),
+    label: (a) => `查平台知识 ${a.topic}`,
+    run: async (ctx, a) => {
+      if (a.topic === "adult" && !ctx.adult) throw new ToolError("成人内容未开启");
+      return readKnowledge(a.topic);
+    },
+  },
+  platform_status: {
+    tier: "read",
+    description: "这套部署当前的实况：有哪些媒体库及数量（电影/剧集/集数、近 7 天新增）、115 和 NAS 空间、入库任务数（下载中/失败）、订阅数、qBittorrent、需要处理的健康问题数。回答『我库里有多少』『现在在下什么』『系统正常吗』时用。",
+    input: z.object({}),
+    label: () => "看系统实况",
+    run: async (ctx) => {
+      const [ov, st, he] = await Promise.all([
+        call(ctx, "GET", "/v1/overview").catch((e) => ({ error: String(e.message ?? e) })),
+        call(ctx, "GET", "/v1/stats").catch((e) => ({ error: String(e.message ?? e) })),
+        call(ctx, "GET", "/v1/health").catch(() => null),
+      ]);
+      const gb = (n: unknown) => (typeof n === "number" ? Math.round(n / 1e9) : undefined);
+      return {
+        libraries: (st.libraries ?? []).filter((l: any) => ctx.adult || !l.adult).map((l: any) => ({ name: l.name, movies: l.movies || undefined, series: l.series || undefined, episodes: l.episodes || undefined, videos: l.videos || undefined, new7d: l.new7d || undefined })),
+        storage: st.storage ? { c115UsedGB: gb(st.storage.c115?.used), c115FreeGB: gb(st.storage.c115?.remain), nasFreeGB: gb(st.storage.nas?.free) } : undefined,
+        pipeline: ov.pipeline, subscriptions: ov.subscriptions, qbittorrent: ov.qb,
+        health: he ? { problems: (he.checks ?? []).filter((c: any) => c.count && c.severity !== "info").map((c: any) => `${c.title}（${c.count}）`) } : undefined,
+        errors: [...(ov.errors ?? []), ...(st.errors ?? [])].slice(0, 5),
+      };
+    },
   },
   list_chats: {
     tier: "read",

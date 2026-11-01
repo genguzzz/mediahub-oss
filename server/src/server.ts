@@ -12,6 +12,7 @@ import { registerCatalog } from "./catalog/index.ts";
 import { registerAi } from "./ai/index.ts";
 import { embyEvents, startEmbyEvents } from "./embyEvents.ts";
 import { egressSummary } from "./egress.ts";
+import { searchVideos } from "./ugc.ts";
 import { initLog } from "./log.ts";
 
 const app = Fastify({
@@ -610,6 +611,12 @@ app.get("/v1/douban/related", async (req) => {
     return { ...brief({ ...m, ...(hit ?? {}) } as MpMedia), doubanRating: m.vote_average ?? null };
   }));
   return { items: await withLib(items) };
+});
+
+// Bilibili / YouTube video search (ugc.ts): talks, reviews, explainers, clips, trailers.
+app.get("/v1/ugc/search", async (req) => {
+  const q = z.object({ site: z.enum(["bilibili", "youtube"]), q: z.string().min(1).max(100), sort: z.enum(["relevance", "latest", "views", "favorites", "danmaku"]).default("relevance") }).parse(req.query);
+  return { items: await remember(`ugc:${q.site}:${q.sort}:${q.q}`, 10 * 60_000, () => searchVideos(q.site, q.q, q.sort)) };
 });
 
 // Emby login for the app's direct connection (the app logs in itself and keeps only its token).
