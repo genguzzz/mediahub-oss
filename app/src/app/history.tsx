@@ -4,6 +4,8 @@ import { LayoutToggle, Posters } from "@/components/media";
 import { useOpenMedia } from "@/components/mediaCards";
 import { ErrorBox, Loading, MoreFooter, Pull, Screen, TopBar } from "@/components/ui";
 import { api, img, type HistoryItem } from "@/lib/api";
+import { isAdult } from "@/lib/emby";
+import { useSettings } from "@/lib/settings";
 import { ago } from "@/lib/format";
 import { useAutoMore, usePaged } from "@/lib/query";
 
@@ -18,6 +20,7 @@ export default function HistoryScreen() {
     { id: (x) => String(x.id), pageSize: 30, staleMs: 30_000 },
   );
   const scroll = useAutoMore(h.autoMore);
+  const showAdult = useSettings((s) => s.showAdult);   // AV / 里番 downloads only with 成人内容 on
   return (
     <Screen>
       <TopBar title="下载记录" right={<LayoutToggle />} />
@@ -29,7 +32,7 @@ export default function HistoryScreen() {
         {h.error ? <ErrorBox text={h.error} onRetry={h.refresh} /> : null}
         {h.loading && !h.hasData ? <Loading /> : null}
         <Posters
-          items={h.items.map((x) => ({
+          items={h.items.filter((x) => showAdult || !isAdult(x.path)).map((x) => ({
             key: String(x.id),
             title: x.title,
             subtitle: [x.se, ago(x.date, now), x.by || "手动"].filter(Boolean).join(" · "),

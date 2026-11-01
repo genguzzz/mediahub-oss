@@ -1346,9 +1346,19 @@ class Hub:
                    "end": (t.get("LastExecutionResult") or {}).get("EndTimeUtc")}
                   for t in tasks if t.get("Category") in ("Library", "Metadata", "媒体库", "元数据") and t.get("LastExecutionResult")]
         log = (p.emby.get("/System/ActivityLog/Entries", Limit="30") or {}).get("Items") or []
+        # 播放记录指向 AV / 里番 库里的条目时标 adult：App 关了成人内容就不显示这些动态
+        ids = sorted({str(e.get("ItemId")) for e in log if e.get("ItemId")})
+        adult = set()
+        if ids:
+            try:
+                items = (p.emby.get("/Items", Ids=",".join(ids), Fields="Path") or {}).get("Items") or []
+                adult = {str(i.get("Id")) for i in items if re.search(r"/(AV|里番)/", i.get("Path") or "")}
+            except Exception as err:  # noqa: BLE001
+                logger.warning(f"【Prowlarr115】hub 动态条目路径读取失败：{err}")
         return {"ok": True, "running": running, "library_tasks": recent,
                 "log": [{"name": e.get("Name"), "type": e.get("Type"), "date": e.get("Date"), "severity": e.get("Severity"),
-                         "overview": e.get("ShortOverview") or e.get("Overview")} for e in log]}
+                         "overview": e.get("ShortOverview") or e.get("Overview"),
+                         "adult": str(e.get("ItemId") or "") in adult} for e in log]}
 
     # ---------------- 同目录字幕 ----------------
     SUB_EXT = (".ass", ".ssa", ".srt", ".vtt", ".sup", ".sub", ".idx")

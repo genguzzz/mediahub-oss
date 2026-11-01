@@ -8,7 +8,7 @@ import { ActionSheet, type SheetAction } from "@/components/ActionSheet";
 import { DownloadsPanel } from "@/components/Downloads";
 import { Img } from "@/components/media";
 import { Chip, ChipRow, EmptyState, ErrorBox, Loading, MoreFooter, Pull, Segmented, TAB_BAR_SPACE, TabHeader, styles, tap } from "@/components/ui";
-import { embyApi, posterOf, type Item } from "@/lib/emby";
+import { ADULT_LIBS, embyApi, posterOf, type Item } from "@/lib/emby";
 import { deleteFromLibrary } from "@/lib/libraryDelete";
 import { useAutoMore, usePaged, useQuery } from "@/lib/query";
 import { useSettings } from "@/lib/settings";
@@ -16,7 +16,6 @@ import { colors, radius } from "@/lib/theme";
 
 type Seg = "library" | "downloads";
 type Sort = "added" | "name" | "year";
-const ADULT = new Set(["AV", "里番"]);
 const PAGE = 40;
 
 export default function ManageTab() {
@@ -35,7 +34,7 @@ function LibraryManager() {
   const router = useRouter();
   const showAdult = useSettings((s) => s.showAdult);
   const views = useQuery("emby:views", () => embyApi.views(), { staleMs: 10 * 60_000 });
-  const libs = (views.data?.Items ?? []).filter((v) => showAdult || !ADULT.has(v.Name));
+  const libs = (views.data?.Items ?? []).filter((v) => showAdult || !ADULT_LIBS.has(v.Name));
   const [lib, setLib] = useState<string | null>(null);
   const cur = lib ?? libs[0]?.Id ?? null;
   const [sort, setSort] = useState<Sort>("added");

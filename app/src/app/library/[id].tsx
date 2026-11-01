@@ -5,7 +5,8 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { itemCard } from "@/components/embyCards";
 import { LayoutToggle, Posters } from "@/components/media";
 import { Chip, ChipRow, EmptyState, ErrorBox, Loading, MoreFooter, Screen, TopBar, styles, Pull } from "@/components/ui";
-import { embyApi, type Item, type ItemsResult } from "@/lib/emby";
+import { embyApi, isAdult, type Item, type ItemsResult } from "@/lib/emby";
+import { useSettings } from "@/lib/settings";
 import { useAutoMore, usePaged } from "@/lib/query";
 import { colors, radius } from "@/lib/theme";
 
@@ -32,7 +33,9 @@ export default function LibraryScreen() {
     { id: (i: Item) => i.Id, pageSize: PAGE, maxPages: 200, staleMs: 60_000 },
   );
   const scroll = useAutoMore(q.autoMore);
-  const items = q.items;
+  // 收藏 / 全部 / search span every library: with 成人内容 off, AV / 里番 items stay out
+  const showAdult = useSettings((s) => s.showAdult);
+  const items = showAdult || parentId ? q.items : q.items.filter((i) => !isAdult(i));
 
   const open = (i: Item) => router.push({ pathname: "/emby/[id]", params: { id: i.Id } });
 

@@ -9,13 +9,12 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { appVersion } from "@/lib/api";
 import { useQuery } from "@/lib/query";
 import { checkAndFetch, restartToApply } from "@/lib/updates";
-import { embyApi } from "@/lib/emby";
+import { ADULT_LIBS, embyApi } from "@/lib/emby";
 import { useSettings } from "@/lib/settings";
 import { colors } from "@/lib/theme";
 import { closeDrawer, openDrawer, useDrawerOpen } from "./drawerState";
 import { tap, toast, toastError } from "./ui";
 
-const ADULT = new Set(["AV", "里番"]);
 const LIB_ICON: Record<string, keyof typeof Ionicons.glyphMap> = { movies: "film-outline", tvshows: "tv-outline", homevideos: "videocam-outline", music: "musical-notes-outline" };
 
 export function DrawerHost() {
@@ -39,7 +38,7 @@ export function DrawerHost() {
     setTimeout(() => router.push(href), 160);
   };
 
-  const libs = (views.data?.Items ?? []).filter((v) => showAdult || !ADULT.has(v.Name));
+  const libs = (views.data?.Items ?? []).filter((v) => showAdult || !ADULT_LIBS.has(v.Name));
   // Always mounted (off-screen when closed) so the slide-out can animate; touches pass through when closed.
   return (
     <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 100 }} pointerEvents={isOpen ? "box-none" : "none"}>

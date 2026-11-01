@@ -207,7 +207,14 @@ export async function emby<T>(path: string | (() => string), opts: { method?: st
 const uid = () => account().userId;
 // Extra fields only the detail page needs.
 const DETAIL_FIELDS = "People,Studios,MediaSources,Path,Taglines,Tags,CriticRating,RemoteTrailers,ExternalUrls,ProductionLocations,EndDate,AirDays,AirTime,Chapters,PremiereDate";
-const FIELDS = "PrimaryImageAspectRatio,Overview,Genres,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,ChildCount,RecursiveItemCount,DateCreated,Status,ProviderIds";
+// Path: lets lists drop AV / 里番 items when 成人内容 is off (isAdult below)
+const FIELDS = "PrimaryImageAspectRatio,Overview,Genres,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,ChildCount,RecursiveItemCount,DateCreated,Status,ProviderIds,Path";
+
+/** The AV / 里番 libraries (hidden with 成人内容 off: views, favourites, continue watching, history). */
+export const ADULT_LIBS = new Set(["AV", "里番"]);
+const ADULT_PATH = /\/(AV|里番)(\/|$)/;
+/** An Emby item (by its file path) or a download path (115 / NAS) in an adult library. */
+export const isAdult = (x: { Path?: string } | string | null | undefined) => ADULT_PATH.test(typeof x === "string" ? x : x?.Path ?? "");
 
 function qs(params: Record<string, string | number | boolean | undefined | null>) {
   return Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "").map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join("&");

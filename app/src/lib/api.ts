@@ -347,7 +347,7 @@ export interface EmbyDetail {
 export interface EmbyActivity {
   running: { id: string; name: string; category: string; progress: number | null; state: string }[];
   library_tasks: { id: string; name: string; status: string; end: string }[];
-  log: { name: string; type: string; date: string; severity: string; overview: string | null }[];
+  log: { name: string; type: string; date: string; severity: string; overview: string | null; adult?: boolean }[]; // adult: a playback entry of an AV / 里番 item
 }
 
 export interface HistoryItem { id: number; title: string; year: string; type: Kind; se: string; poster: string | null; torrent: string; site: string; date: string; by: string; hash: string; path: string; source: string; sourceId: string; tmdbid: number | null }

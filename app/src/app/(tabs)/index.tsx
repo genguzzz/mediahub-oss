@@ -3,12 +3,11 @@ import { useRouter } from "expo-router";
 import { itemCard } from "@/components/embyCards";
 import { LandscapeTile, PosterTile, Row } from "@/components/media";
 import { Chip, ChipRow, EmptyState, ErrorBox, IconButton, Loading, PillButton, TAB_BAR_SPACE, TabHeader, Pull } from "@/components/ui";
-import { embyApi, type Item } from "@/lib/emby";
+import { ADULT_LIBS, embyApi, isAdult, type Item } from "@/lib/emby";
 import { useQuery } from "@/lib/query";
 import { useSettings } from "@/lib/settings";
 import { colors } from "@/lib/theme";
 
-const ADULT = new Set(["AV", "里番"]);
 
 export default function LibraryHome() {
   const router = useRouter();
@@ -18,7 +17,7 @@ export default function LibraryHome() {
   const views = useQuery(hasToken ? "emby:views" : null, () => embyApi.views(), { staleMs: 10 * 60_000 });
   const resume = useQuery(hasToken ? "emby:resume" : null, () => embyApi.resume(20), { staleMs: 30_000 });
   const nextUp = useQuery(hasToken ? "emby:nextup" : null, () => embyApi.nextUp(20), { staleMs: 60_000 });
-  const libs = (views.data?.Items ?? []).filter((v) => (showAdult || !ADULT.has(v.Name)) && v.CollectionType !== "playlists");
+  const libs = (views.data?.Items ?? []).filter((v) => (showAdult || !ADULT_LIBS.has(v.Name)) && v.CollectionType !== "playlists");
 
   const open = (i: Item) => {
     if (i.Type === "Episode" || i.Type === "Movie" || i.Type === "Video") router.push({ pathname: "/emby/[id]", params: { id: i.Id } });
@@ -49,7 +48,7 @@ export default function LibraryHome() {
           ) : null}
           {resume.data?.Items.length ? (
             <Row title="继续观看">
-              {resume.data.Items.filter((i) => showAdult || !isAdultPath(i)).map((i) => <LandscapeTile key={i.Id} c={itemCard(i, play, true)} />)}
+              {resume.data.Items.filter((i) => showAdult || !isAdult(i)).map((i) => <LandscapeTile key={i.Id} c={itemCard(i, play, true)} />)}
             </Row>
           ) : null}
           {nextUp.data?.Items.length ? (
@@ -63,10 +62,6 @@ export default function LibraryHome() {
       )}
     </View>
   );
-}
-
-function isAdultPath(i: Item) {
-  return /\/(AV|里番)\//.test(i.Path ?? "");
 }
 
 function LatestRow({ lib, open, onMore }: { lib: Item; open: (i: Item) => void; onMore: () => void }) {

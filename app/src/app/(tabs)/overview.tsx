@@ -7,6 +7,7 @@ import { useOpenMedia } from "@/components/mediaCards";
 import { ErrorBox, Loading, ProgressBar, Pull, TAB_BAR_SPACE, TabHeader, styles, tap } from "@/components/ui";
 import { LibraryGrid, StorageCard } from "@/components/SystemCards";
 import { api, img, pipelineQuery, statsQuery, type EmbyActivity, type Health, type HistoryItem, type Overview } from "@/lib/api";
+import { isAdult } from "@/lib/emby";
 import { useSettings } from "@/lib/settings";
 import { ago, pct, speed } from "@/lib/format";
 import { useQuery } from "@/lib/query";
@@ -26,6 +27,8 @@ export default function OverviewTab() {
   const issues = (health.data?.ok ? health.data.checks : []).filter((c) => c.count && c.severity !== "info");
   const showAdult = useSettings((s) => s.showAdult);
   const libs = (stats.data?.libraries ?? []).filter((l) => showAdult || !l.adult);
+  // with 成人内容 off: no AV / 里番 downloads, no playback entries of their items
+  const recent = (hist.data?.items ?? []).filter((h) => showAdult || !isAdult(h.path));
   const [now] = useState(() => Date.now());
   const p = ov.data?.pipeline;
   const running = emby.data?.running ?? [];
@@ -99,9 +102,9 @@ export default function OverviewTab() {
           </View>
         ) : null}
 
-        {hist.data?.items.length ? (
+        {recent.length ? (
           <Row title="最近下载" onMore={() => router.push("/history")}>
-            {hist.data.items.slice(0, 20).map((h) => (
+            {recent.slice(0, 20).map((h) => (
               <PosterTile
                 key={h.id}
                 w={124}
@@ -137,7 +140,7 @@ export default function OverviewTab() {
                 <Text style={styles.body}>没有正在运行的扫描或刮削任务</Text>
               </View>
             )}
-            {(emby.data?.log ?? []).filter((l) => !/Authentication|Session/i.test(l.type)).slice(0, 6).map((l, i) => (
+            {(emby.data?.log ?? []).filter((l) => !/Authentication|Session/i.test(l.type) && (showAdult || !l.adult)).slice(0, 6).map((l, i) => (
               <View key={`${l.date}${i}`} style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
                 <Text style={[styles.faint, { width: 64 }]}>{ago(l.date, now)}</Text>
                 <Text style={[styles.faint, { flex: 1, color: colors.textSoft }]} numberOfLines={2}>{l.name}</Text>
