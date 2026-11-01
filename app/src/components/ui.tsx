@@ -1,5 +1,5 @@
-import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
-import { ActivityIndicator, Alert, Animated, Modal, Pressable, RefreshControl, ScrollView, Text, View, type RefreshControlProps, type TextProps, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { ActivityIndicator, Alert, Animated, Modal, PanResponder, Pressable, RefreshControl, ScrollView, Text, View, type RefreshControlProps, type TextProps, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Image } from "expo-image";
 import { imageLog } from "@/lib/imageLog";
@@ -284,17 +284,59 @@ export function Row({ label, value, onPress }: { label: string; value?: string |
 
 // ---------- bottom sheet ----------
 
+function sheetPan(dy: Animated.Value, box: { current: { atTop: boolean; close: () => void } }, handle: boolean) {
+  const down = (g: { dx: number; dy: number }) => g.dy > (handle ? 4 : 8) && Math.abs(g.dy) > Math.abs(g.dx) * 1.2 && (handle || box.current.atTop);
+  return PanResponder.create({
+    onStartShouldSetPanResponder: () => handle,
+    onMoveShouldSetPanResponderCapture: (_e, g) => !handle && down(g),
+    onMoveShouldSetPanResponder: (_e, g) => down(g),
+    onPanResponderMove: (_e, g) => dy.setValue(Math.max(0, g.dy)),
+    onPanResponderRelease: (_e, g) => {
+      if (g.dy > 100 || g.vy > 0.8) {
+        tap();
+        Animated.timing(dy, { toValue: 900, duration: 180, useNativeDriver: true }).start(() => box.current.close());
+      } else {
+        Animated.spring(dy, { toValue: 0, useNativeDriver: true, damping: 20, stiffness: 260 }).start();
+      }
+    },
+    onPanResponderTerminate: () => Animated.spring(dy, { toValue: 0, useNativeDriver: true }).start(),
+  });
+}
+
+// Bottom sheet. Drag it down to close: from the grabber / title anywhere, and from the content once its
+// list is scrolled to the top (the pan only takes over a downward drag there, so scrolling still works).
 export function Sheet({ visible, onClose, title, children, scroll, footer }: { visible: boolean; onClose: () => void; title?: string; children?: ReactNode; scroll?: boolean; footer?: ReactNode }) {
   const insets = useSafeAreaInsets();
+  const [dy] = useState(() => new Animated.Value(0));
+  // read by the gesture callbacks (never during render): whether the content is scrolled to the top, the latest onClose
+  const box = useRef({ atTop: true, close: onClose });
+  useEffect(() => { box.current.close = onClose; });
+  useEffect(() => {
+    if (visible) {
+      dy.setValue(0);
+      box.current.atTop = true;
+    }
+  }, [visible, dy]);
+  // eslint-disable-next-line react-hooks/refs -- the ref is only read inside the PanResponder callbacks
+  const [pan] = useState(() => sheetPan(dy, box, false));
+  // the grabber and title always drag, even when the list below is scrolled
+  // eslint-disable-next-line react-hooks/refs -- same
+  const [grab] = useState(() => sheetPan(dy, box, true));
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} statusBarTranslucent>
       <Pressable style={{ flex: 1, backgroundColor: colors.backdrop }} onPress={onClose} />
-      <View style={{ maxHeight: "86%", backgroundColor: colors.sheet, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 18, paddingTop: 10, paddingBottom: insets.bottom + 14, borderTopWidth: 1, borderColor: colors.border }}>
-        <View style={{ alignSelf: "center", width: 40, height: 5, borderRadius: 3, backgroundColor: colors.border, marginBottom: 12 }} />
-        {title ? <Text style={{ fontSize: 18, fontWeight: "700", color: colors.text, marginBottom: 8 }}>{title}</Text> : null}
-        {scroll ? <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">{children}</ScrollView> : children}
+      <Animated.View {...pan.panHandlers} style={{ maxHeight: "86%", backgroundColor: colors.sheet, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 18, paddingTop: 10, paddingBottom: insets.bottom + 14, borderTopWidth: 1, borderColor: colors.border, transform: [{ translateY: dy }] }}>
+        <View {...grab.panHandlers} style={{ marginHorizontal: -18, paddingHorizontal: 18, paddingBottom: 2 }}>
+          <View style={{ alignSelf: "center", width: 40, height: 5, borderRadius: 3, backgroundColor: colors.border, marginBottom: 12 }} />
+          {title ? <Text style={{ fontSize: 18, fontWeight: "700", color: colors.text, marginBottom: 8 }}>{title}</Text> : null}
+        </View>
+        {scroll ? (
+          <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" scrollEventThrottle={16} onScroll={(e) => { box.current.atTop = e.nativeEvent.contentOffset.y <= 0; }}>
+            {children}
+          </ScrollView>
+        ) : children}
         {footer ? <View style={{ paddingTop: 10 }}>{footer}</View> : null}
-      </View>
+      </Animated.View>
     </Modal>
   );
 }
