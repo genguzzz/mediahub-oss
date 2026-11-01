@@ -112,26 +112,33 @@ const plain = (m: StoredMsg) => (m.content || m.steps.filter((s) => s.t === "tex
   .replace(/```media\s*([\s\S]*?)```/g, (_, j: string) => cardsText(j))
   .replace(/```cards\s*([\s\S]*?)```/g, (b: string) => `[卡片：${refsIn(b).map((r, i) => `${i + 1}.${m.cards?.[r]?.title ? `《${m.cards[r]!.title}》` : ""}(${r})`).join(" ")}]`);
 
+// Any of the query's words (space-separated) matches; no hit → the recent chats, marked, so the model has
+// something to go on instead of an empty list. The current chat is skipped: it is already in the context.
 async function searchChats(query: string, limit: number, except: number) {
   await load();
-  const q = query.trim().toLowerCase();
-  const out: { id: number; title: string; updated: string; questions: number; hit?: string }[] = [];
-  for (const c of [...chats.values()].sort((a, b) => b.updated - a.updated)) {
-    if (c.id === except) continue;
+  const words = query.toLowerCase().split(/[\s,，、]+/).filter(Boolean);
+  const row = (c: Chat, hit?: string) => ({ id: c.id, title: c.title, updated: new Date(c.updated).toISOString().slice(0, 16), questions: c.msgs.filter((x) => x.role === "user").length, ...(hit ? { hit } : {}) });
+  const list = [...chats.values()].filter((c) => c.id !== except).sort((a, b) => b.updated - a.updated);
+  if (!words.length) return list.slice(0, limit).map((c) => row(c));
+  const out: ReturnType<typeof row>[] = [];
+  for (const c of list) {
     let hit: string | undefined;
-    if (q) {
-      const m = c.msgs.find((x) => plain(x).toLowerCase().includes(q));
-      if (!m && !c.title.toLowerCase().includes(q)) continue;
-      if (m) {
-        const t = plain(m);
-        const i = t.toLowerCase().indexOf(q);
-        hit = `${m.role === "user" ? "问" : "答"}：…${t.slice(Math.max(0, i - 40), i + 80).replace(/\s+/g, " ")}…`;
-      }
+    let found = words.some((w) => c.title.toLowerCase().includes(w));
+    for (const m of c.msgs) {
+      const t = plain(m);
+      const low = t.toLowerCase();
+      const w = words.find((x) => low.includes(x));
+      if (!w) continue;
+      const i = low.indexOf(w);
+      hit = `${m.role === "user" ? "问" : "答"}：…${t.slice(Math.max(0, i - 40), i + 80).replace(/\s+/g, " ")}…`;
+      found = true;
+      break;
     }
-    out.push({ id: c.id, title: c.title, updated: new Date(c.updated).toISOString().slice(0, 16), questions: c.msgs.filter((x) => x.role === "user").length, ...(hit ? { hit } : {}) });
+    if (found) out.push(row(c, hit));
     if (out.length >= limit) break;
   }
-  return out;
+  if (out.length) return out;
+  return { noMatch: `以前的对话里没有「${query}」（当前这次对话不在搜索范围内，它已在上下文里）。最近的对话：`, recent: list.slice(0, Math.min(limit, 8)).map((c) => row(c)) };
 }
 
 async function readChat(id: number, maxChars: number) {
@@ -246,6 +253,8 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
       }));
     }
   };
+  // the model's history for this turn; kept even when the turn is stopped or fails, so the next question has its context
+  let messages: Msg[] = [...trim(c.history), { role: "user", content: question }];
   const usage: Usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, searches: 0 };
   let usedModel = model ?? "";
   const priced = () => {
@@ -275,7 +284,6 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
     const [core, recalled] = await Promise.all([profile(), recall(`${c.title} ${question}`)]);
     const system = systemPrompt({ profile: core, recalled, recent: await recentTitles(id), context, now: new Date() });
     const tools = toolList(context.adult, context.webSearch ?? webSearch);
-    const messages: Msg[] = [...trim(c.history), { role: "user", content: question }];
     usedModel = model || defModel;
     for (let round = 0; round < 30; round++) {
       if (run.abort.signal.aborted) throw new Error("已停止");
@@ -418,6 +426,9 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
   } catch (e) {
     const err = run.abort.signal.aborted ? "已停止" : e instanceof Error ? e.message : String(e);
     if (!run.abort.signal.aborted) log.warn({ chat: id, err }, "ai turn failed");
+    // completed rounds are valid pairs (a round's assistant message is added with its tool results), so the
+    // history ends on the question or on tool results: close it with what was said and how it ended
+    c.history = [...messages, { role: "assistant", content: `${text.trim() ? `${text.trim()}\n\n` : ""}（这次回答没有完成：${err}）` }];
     c.msgs.push({ id: c.msgs.length + 1, ts: Date.now(), role: "assistant", content: text, steps: steps.filter((s) => s.t !== "text" || s.v), error: err, latencyMs: Date.now() - t0, ...priced(), ...(Object.keys(shown).length ? { cards: shown } : {}) });
     c.updated = Date.now();
     await save(c);
