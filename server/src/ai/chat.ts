@@ -283,10 +283,16 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
             thinkStart.set(e.index, Date.now());
             ev({ type: "think_start" });
           } else if (b.type === "text") {
-            const s: Step = { t: "text", v: "" };
-            steps.push(s);
-            blockStep.set(e.index, s);
-            ev({ type: "text_start" });
+            // web search answers come as many text blocks (split at each citation): a block right after
+            // another text block continues it, so a sentence and its 。 stay in one paragraph
+            const prev = steps[steps.length - 1];
+            if (prev?.t === "text") blockStep.set(e.index, prev);
+            else {
+              const s: Step = { t: "text", v: "" };
+              steps.push(s);
+              blockStep.set(e.index, s);
+              ev({ type: "text_start" });
+            }
           } else if (b.type === "tool_use" || b.type === "server_tool_use") {
             const name = b.name;
             const s: Step = { t: "tool", id: b.id, name, label: name === "web_search" ? "联网搜索" : name === "web_fetch" ? "读取网页" : labelOf(name, {}), input: "", ok: null };

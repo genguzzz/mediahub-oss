@@ -28,7 +28,10 @@ function groups(m: Msg): Group[] {
   const out: Group[] = [];
   for (const p of m.parts) {
     if (p.t === "text") {
-      if (p.v.trim()) out.push({ k: "text", v: p.v });
+      // adjacent text parts are one run of prose (web search splits it at each citation)
+      const g = out[out.length - 1];
+      if (g?.k === "text") g.v += p.v;
+      else if (p.v.trim()) out.push({ k: "text", v: p.v });
     } else {
       const g = out[out.length - 1];
       if (g?.k === "tools") g.items.push(p);
