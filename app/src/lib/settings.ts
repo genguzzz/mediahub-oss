@@ -13,6 +13,7 @@ export interface Settings {
   server: string;        // backend base URL, no trailing slash
   token: string;         // APP_TOKEN from the server .env
   showAdult: boolean;    // AV / 里番 libraries, sources and search modes
+  adultLock: boolean;    // turning showAdult on (and this lock off) needs Face ID / the device passcode
   notify: boolean;       // local notifications when a task finishes or fails
   theme: "system" | "light" | "dark";
   style: StyleId;        // colour style, see theme.ts STYLES
@@ -43,7 +44,7 @@ const store = Platform.OS === "web"
 const randomId = () => `mh-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`;
 
 let state: Settings = {
-  server: DEFAULT_SERVER, token: "", showAdult: false, notify: true, theme: "system", style: "cinema", layout: "grid", subtitleScale: 1, fitMode: "fit", sources: null, castTv: null,
+  server: DEFAULT_SERVER, token: "", showAdult: false, adultLock: false, notify: true, theme: "system", style: "cinema", layout: "grid", subtitleScale: 1, fitMode: "fit", sources: null, castTv: null,
   emby: { server: "", username: "", token: "", userId: "", deviceId: randomId() },
 };
 let loaded = false;

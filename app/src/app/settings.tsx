@@ -10,6 +10,7 @@ import { Card, PillButton, Row, Screen, SectionTitle, Segmented, TopBar, confirm
 import { api, appVersion, type Overview } from "@/lib/api";
 import { embyApi, login, logout } from "@/lib/emby";
 import { collectLogs } from "@/lib/log";
+import { authenticate } from "@/lib/device";
 import { ensureNotifyPermission } from "@/lib/notify";
 import { clearAll, invalidate } from "@/lib/query";
 import { DEFAULT_EMBY_SERVER } from "@/lib/instance";
@@ -21,6 +22,15 @@ import { checkAndFetch, restartToApply, runningLabel } from "@/lib/updates";
 export default function SettingsScreen() {
   const router = useRouter();
   const s = useSettings((x) => x);
+  // Hiding is always free; showing adult content, and changing the lock itself, need the owner's face or passcode.
+  const setAdult = async (v: boolean) => {
+    if (v && s.adultLock && !(await authenticate("打开成人内容"))) return;
+    setSettings({ showAdult: v });
+  };
+  const setLock = async (v: boolean) => {
+    if (!(await authenticate(v ? "开启成人内容验证" : "关闭成人内容验证"))) return;
+    setSettings({ adultLock: v });
+  };
   const [srv, setSrv] = useState(s.server);
   const [tok, setTok] = useState(s.token);
   const [embySrv, setEmbySrv] = useState(s.emby.server || DEFAULT_EMBY_SERVER);
@@ -150,7 +160,14 @@ export default function SettingsScreen() {
               <Text style={styles.title}>成人内容</Text>
               <Text style={styles.faint}>AV、里番的库、搜索模式和 sukebei 来源</Text>
             </View>
-            <Switch value={s.showAdult} onValueChange={(v) => setSettings({ showAdult: v })} trackColor={{ true: colors.primary }} />
+            <Switch value={s.showAdult} onValueChange={(v) => void setAdult(v)} trackColor={{ true: colors.primary }} />
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.title}>开启时验证</Text>
+              <Text style={styles.faint}>打开成人内容要先过面容 ID 或锁屏密码</Text>
+            </View>
+            <Switch value={s.adultLock} onValueChange={(v) => void setLock(v)} trackColor={{ true: colors.primary }} />
           </View>
         </Card>
 
