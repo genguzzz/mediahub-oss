@@ -46,13 +46,23 @@ export default function ResourcesScreen() {
   // one per enabled Prowlarr indexer) and fill the list as each answers, instead of waiting for the slowest.
   const smartQ = useQuery(mode === "smart" && !waiting ? key : null, () => api<SearchResult>("/v1/search", { body, timeoutMs: 160_000 }), { staleMs: 15 * 60_000 });
   const allSources = useQuery(mode !== "smart" ? "sources" : null, () => api<{ sources: Source[] }>("/v1/sources"), { staleMs: 10 * 60_000 });
-  const expanded = useMemo(() => {
-    if (mode === "smart") return null;
-    if (!picked.includes("prowlarr")) return picked;
-    if (!allSources.data) return null;
-    const idx = allSources.data.sources.filter((x) => x.kind === "prowlarr" && x.enabled && x.prowlarrEnabled !== false).map((x) => x.id);
-    return [...new Set([...picked.filter((x) => x !== "prowlarr"), ...idx])];
-  }, [mode, picked, allSources.data]);
+  // The requests actually sent: 「全部已启用索引器」 expands to each enabled indexer; indexers Prowlarr has
+  // paused after failures (downTill in the future) or that are switched off are left out — Prowlarr would
+  // answer 400 "all selected indexers being unavailable" — and named in the header instead.
+  const [now] = useState(() => Date.now());
+  const { expanded, skipped } = useMemo(() => {
+    if (mode === "smart") return { expanded: null, skipped: [] as string[] };
+    const byId = new Map((allSources.data?.sources ?? []).map((x) => [x.id, x]));
+    const usable = (id: string) => {
+      const x = byId.get(id);
+      return !x || (x.enabled !== false && x.prowlarrEnabled !== false && !(x.downTill && new Date(x.downTill).getTime() > now));
+    };
+    if (picked.includes("prowlarr") && !allSources.data) return { expanded: null, skipped: [] as string[] };
+    const all = picked.includes("prowlarr")
+      ? [...new Set([...picked.filter((x) => x !== "prowlarr"), ...(allSources.data?.sources ?? []).filter((x) => x.kind === "prowlarr" && x.enabled && x.prowlarrEnabled !== false).map((x) => x.id)])]
+      : picked;
+    return { expanded: all.filter(usable), skipped: all.filter((x) => !usable(x)).map((x) => byId.get(x)?.name ?? x) };
+  }, [mode, picked, allSources.data, now]);
   const streamQ = useStreamSearch(mode !== "smart" && !waiting ? key : null, body, expanded);
   const q = mode === "smart" ? { ...smartQ, progress: null as null | { done: number; total: number } } : streamQ;
   const [kwText, setKwText] = useState<string | null>(null);
@@ -126,7 +136,7 @@ export default function ResourcesScreen() {
       </View>
       {mode !== "smart" ? (
         <Pressable onPress={() => { tap(); setSourceSheet(true); }} style={{ marginHorizontal: 16, marginBottom: 8 }}>
-          <Text style={styles.faint} numberOfLines={1}>{keywords.length > 1 ? `另有 ${keywords.length - 1} 个关键词 · ` : ""}来源 {picked.length} 个{q.progress && q.progress.done < q.progress.total ? ` · ${q.progress.done}/${q.progress.total} 个来源已返回` : ""} · 点这里修改</Text>
+          <Text style={styles.faint} numberOfLines={2}>{keywords.length > 1 ? `另有 ${keywords.length - 1} 个关键词 · ` : ""}来源 {expanded?.length ?? picked.length} 个{skipped.length ? `（${skipped.join("、")} 暂停中，已跳过）` : ""}{q.progress && q.progress.done < q.progress.total ? ` · ${q.progress.done}/${q.progress.total} 个已返回` : ""} · 点这里修改</Text>
         </Pressable>
       ) : null}
 
@@ -438,7 +448,7 @@ function useStreamSearch(key: string | null, body: Record<string, unknown>, sour
           const add = r.results.filter((x) => { const k = x.magnet || x.id; if (seen.has(k)) return false; seen.add(k); return true; });
           const prev: SearchResult | null = merged;
           merged = { ...(prev ?? r), results: [...(prev?.results ?? []), ...add] };
-          if (r.error) errors.push(r.error);
+          if (r.error && !errors.includes(r.error)) errors.push(r.error);
         })
         .catch((e: unknown) => { errors.push(`${one}：${e instanceof Error ? e.message : String(e)}`); })
         .finally(() => {
@@ -458,10 +468,11 @@ function useStreamSearch(key: string | null, body: Record<string, unknown>, sour
   }, [run]);
   const cur = st && st.run === run ? st : null;
   const failedAll = cur && cur.done === cur.total && !cur.data;
+  const none = !!run && sources?.length === 0;   // every picked source is paused or switched off
   return {
     data: cur?.data ?? undefined,
-    loading: !!run && (!cur || cur.done < cur.total),
-    error: failedAll ? "所有来源都没有返回结果" : undefined,
+    loading: !!run && !none && (!cur || cur.done < cur.total),
+    error: none ? "选中的来源都暂停中或已停用，换几个来源再搜" : failedAll ? "所有来源都没有返回结果" : undefined,
     refresh: () => setNonce((n) => n + 1),
     progress: run && sources ? { done: cur?.done ?? 0, total: sources.length } : null,
   };

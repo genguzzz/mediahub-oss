@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.sdk.logging import logger
@@ -360,8 +360,15 @@ class Hub:
             return [], "缺少关键词"
         jobs = []
         prow = [int(s.split(":", 1)[1]) for s in sources if s.startswith("prowlarr:") and s.split(":", 1)[1].isdigit()]
+        skipped = ""
+        if prow:
+            # Prowlarr refuses a search whose indexers are all switched off or paused after failures (400 "all
+            # selected indexers being unavailable"): leave those out and say so
+            prow, skipped = self._usable_indexers(prow)
         if prow or "prowlarr" in sources:
             jobs.append(("prowlarr", lambda: self._prowlarr(q, prow)))
+        elif skipped and not jobs and not any(s in sources for s in ("nyaa", "animetosho", "mikan", "sukebei-av", "sukebei-anime")):
+            return [], skipped
         if "nyaa" in sources:
             jobs.append(("nyaa", lambda: nyaa_limited(_get, q, "seeders", 1)))
         if "animetosho" in sources:
@@ -389,14 +396,50 @@ class Hub:
                     if it and it["id"] not in seen:
                         seen.add(it["id"])
                         out.append(it)
+        if skipped:
+            errs.append(skipped)
         return out, "；".join(errs) or None
+
+    def _usable_indexers(self, ids: List[int]) -> tuple:
+        """ids Prowlarr will search now, and a note naming the ones it won't (switched off / paused until …)."""
+        try:
+            _, ix = self._pw("GET", "/indexer", timeout=15)
+            _, st = self._pw("GET", "/indexerstatus", timeout=15)
+        except Exception:  # noqa: BLE001
+            return ids, ""
+        names = {i.get("id"): i.get("name") or str(i.get("id")) for i in ix or []}
+        off = {i.get("id") for i in ix or [] if not i.get("enable")}
+        now = datetime.now(timezone.utc)
+        paused = {}
+        for x in st or []:
+            till = str(x.get("disabledTill") or "")
+            try:
+                t = datetime.fromisoformat(till.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if t > now:
+                paused[x.get("indexerId")] = t.astimezone().strftime("%m-%d %H:%M")
+        keep = [i for i in ids if i not in off and i not in paused]
+        notes = [f"{names.get(i, i)} 已停用" for i in ids if i in off] + \
+                [f"{names.get(i, i)} 暂停中（Prowlarr 连续失败后暂停，{paused[i]} 恢复）" for i in ids if i in paused and i not in off]
+        return keep, "；".join(notes)
 
     def _prowlarr(self, q: str, ids: List[int]) -> List[dict]:
         params = [("query", q), ("type", "search"), ("limit", 100)] + [("indexerIds", i) for i in ids]
         res = RequestUtils(headers={"X-Api-Key": self.p._prowlarr_key}, timeout=self.p._timeout).get_res(
             f"{self.p._prowlarr_url}/api/v1/search", params=params)
         if res is None or res.status_code != 200:
-            raise RuntimeError(f"Prowlarr 返回 {getattr(res, 'status_code', '无响应')}")
+            # Prowlarr says why in the body (disabled indexer, unsupported search, the site down…): pass it on
+            why = ""
+            try:
+                body = res.json() if res is not None else None
+                if isinstance(body, list):
+                    why = "；".join(str(x.get("errorMessage") or x.get("message") or "") for x in body if isinstance(x, dict))
+                elif isinstance(body, dict):
+                    why = str(body.get("message") or body.get("errorMessage") or body.get("description") or "")
+            except Exception:  # noqa: BLE001
+                why = (getattr(res, "text", "") or "")[:160]
+            raise RuntimeError(f"Prowlarr 返回 {getattr(res, 'status_code', '无响应')}{('：' + why.strip()[:200]) if why.strip() else ''}")
         out = []
         for r in res.json() or []:
             if r.get("protocol") not in (None, "torrent"):

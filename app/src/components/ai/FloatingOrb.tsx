@@ -57,7 +57,10 @@ export function FloatingOrb() {
   // The orb keeps one absolute anchor and moves by translateY, springing between "above the tab bar"
   // and "near the bottom" as the bar comes and goes (web: transition on the wrapper).
   const base = insets.bottom + 18;
-  const lift = TAB_ROUTES.has(pathname) ? 49 - 4 : 0; // tab bar ≈ 49 pt
+  const onTab = TAB_ROUTES.has(pathname);
+  // tab pages: centred above the tab bar; other pages (lists, detail, search results): the bottom-right
+  // corner, a little smaller, so it doesn't sit on the middle of the content
+  const lift = onTab ? 49 - 4 : 0; // tab bar ≈ 49 pt
   const [y] = useState(() => new Animated.Value(-lift));
   const [show] = useState(() => new Animated.Value(hidden ? 0 : 1));
   useEffect(() => {
@@ -110,7 +113,7 @@ export function FloatingOrb() {
         </View>
       ) : null}
 
-      <Animated.View pointerEvents={hidden ? "none" : "box-none"} style={{ position: "absolute", left: 0, right: 0, bottom: base, alignItems: "center", zIndex: 41, opacity: show, transform: [{ translateY: y }, { scale: showScale }] }}>
+      <Animated.View pointerEvents={hidden ? "none" : "box-none"} style={{ position: "absolute", left: 0, right: 0, bottom: base, alignItems: onTab ? "center" : "flex-end", paddingRight: onTab ? 0 : 14, zIndex: 41, opacity: show, transform: [{ translateY: y }, { scale: onTab ? showScale : Animated.multiply(showScale, 0.86) }] }}>
         <View {...talk.handlers} accessibilityRole="button" accessibilityLabel="AI 助手：点按打开，长按说话" style={{ width: SIZE, height: SIZE, alignItems: "center", justifyContent: "center" }}>
           {rec
             ? [Animated.modulo(ripple, 1), Animated.modulo(Animated.add(ripple, 0.5), 1)].map((p, i) => (
