@@ -12,7 +12,7 @@ export const TOPICS = {
   selection: "选片策略：画质/体积/字幕/字幕组规则，excluded 和评分从哪来",
   app: "App 里各功能在哪、去哪操作、回答里可用的页面链接",
   troubleshooting: "常见问题怎么判断：卡 0%、no-video、没刮削、缺集、播放失败",
-  adult: "AV / 里番 的索引、入库和刮削（只在成人内容开着时）",
+  adult: "AV / 里番 的索引、入库和刮削（只在隐藏内容开着时）",
 } as const;
 export type Topic = keyof typeof TOPICS;
 

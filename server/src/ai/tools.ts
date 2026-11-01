@@ -2,7 +2,7 @@
 // the app token), so it reuses their validation, caching, library lookups and errors; outputs are slimmed
 // before the model sees them. Tiers:
 //   read   — search, details, 发现, people, Emby library and watch history, tasks, subscriptions, health,
-//            resource search (Prowlarr + direct sources); AV / 里番 catalogs only when 成人内容 is on.
+//            resource search (Prowlarr + direct sources); AV / 里番 catalogs only when 隐藏内容 is on.
 //   write  — ingest a resource the assistant found (by its short ref, never a raw magnet), auto-ingest,
 //            subscribe, retry a task, refresh one Emby item. Each is a normal user action in the app.
 //   never  — nothing that deletes, cancels, stops a service, changes configuration or reads credentials
@@ -396,7 +396,7 @@ export const TOOLS: Record<string, Def> = {
   },
   catalog_list: {
     tier: "read", adult: true,
-    description: "成人目录（只在成人内容开启时可用）：provider = javdb | jable | hanime | emby-av；可按 sort、tag、q（关键词）、page 列出作品。",
+    description: "成人目录（只在隐藏内容开启时可用）：provider = javdb | jable | hanime | emby-av；可按 sort、tag、q（关键词）、page 列出作品。",
     input: z.object({ provider: z.enum(["javdb", "jable", "hanime", "emby-av"]), sort: z.string().optional(), tag: z.string().optional(), q: z.string().optional(), page: z.number().int().min(1).max(10).optional() }),
     label: (a) => `看 ${a.provider} 目录`,
     run: async (ctx, a) => {
@@ -424,7 +424,7 @@ export const TOOLS: Record<string, Def> = {
       if (!x) throw new ToolError(`没有资源 ${a.ref}：先用 find_resources 搜索`);
       if (!x.magnet?.startsWith("magnet:")) throw new ToolError("这个资源没有磁力链接，不能直接入库");
       const kind = x.kind === "adult" ? (x.adultKind ?? "av") : "media";
-      if (kind !== "media" && !ctx.adult) throw new ToolError("成人内容未开启");
+      if (kind !== "media" && !ctx.adult) throw new ToolError("隐藏内容未开启");
       const r = await call(ctx, "POST", "/v1/ingest", {
         kind, magnet: x.magnet, title: x.title, ...(x.media ? { tmdbid: x.media.tmdbid, type: x.media.type } : {}), ...(x.season != null ? { season: x.season } : {}),
       });
@@ -465,7 +465,7 @@ export const TOOLS: Record<string, Def> = {
     input: z.object({ topic: z.enum(Object.keys(TOPICS) as [Topic, ...Topic[]]) }),
     label: (a) => `查平台知识 ${a.topic}`,
     run: async (ctx, a) => {
-      if (a.topic === "adult" && !ctx.adult) throw new ToolError("成人内容未开启");
+      if (a.topic === "adult" && !ctx.adult) throw new ToolError("隐藏内容未开启");
       return readKnowledge(a.topic);
     },
   },

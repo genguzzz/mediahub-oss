@@ -33,7 +33,7 @@ export default function LibraryScreen() {
     { id: (i: Item) => i.Id, pageSize: PAGE, maxPages: 200, staleMs: 60_000 },
   );
   const scroll = useAutoMore(q.autoMore);
-  // 收藏 / 全部 / search span every library: with 成人内容 off, AV / 里番 items stay out
+  // 收藏 / 全部 / search span every library: with 隐藏内容 off, AV / 里番 items stay out
   const showAdult = useSettings((s) => s.showAdult);
   const items = showAdult || parentId ? q.items : q.items.filter((i) => !isAdult(i));
 

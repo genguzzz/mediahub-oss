@@ -20,7 +20,7 @@ export default function HistoryScreen() {
     { id: (x) => String(x.id), pageSize: 30, staleMs: 30_000 },
   );
   const scroll = useAutoMore(h.autoMore);
-  const showAdult = useSettings((s) => s.showAdult);   // AV / 里番 downloads only with 成人内容 on
+  const showAdult = useSettings((s) => s.showAdult);   // AV / 里番 downloads only with 隐藏内容 on
   return (
     <Screen>
       <TopBar title="下载记录" right={<LayoutToggle />} />

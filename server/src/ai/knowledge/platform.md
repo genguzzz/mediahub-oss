@@ -16,6 +16,6 @@
 找片（发现/搜索/AI） → 选资源（搜资源 or 自动选片 or 订阅自动下载） → 入库流水线（115 离线 → 生成 strm → Emby 刮削 → 完成） → 在 App 媒体库里播放。
 
 ## 媒体库
-按类型分库（例如 电影 / 剧集 / 动漫 / 纪录片 / AV / 里番，具体名字用 platform_status 查）。目录名带 id：`名 (年) [tmdbid=N]/Season N`，里番 `名 [bangumiid=N]`。AV / 里番 只在「成人内容」开着时出现。
+按类型分库（例如 电影 / 剧集 / 动漫 / 纪录片 / AV / 里番，具体名字用 platform_status 查）。目录名带 id：`名 (年) [tmdbid=N]/Season N`，里番 `名 [bangumiid=N]`。AV / 里番 只在「隐藏内容」开着时出现。
 
 更多：ingest（入库流水线）、subscriptions（订阅）、emby（媒体库与播放）、selection（选片策略）、app（App 里各功能在哪）、troubleshooting（常见问题）。

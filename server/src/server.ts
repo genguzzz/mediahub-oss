@@ -973,7 +973,7 @@ app.get("/v1/emby/items", async (req) => {
     start: z.coerce.number().int().min(0).default(0),
     limit: z.coerce.number().int().min(1).max(100).default(40),
     sort: z.enum(["added", "name", "year"]).default("added"),
-    noAdult: z.string().optional().transform((v) => v === "1"),   // the assistant with 成人内容 off
+    noAdult: z.string().optional().transform((v) => v === "1"),   // the assistant with 隐藏内容 off
   }).parse(req.query);
   const sortBy = { added: "DateCreated", name: "SortName", year: "ProductionYear,SortName" }[q.sort];
   const r = await embyGet<{ Items: EmbyItem[]; TotalRecordCount: number }>("/Items", {

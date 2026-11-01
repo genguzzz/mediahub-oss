@@ -7,7 +7,7 @@ import { knowledgeIndex } from "./knowledge.ts";
 
 const line = (m: Memory) => `[${m.id}${m.kind === "profile" ? "" : ` ${m.kind}`}] ${m.text}${m.tags.length ? `  #${m.tags.join(" #")}` : ""}`;
 
-/** Two parts: `stable` (cached across turns: changes only with 成人内容) and `turn` (memory, chats, time, screen). */
+/** Two parts: `stable` (cached across turns: changes only with 隐藏内容) and `turn` (memory, chats, time, screen). */
 export function systemPrompt(o: { profile: Memory[]; recalled: Memory[]; recent: { id: number; title: string; updated: string }[]; context: Context; now: Date }): { stable: string; turn: string } {
   const date = o.now.toLocaleString("zh-CN", { timeZone: process.env.TZ || "Asia/Shanghai", hour12: false });
   const adult = o.context.adult;
@@ -43,7 +43,7 @@ The owner often dictates. Speech recognition swaps same- or similar-sounding cha
 - Library and watching: library_latest, watch_history, library_search (only when you need an embyId).
 - Downloads: find_resources → ingest_resource (by ref); auto_ingest lets the system pick; subscribe follows a show; tasks / retry_task for the pipeline.
 - Earlier conversations: list_chats / read_chat when the owner refers to "上次 / 之前 / 接着上回" — look it up instead of asking.
-${adult ? "- Adult catalogs (成人内容 is on): catalog_list / catalog_item (javdb, jable, hanime, emby-av)." : "- Adult content is off: do not search or discuss adult catalogs."}
+${adult ? "- Adult catalogs (the 隐藏内容 switch is on; call it 隐藏内容 when talking to the owner): catalog_list / catalog_item (javdb, jable, hanime, emby-av)." : "- Adult content is off: do not search or discuss adult catalogs."}
 </tools_by_task>
 
 <resource_search>

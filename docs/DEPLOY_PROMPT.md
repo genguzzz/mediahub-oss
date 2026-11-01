@@ -77,7 +77,7 @@
 2. 仓库的 `server/deploy/deploy.sh` 是**一种**部署方式（ssh + systemd + nginx，装在 `/opt/mediahub`）。适合我就用：需要改 systemd 单元或 nginx 站点时，复制 `server/deploy/{mediahub.service,nginx-media.conf}` 到 `~/.config/mediahub/deploy/` 再改（不要改仓库里的模板）；反代不是 nginx 就设 `NGINX_SITE_PATH=none` 自己配；先 `./server/deploy/deploy.sh --dry-run` 看差异，再部署。不适合（docker、pm2、群晖等）就按我的习惯跑 `node src/server.ts`（Node 22 type stripping，无需编译），环境变量照 `server/.env.example`。
 3. 首次部署后在服务器 `.env` 里填 `MP_API_KEY`、`EMBY_*`、`UPDATES_BASE`（= `$APP_SERVER/updates`）等，重启。`APP_TOKEN` 是 App 登录用的，`ADMIN_TOKEN` 给 OTA 与管理接口用，都留在服务器上。
 4. `curl https://<后端地址>/health` 返回 ok。
-5. 在线源可选：JavDB 需要合适出口（`INDEX_PROXY`），Jable 需要 FlareSolverr。不要成人内容就别配，App 设置里也有总开关。
+5. 在线源可选：JavDB 需要合适出口（`INDEX_PROXY`），Jable 需要 FlareSolverr。不要成人内容就别配，App 设置里也有总开关（隐藏内容）。
 
 ### 6. iOS App：在我的 fork 上编译
 

@@ -27,7 +27,7 @@ export default function OverviewTab() {
   const issues = (health.data?.ok ? health.data.checks : []).filter((c) => c.count && c.severity !== "info");
   const showAdult = useSettings((s) => s.showAdult);
   const libs = (stats.data?.libraries ?? []).filter((l) => showAdult || !l.adult);
-  // with 成人内容 off: no AV / 里番 downloads, no playback entries of their items
+  // with 隐藏内容 off: no AV / 里番 downloads, no playback entries of their items
   const recent = (hist.data?.items ?? []).filter((h) => showAdult || !isAdult(h.path));
   const [now] = useState(() => Date.now());
   const p = ov.data?.pipeline;

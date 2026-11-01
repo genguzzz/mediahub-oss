@@ -88,7 +88,7 @@ export default function IndexersScreen() {
             <PillButton icon="add" label="添加 Prowlarr 索引器" onPress={() => router.push("/indexer-catalog")} style={{ marginTop: 6 }} />
             {showAdult ? (
               <>
-                <SectionTitle title="成人" />
+                <SectionTitle title="隐藏" />
                 {all.filter((s) => s.kind === "adult").map(row)}
               </>
             ) : null}

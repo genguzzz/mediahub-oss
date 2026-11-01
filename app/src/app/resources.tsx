@@ -375,7 +375,7 @@ function SourceSheet({ visible, onClose, picked, keywords, names, showAdult, onA
   const groups: { title: string; items: Source[] }[] = [
     { title: "直连（后端直接访问）", items: (q.data?.sources ?? []).filter((s) => s.kind === "direct") },
     { title: "Prowlarr（NAS，可单选索引器）", items: [{ id: "prowlarr", name: "全部已启用索引器", kind: "prowlarr", enabled: true, note: "所有在 Prowlarr 里启用的索引器一起搜" } as Source, ...(q.data?.sources ?? []).filter((s) => s.kind === "prowlarr" && s.prowlarrEnabled !== false)] },
-    ...(showAdult ? [{ title: "成人", items: (q.data?.sources ?? []).filter((s) => s.kind === "adult") }] : []),
+    ...(showAdult ? [{ title: "隐藏", items: (q.data?.sources ?? []).filter((s) => s.kind === "adult") }] : []),
   ];
   const searchButton = <PillButton label={`搜索 · ${final.length} 个关键词 · ${cur.length} 个来源`} icon="search" disabled={!cur.length || !final.length} onPress={go} />;
   return (

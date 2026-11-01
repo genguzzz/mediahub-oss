@@ -39,7 +39,7 @@ export default function PipelineTab() {
       filter === "all" ? true : filter === "failed" ? t.failed : ["downloading", "buffer", "uploaded", "scraping"].includes(t.status) || (t.status === "done" && !t.emby);
     const adult = (q.data?.adult ?? []).filter((a) => (filter === "all" ? true : filter === "failed" ? a.failed : !a.done || Date.now() - ms(a.at) < 6 * 3600_000));
     const out: (Task | AdultRow)[] = [];
-    // 影视 / AV / 里番 are tasks of the same pipeline; adult ones only with 成人内容 on
+    // 影视 / AV / 里番 are tasks of the same pipeline; adult ones only with 隐藏内容 on
     const cat = (t: Task) => t.category ?? "media";
     out.push(...tasks.filter(pick).filter((t) => (cat(t) === "media" ? kind !== "av" && kind !== "hentai" : showAdult && (kind === "all" || kind === cat(t)))));
     if (showAdult && kind !== "media") out.push(...adult);
