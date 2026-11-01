@@ -4,8 +4,8 @@
 // links (480/720/1080, time-limited `secure` token, not tied to an IP — the phone plays them directly).
 //
 // The site refuses datacenter addresses (Cloudflare block page), so it needs an exit set for the source
-// `hanime1` in SOURCE_PROXY (egress.ts); without one the index is not offered. As a stream source for
-// hanime works it searches by the Japanese title and checks the episode on the watch page.
+// `hanime1` in SOURCE_PROXY (egress.ts); without one the index is not offered. Its stream is offered only on
+// its own works (里番 has a hanime tab and a Hanime1 tab; each plays its own source).
 import { proxyOf } from "../egress.ts";
 import { decode, proxied, text, UA } from "./http.ts";
 import type { CatalogDetail, CatalogItem, CatalogProvider, HomeRow, ListQuery, Page, ResolvedStream, StreamProvider, StreamSource } from "./types.ts";
@@ -17,14 +17,13 @@ const SORT: Record<string, string> = {
   week: "本週排行", day: "本日排行", month: "本月排行", new: "最新上市", upload: "最新上傳", views: "觀看次數", likes: "讚好比例",
 };
 
-const page = (path: string, ttlMs: number) => proxied(`${BASE}${path}`, ttlMs, "", "hanime1");
-const norm = (s: string) => s.normalize("NFKC").toLowerCase().replace(/[\s\p{P}\p{S}_]+/gu, "");
-
-/** Episode number in a title: "＃6", "#6", or a trailing number (before a [tag]); none = 1. */
-function epOf(t: string): number {
-  const m = /[#＃]\s*(\d{1,3})/.exec(t) ?? /(\d{1,3})\s*(?:\[[^\]]*\]\s*)*$/.exec(t.trim());
-  return m ? Number(m[1]) : 1;
-}
+// The headers the site is used to from a browser visit (same as the owner's media tool, which it serves).
+const HEADERS = {
+  accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "accept-language": "zh-TW,zh;q=0.9,en;q=0.8,ja;q=0.7",
+  referer: `${BASE}/`,
+};
+const page = (path: string, ttlMs: number) => proxied(`${BASE}${path}`, ttlMs, "", "hanime1", HEADERS);
 
 // Cards: genre lists use portrait covers ("home-rows-videos-div"), keyword searches landscape thumbnails.
 export function cards(html: string): CatalogItem[] {
@@ -140,24 +139,10 @@ export const hanime1Streams: StreamProvider = {
       const zh = /中文字幕|中字/.test(w.detail.originalTitle ?? w.detail.title);
       return { provider: "hanime1", label: "Hanime1 在线", note: [zh ? "中文字幕" : "", best ? `${best}p MP4` : "MP4"].filter(Boolean).join(" · "), ref: id };
     };
-    if (own) {
-      const w = await watch(own).catch(() => null);
-      return w?.sources.length ? [one(own, w)] : [];
-    }
-    // A hanime work: search by its Japanese title, check the episode on each candidate's watch page.
-    const jp = (item.originalTitle ?? "").trim();
-    if (!jp) return [];
-    const m = /^(.*?)[\s　]*(\d{1,3})$/.exec(jp);
-    const base = (m ? m[1] : jp).trim();
-    const ep = m ? Number(m[2]) : 1;
-    if (norm(base).length < 2) return [];
-    const cands = (await list({ q: base, sort: "views", page: 1, size: 40 })).items.filter((c) => epOf(c.title) === ep).slice(0, 4);
-    const found = await Promise.all(cands.map(async (c) => {
-      const w = await watch(c.id).catch(() => null);
-      const jt = w?.detail.originalTitle ?? w?.detail.title ?? "";
-      return w?.sources.length && norm(jt).includes(norm(base)) && epOf(jt) === ep ? one(c.id, w) : null;
-    }));
-    return found.filter((x): x is StreamSource => !!x).sort((a, b) => Number(b.note?.startsWith("中文字幕")) - Number(a.note?.startsWith("中文字幕")));
+    // Only Hanime1's own works offer its stream (its own tab); hanime works keep their own sources.
+    if (!own) return [];
+    const w = await watch(own).catch(() => null);
+    return w?.sources.length ? [one(own, w)] : [];
   },
   // The MP4 link expires: read the watch page again (5-min cache) right before playing.
   async resolve(ref: string): Promise<ResolvedStream> {

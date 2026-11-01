@@ -139,9 +139,10 @@ export class LoginRequired extends Error {
 }
 
 // `cookie`: a logged-in session (JavDB); pages fetched with and without it are cached apart.
-export function proxied(url: string, ttlMs = 30 * 60_000, cookie = "", source: Source = "javdb"): Promise<string> {
+// `headers`: extra request headers a source expects (they replace the defaults of the same name).
+export function proxied(url: string, ttlMs = 30 * 60_000, cookie = "", source: Source = "javdb", headers: Record<string, string> = {}): Promise<string> {
   return remember(`proxy:${cookie ? "auth:" : ""}${url}`, ttlMs, () => timed("proxy", url, async () => {
-    const res = await proxiedRaw(url, cookie ? { cookie } : {}, {}, source);
+    const res = await proxiedRaw(url, { ...headers, ...(cookie ? { cookie } : {}) }, {}, source);
     if (res.url && new URL(res.url).pathname === "/login") throw new LoginRequired("JavDB");
     if (res.status === 404) return "";
     if (!res.ok) throw new Error(`页面返回 ${res.status}`);
