@@ -61,9 +61,11 @@ def ep_of(name: str):
         if m:
             g = m.groups()
             return (int(g[0]), int(g[1])) if len(g) == 2 else (None, int(g[0]))
-    # 最宽松：「Brotherhood 64 END [BD ...]」（SAIO-Raws）；先排除 NCOP / OVA 01 / Short Skit 16 这类特典
-    if not EXTRA.search(name):
-        m = re.search(r"[A-Za-z\)]\s(\d{1,3})(?:\s+END)?\s*\[", name)
+    # 最宽松：「Brotherhood 64 END [BD ...]」（SAIO-Raws）、「It's MyGO!!!!! 04 (BDRip …)」（LPSub）；
+    # 先排除 NCOP / OVA 01 / Short Skit 16 这类特典
+    base = name.rsplit("/", 1)[-1]          # 只看文件名：目录「Season 2 (BD)」不是集号
+    if not EXTRA.search(base):
+        m = re.search(r"[A-Za-z)!?]\s(\d{1,3})(?:\s+END)?\s*[\[(]", base)
         if m:
             return None, int(m.group(1))
     return None
@@ -227,7 +229,6 @@ class Pipeline:
         """with self.ctx(h, "strm"): 期间的 log/notify 记到任务 h 的 strm 步骤下。"""
         return Pipeline._Ctx(self._cur, h, step)
 
-    @staticmethod
     def failed(self, h: str, t: dict, status: str, reason: str) -> None:
         """资源本身不可用（太大 / 死种 / 没有可入库的视频）：置状态，交给插件拉黑并回滚订阅。"""
         t["status"] = status

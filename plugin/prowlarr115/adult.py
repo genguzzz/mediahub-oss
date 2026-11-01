@@ -290,8 +290,11 @@ class Adult:
                 alt = re.sub(r'[\\/:*?"<>|]', "_", scope)
                 hit = self.ol.get(f"{d}/{alt}") if alt != scope else None
                 scope = alt if hit else scope
-            if hit:
-                files = list(self.ol.walk(f"{d}/{scope}")) if hit.get("is_dir") else [(f"{d}/{scope}", hit)]
+            if not hit:
+                # 115 已报完成，下载的文件夹却看不到：多半是 OpenList/115 一时不通（列表失败、缓存没刷新），
+                # 不能当成「没有视频」——那会拉黑资源（诊察日誌 2026-11-01）。按 strm 出错计数，下一轮再看
+                raise RuntimeError(f"OpenList 里还看不到下载的文件夹 {scope[:60]}")
+            files = list(self.ol.walk(f"{d}/{scope}")) if hit.get("is_dir") else [(f"{d}/{scope}", hit)]
         vids = [(r, it) for r, it in files if r.lower().endswith(VIDEO) and not rejected(r)]
         if not vids:
             return []

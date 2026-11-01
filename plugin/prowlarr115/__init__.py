@@ -334,7 +334,7 @@ class Prowlarr115(_PluginBase):
     plugin_desc = ("未认证也能用：多关键词资源源 + 下载直接 115 离线（失败转 NAS 缓冲）+ strm 入 Emby + 刮削确认通知 + 批量入库 API；"
                    "AV（番号 → 115 → MDC 刮削）和里番（追更目录 + sukebei RSS → 115 → Bangumi）也在这里。")
     plugin_icon = "https://raw.githubusercontent.com/Prowlarr/Prowlarr/develop/Logo/256.png"
-    plugin_version = "2.33.6"
+    plugin_version = "2.33.9"
     plugin_label = "资源搜索,下载器"
     plugin_author = "mediahub"
     author_url = ""
@@ -1623,7 +1623,8 @@ class Prowlarr115(_PluginBase):
             t["status"] = "uploaded"
             for k in ("emby", "done", "identity_warn"):
                 t.pop(k, None)
-        t.pop("strm_errors", None)
+        for k in ("strm_errors", "empty_rounds", "warned"):   # 重试从头计数：上次用完的空轮次不能让这次一轮就判 no-video
+            t.pop(k, None)
         p.mutate(h, lambda cur: (cur.clear(), cur.update(t)))   # 整个替换：pop 掉的键（emby/done）也要删
         p.event(h, "manual", f"手动重试（{ {'strm': '重新生成 strm', 'buffer': '改用 NAS 缓冲', 'offline': '重新提交 115 离线'}.get(mode, mode) }）")
         threading.Thread(target=self.track, name="prowlarr115-retry", daemon=True).start()
@@ -1926,7 +1927,7 @@ class Prowlarr115(_PluginBase):
         """把某个状态的任务全部改回「待入库」，后台重新生成 strm。"""
         hs = [h for h, t in self._load_tasks().items() if t.get("status") == status]
         for h in hs:
-            self._pipe.mutate(h, lambda cur: (cur.update(status="uploaded"), cur.pop("emby", None), cur.pop("strm_errors", None)))
+            self._pipe.mutate(h, lambda cur: (cur.update(status="uploaded"), [cur.pop(k, None) for k in ("emby", "strm_errors", "empty_rounds", "warned")]))
         threading.Thread(target=self.track, name="prowlarr115-retry", daemon=True).start()
         return {"ok": True, "count": len(hs)}
 
