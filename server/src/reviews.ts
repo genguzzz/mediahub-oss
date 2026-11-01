@@ -37,7 +37,7 @@ export async function doubanFind(title: string, year: string, type: "movie" | "t
     id: String(x.id), type, title: String(x.title ?? ""), year: String(x.year ?? ""), rating: null, card: String(x.sub_title ?? ""),
   }));
   if (!cands.length) {
-    const d = await rexxar<{ subjects?: { items?: { target_type?: string; target?: Record<string, any> }[] } }>(`/search?q=${encodeURIComponent(title)}&type=movie&count=20`);
+    const d = await rexxar<{ subjects?: { items?: { target_type?: string; target?: Record<string, any> }[] } }>(`/search?q=${encodeURIComponent(title)}&type=movie&count=20`).catch(() => ({ subjects: undefined }));
     cands = (d.subjects?.items ?? []).filter((x) => x.target_type === type && x.target?.id).map((x) => ({
       id: String(x.target!.id), type, title: String(x.target!.title ?? ""), year: String(x.target!.year ?? ""),
       rating: Number(x.target!.rating?.value) || null, card: String(x.target!.card_subtitle ?? ""),

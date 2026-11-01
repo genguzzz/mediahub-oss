@@ -663,11 +663,25 @@ app.get("/v1/reviews", async (req) => {
     tmdbid: z.coerce.number().int().positive().optional(),
   }).parse(req.query);
   if (!q.doubanId && !q.title && !q.tmdbid) throw Object.assign(new Error("需要 title、doubanId 或 tmdbid"), { statusCode: 400 });
+  // Douban is searched by name: the given title, then (with a tmdbid) the work's own names — Chinese,
+  // original, English — since the caller's title may be one Douban doesn't know (an English or romaji name).
+  const names = async () => {
+    const own = q.tmdbid
+      ? await remember(`detail:${q.type}:${q.tmdbid}`, 30 * 60_000, () => mp<MpMedia>("GET", `/media/${q.tmdbid}`, { query: { media_source: "themoviedb", type_name: TYPE_NAME[q.type] }, timeoutMs: 30_000 }))
+        .then((d) => ({ year: d.year ?? "", names: searchNames(d).map((n) => n.text) })).catch(() => ({ year: "", names: [] as string[] }))
+      : { year: "", names: [] as string[] };
+    return { year: q.year || own.year, names: [...new Set([q.title, ...own.names].map((t) => t.trim()).filter(Boolean))].slice(0, 4) };
+  };
   const douban = async () => {
-    if (!q.doubanId && !q.title) return { douban: null, doubanError: "没给标题" };
-    const subject = q.doubanId
-      ? { id: q.doubanId, type: q.type, title: q.title, year: q.year, rating: null, card: "" }
-      : await remember(`dbfind:${q.type}:${q.title}:${q.year}:${q.season ?? ""}`, 7 * 86400_000, () => doubanFind(q.title, q.year, q.type, q.season));
+    let subject: Awaited<ReturnType<typeof doubanFind>> = null;
+    if (q.doubanId) subject = { id: q.doubanId, type: q.type, title: q.title, year: q.year, rating: null, card: "" };
+    else {
+      const n = await names();
+      for (const t of n.names) {
+        subject = await remember(`dbfind:${q.type}:${t}:${n.year}:${q.season ?? ""}`, 7 * 86400_000, () => doubanFind(t, n.year, q.type, q.season));
+        if (subject) break;
+      }
+    }
     if (!subject) return { douban: null, doubanError: "豆瓣上没找到这部作品" };
     return { douban: await remember(`dbrev:${subject.type}:${subject.id}`, 12 * 3600_000, () => doubanReviews(subject)) };
   };
