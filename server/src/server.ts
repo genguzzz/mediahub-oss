@@ -653,19 +653,32 @@ app.get("/v1/douban/related", async (req) => {
   return { items: await withLib(items) };
 });
 
-// What people say about a work (reviews.ts): Douban stars, want / watched counts, hot short comments, top
-// reviews. By Douban id, or found by title + year (+ season for shows).
+// What people say about a work: Douban (reviews.ts: stars, want / watched counts, hot short comments, top
+// reviews; by Douban id or found by title + year + season) and TMDb user reviews (plugin, by tmdbid). Both are
+// asked in parallel; one failing leaves the other.
 app.get("/v1/reviews", async (req) => {
   const q = z.object({
     type: z.enum(["movie", "tv"]).default("movie"), title: z.string().max(200).default(""), year: z.string().max(8).default(""),
     season: z.coerce.number().int().min(1).max(50).optional(), doubanId: z.string().regex(/^\d{4,10}$/).optional(),
+    tmdbid: z.coerce.number().int().positive().optional(),
   }).parse(req.query);
-  if (!q.doubanId && !q.title) throw Object.assign(new Error("需要 title 或 doubanId"), { statusCode: 400 });
-  const subject = q.doubanId
-    ? { id: q.doubanId, type: q.type, title: q.title, year: q.year, rating: null, card: "" }
-    : await remember(`dbfind:${q.type}:${q.title}:${q.year}:${q.season ?? ""}`, 7 * 86400_000, () => doubanFind(q.title, q.year, q.type, q.season));
-  if (!subject) throw Object.assign(new Error("豆瓣上没找到这部作品"), { statusCode: 404 });
-  return remember(`dbrev:${subject.type}:${subject.id}`, 12 * 3600_000, () => doubanReviews(subject));
+  if (!q.doubanId && !q.title && !q.tmdbid) throw Object.assign(new Error("需要 title、doubanId 或 tmdbid"), { statusCode: 400 });
+  const douban = async () => {
+    if (!q.doubanId && !q.title) return { douban: null, doubanError: "没给标题" };
+    const subject = q.doubanId
+      ? { id: q.doubanId, type: q.type, title: q.title, year: q.year, rating: null, card: "" }
+      : await remember(`dbfind:${q.type}:${q.title}:${q.year}:${q.season ?? ""}`, 7 * 86400_000, () => doubanFind(q.title, q.year, q.type, q.season));
+    if (!subject) return { douban: null, doubanError: "豆瓣上没找到这部作品" };
+    return { douban: await remember(`dbrev:${subject.type}:${subject.id}`, 12 * 3600_000, () => doubanReviews(subject)) };
+  };
+  const tmdb = async () => {
+    if (!q.tmdbid) return { tmdb: null };
+    const r = await plug<{ ok: boolean; error?: string; total: number; reviews: unknown[] }>("GET", "/hub/tmdb/reviews", { query: { tmdbid: q.tmdbid, type: q.type }, timeoutMs: 30_000 });
+    return r.ok ? { tmdb: { total: r.total, reviews: r.reviews } } : { tmdb: null, tmdbError: r.error };
+  };
+  const err = (k: string) => (e: unknown) => ({ [k]: null, [`${k}Error`]: e instanceof Error ? e.message : String(e) });
+  const [d, t] = await Promise.all([douban().catch(err("douban")), tmdb().catch(err("tmdb"))]);
+  return { ...d, ...t };
 });
 
 // Bilibili / YouTube video search (ugc.ts): talks, reviews, explainers, clips, trailers.

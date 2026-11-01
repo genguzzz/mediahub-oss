@@ -134,3 +134,46 @@ def extra(kind: str, tmdbid: int) -> Dict[str, Any]:
         kw = api.tv.keywords(tmdbid) or []
         return {"keywords": [{"id": k.get("id"), "name": k.get("name")} for k in kw], "collection": None}
     return _cached(("extra", kind, tmdbid), load)
+
+
+_review_api: Dict[str, Any] = {}
+
+
+def _reviewer(kind: str, lang: str):
+    """A Movie / TV client in its own language: the shared one is zh-CN, and most TMDb reviews are English."""
+    with _lock:
+        key = f"{kind}:{lang}"
+        if key not in _review_api:
+            from app.modules.themoviedb.tmdbv3api import TV, Movie
+            _review_api[key] = Movie(language=lang) if kind == "movie" else TV(language=lang)
+        return _review_api[key]
+
+
+def reviews(kind: str, tmdbid: int, limit: int = 8) -> Dict[str, Any]:
+    """TMDb user reviews (English and Chinese), most recent first: author, their rating out of 10, an excerpt."""
+    def load():
+        rows: List[Dict[str, Any]] = []
+        total = 0
+        for lang in ("en-US", "zh-CN"):
+            api = _reviewer(kind, lang)
+            got = api.reviews(tmdbid) or []
+            total += int(getattr(api, "total_results", 0) or len(got))
+            for x in got:
+                x = dict(x)
+                d = dict(x.get("author_details") or {})
+                text = " ".join(str(x.get("content") or "").split())
+                rows.append({
+                    "author": x.get("author") or d.get("username") or "",
+                    "rating": d.get("rating"),
+                    "date": str(x.get("updated_at") or x.get("created_at") or "")[:10],
+                    "lang": lang[:2],
+                    "text": text[:600] + ("…" if len(text) > 600 else ""),
+                    "url": x.get("url") or "",
+                })
+        seen, out = set(), []
+        for r in sorted(rows, key=lambda r: r["date"], reverse=True):
+            if r["url"] not in seen:
+                seen.add(r["url"])
+                out.append(r)
+        return {"total": total, "reviews": out[:limit]}
+    return _cached(("reviews", kind, tmdbid), load)

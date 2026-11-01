@@ -163,6 +163,7 @@ class Hub:
             ("/hub/tmdb/person", self.tmdb_person, "GET", "TMDb 人物：资料 + 全部作品（演员和幕后，带角色/职务，新的在前）：id"),
             ("/hub/tmdb/discover", self.tmdb_discover, "GET", "TMDb 按条件发现：type, page, with_networks/with_companies/with_keywords/with_genres, sort_by, vote_count.gte"),
             ("/hub/tmdb/extra", self.tmdb_extra, "GET", "作品关键词 + 电影所属合集：type, tmdbid"),
+            ("/hub/tmdb/reviews", self.tmdb_reviews, "GET", "TMDb 用户影评（英文 + 中文）：type, tmdbid"),
             ("/hub/pipeline", self.pipeline, "GET", "入库全流程：任务阶段 + 实时 115/qB 进度 + AV 刮削"),
             ("/hub/task/events", self.task_events, "GET", "某任务的事件日志：hash（按步骤分组）"),
             ("/hub/task/files", self.task_files, "GET", "某任务的文件和下载细节：hash（缓冲=qB 每个文件进度；115=任务状态、做种、速度）"),
@@ -656,6 +657,12 @@ class Hub:
             return {"ok": True, **tmdb_mod.extra("movie" if type == "movie" else "tv", int(tmdbid))}
         except Exception as err:  # noqa: BLE001
             return {"ok": False, "error": f"TMDb 关键词/合集读取失败：{err}", "keywords": [], "collection": None}
+
+    def tmdb_reviews(self, tmdbid: int, type: str = "tv") -> Dict[str, Any]:  # noqa: A002
+        try:
+            return {"ok": True, **tmdb_mod.reviews("movie" if type == "movie" else "tv", int(tmdbid))}
+        except Exception as err:  # noqa: BLE001
+            return {"ok": False, "error": f"TMDb 影评读取失败：{err}", "total": 0, "reviews": []}
 
     def library_item(self, tmdbid: int, type: str = "tv") -> Dict[str, Any]:  # noqa: A002
         p = self.p._pipe

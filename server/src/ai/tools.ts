@@ -278,12 +278,13 @@ export const TOOLS: Record<string, Def> = {
   },
   community_reviews: {
     tier: "read",
-    description: "大家怎么评价一部作品（不只看分数）：豆瓣的星级分布、看过/在看/想看人数、热门短评（每条带评论者给的星级和有用数）和最有用的长评摘要。按 title + year + type 找（剧集可给 season，豆瓣每季单独一个条目），或直接给 doubanId。推荐前用它确认口碑和适合什么人、有什么争议，比较几部时并行调用；短评就是评论者原话，引用时别改写成事实。",
-    input: z.object({ title: z.string().max(200).optional(), year: z.string().max(8).optional(), type: z.enum(["movie", "tv"]).optional(), season: z.number().int().min(1).max(50).optional(), doubanId: z.string().regex(/^\d{4,10}$/).optional(), limit: z.number().int().min(3).max(20).optional() }),
-    label: (a) => `看「${a.title ?? a.doubanId}」的口碑`,
+    description: "大家怎么评价一部作品（不只看分数）。豆瓣：星级分布、看过/在看/想看人数、热门短评（每条带评论者给的星级和有用数）、最有用的长评摘要——按 title + year + type 找（剧集可给 season，豆瓣每季单独一个条目），或直接给 doubanId。TMDb：用户影评（多为英文，带 10 分制评分），需要 tmdbid。能给的都给，两边并行；比较几部时并行调用。推荐前用它确认口碑、适合什么人、有什么争议；引用评论是观众原话，别改写成事实，英文影评用中文概括。",
+    input: z.object({ title: z.string().max(200).optional(), year: z.string().max(8).optional(), type: z.enum(["movie", "tv"]).optional(), season: z.number().int().min(1).max(50).optional(), tmdbid: z.number().int().positive().optional(), doubanId: z.string().regex(/^\d{4,10}$/).optional(), limit: z.number().int().min(3).max(20).optional() }),
+    label: (a) => `看「${a.title ?? a.doubanId ?? a.tmdbid}」的口碑`,
     run: async (ctx, a) => {
-      const r = await call(ctx, "GET", `/v1/reviews${qs({ title: a.title, year: a.year, type: a.type, season: a.season, doubanId: a.doubanId })}`);
-      return { ...r, comments: (r.comments ?? []).slice(0, a.limit ?? 12) };
+      const r = await call(ctx, "GET", `/v1/reviews${qs({ title: a.title, year: a.year, type: a.type, season: a.season, tmdbid: a.tmdbid, doubanId: a.doubanId })}`);
+      if (r.douban) r.douban.comments = (r.douban.comments ?? []).slice(0, a.limit ?? 12);
+      return r;
     },
   },
   video_search: {
