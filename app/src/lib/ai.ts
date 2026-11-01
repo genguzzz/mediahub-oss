@@ -18,7 +18,15 @@ export type ToolPart = { t: "tool"; id: string; name: string; label: string; inp
 export type ThinkPart = { t: "think"; v: string; ms?: number; t0?: number; live?: boolean };
 export type Part = { t: "text"; v: string } | ThinkPart | ToolPart;
 export interface Usage { input: number; output: number; cacheWrite: number; cacheRead: number; searches: number }
-export interface Msg { id?: number; ts?: number; role: "user" | "assistant"; parts: Part[]; error?: string; costUsd?: number; usage?: Usage; latencyMs?: number; live?: boolean }
+/** A card an answer lists (```cards): drawn from what the server sends (server/src/ai/cards.ts). */
+export interface AiCard {
+  shape: "poster" | "avatar" | "wide" | "row"; title: string; sub?: string; image?: string; link?: string; app?: string;
+  badge?: { text: string; tone: "success" | "primary" | "live" | "warn" | "bilibili" | "youtube" };
+  ingest?: { type: "movie" | "tv"; tmdbid: number }; embyId?: string;
+}
+/** ref → card; null = no card for it (unknown ref), missing = still coming */
+export type CardMap = Record<string, AiCard | null>;
+export interface Msg { id?: number; ts?: number; role: "user" | "assistant"; parts: Part[]; error?: string; costUsd?: number; usage?: Usage; latencyMs?: number; live?: boolean; cards?: CardMap }
 export interface ChatSummary { id: number; title: string; updated: number; costUsd: number; running: boolean }
 export interface Note { id: number; ts: number; text: string; by: "ai" | "owner" }
 
@@ -214,6 +222,11 @@ function apply(ev: any) {
         p.ok = ev.ok;
         if (ev.output != null) p.output = ev.output;
       }
+      return emit();
+    }
+    case "card": {
+      const m = last();
+      m.cards = { ...m.cards, [ev.ref]: ev.card ?? null };
       return emit();
     }
     case "cast":
@@ -416,11 +429,11 @@ export async function stop() {
   await kfetch(`/v1/ai/chats/${ai.chatId}/stop`, { method: "POST" }).catch((e) => log.warn("stop failed", e));
 }
 
-interface StoredMsg { id: number; ts?: number; role: "user" | "assistant"; content: string; steps: any[]; costUsd?: number; usage?: Usage; latencyMs?: number; error?: string }
+interface StoredMsg { id: number; ts?: number; role: "user" | "assistant"; content: string; steps: any[]; costUsd?: number; usage?: Usage; latencyMs?: number; error?: string; cards?: CardMap }
 function fromStored(m: StoredMsg): Msg {
   const parts: Part[] =
     Array.isArray(m.steps) && m.steps.length ? m.steps.map((s: any) => (s.t === "text" ? { t: "text", v: s.v } : s.t === "think" ? { t: "think", v: s.v, ms: s.ms } : { ...s, t: "tool" })) : m.content ? [{ t: "text", v: m.content }] : [];
-  return { id: m.id, ts: m.ts, role: m.role, parts, error: m.error, costUsd: m.costUsd, usage: m.usage, latencyMs: m.latencyMs };
+  return { id: m.id, ts: m.ts, role: m.role, parts, error: m.error, costUsd: m.costUsd, usage: m.usage, latencyMs: m.latencyMs, cards: m.cards };
 }
 
 /** Load a chat from the server and, while it is answering, follow it to the end. Throws on HTTP errors. */

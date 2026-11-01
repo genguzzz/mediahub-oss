@@ -373,7 +373,7 @@ function Answer({ m, now }: { m: Msg; now: number }) {
                 sg.k === "md" ? (
                   <Markdown key={sg.key} text={sg.text} caret={gi === gs.length - 1 && si === segs.length - 1 && phase === "typing"} />
                 ) : (
-                  <AiBlock key={sg.key} seg={sg} />
+                  <AiBlock key={sg.key} seg={sg} cards={m.cards} live={live} />
                 ),
               );
             })()}

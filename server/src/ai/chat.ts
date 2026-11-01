@@ -12,6 +12,7 @@ import { logger } from "../log.ts";
 import { aiClient } from "./client.ts";
 import { costOf, type Usage } from "./settings.ts";
 import { systemPrompt } from "./prompt.ts";
+import { lookup as lookupCard, refsIn, type Card, type CardStore } from "./cards.ts";
 import { labelOf, runTool, toolList, type Resource, type ToolCtx } from "./tools.ts";
 import { profile, recall } from "./memory.ts";
 
@@ -23,8 +24,8 @@ export type Step =
   | { t: "think"; v: string; ms?: number }
   | { t: "tool"; id: string; name: string; label: string; input: string; ok: boolean | null; output?: string };
 
-interface StoredMsg { id: number; ts: number; role: "user" | "assistant"; content: string; steps: Step[]; latencyMs?: number; error?: string; costUsd?: number; usage?: Usage }
-interface Chat { id: number; created: number; updated: number; title: string; msgs: StoredMsg[]; history: Msg[]; refs: Record<string, Resource> }
+interface StoredMsg { id: number; ts: number; role: "user" | "assistant"; content: string; steps: Step[]; latencyMs?: number; error?: string; costUsd?: number; usage?: Usage; cards?: Record<string, Card | null> }
+interface Chat { id: number; created: number; updated: number; title: string; msgs: StoredMsg[]; history: Msg[]; refs: Record<string, Resource>; cards?: CardStore }
 export interface Context {
   adult: boolean; screen?: string;
   /** this turn's thinking effort and web search, picked in the app; unset = the server's settings */
@@ -107,7 +108,9 @@ function cardsText(json: string) {
     return "[卡片]";
   }
 }
-const plain = (m: StoredMsg) => (m.content || m.steps.filter((s) => s.t === "text").map((s) => (s as { v: string }).v).join("\n")).replace(/```media\s*([\s\S]*?)```/g, (_, j: string) => cardsText(j));
+const plain = (m: StoredMsg) => (m.content || m.steps.filter((s) => s.t === "text").map((s) => (s as { v: string }).v).join("\n"))
+  .replace(/```media\s*([\s\S]*?)```/g, (_, j: string) => cardsText(j))
+  .replace(/```cards\s*([\s\S]*?)```/g, (b: string) => `[卡片：${refsIn(b).map((r, i) => `${i + 1}.${m.cards?.[r]?.title ? `《${m.cards[r]!.title}》` : ""}(${r})`).join(" ")}]`);
 
 async function searchChats(query: string, limit: number, except: number) {
   await load();
@@ -226,6 +229,23 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
   const id = c.id;
   const ev = (e: Record<string, unknown>) => emit(id, e);
   let text = "";
+  // cards the answer lists (```cards refs): data from this chat's tool results, else looked up once; sent as
+  // `card` events while the block streams, stored on the answer
+  const shown: Record<string, Card | null> = {};
+  const pending: Promise<void>[] = [];
+  const showCards = () => {
+    if (!text.includes("```cards")) return;
+    for (const ref of refsIn(text)) {
+      if (ref in shown) continue;
+      const have = c.cards?.[ref];
+      shown[ref] = have ?? null;
+      if (have) ev({ type: "card", ref, card: have });
+      else pending.push(lookupCard(app, ref, context.adult).then((card) => {
+        shown[ref] = card;
+        ev({ type: "card", ref, card });
+      }));
+    }
+  };
   const usage: Usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, searches: 0 };
   let usedModel = model ?? "";
   const priced = () => {
@@ -235,7 +255,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
   try {
     const { client, model: defModel, effort, webSearch } = await aiClient();
     const ctx: ToolCtx = {
-      app, adult: context.adult, refs: c.refs,
+      app, adult: context.adult, refs: c.refs, cards: (c.cards ??= {}),
       saved: (text, replaces) => ev({ type: "memory", text, replaces }),
       phone: (type, req) => new Promise<PhoneOutcome>((resolve) => {
         const rid = Math.random().toString(36).slice(2, 12);
@@ -309,6 +329,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
             s.v += e.delta.text;
             text += e.delta.text;
             ev({ type: "text", delta: e.delta.text });
+            if (e.delta.text.includes("\n") || e.delta.text.includes("`")) showCards();
           }
         } else if (e.type === "content_block_stop") {
           const s = blockStep.get(e.index);
@@ -384,10 +405,12 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
       }));
       messages.push({ role: "assistant", content: msg.content }, { role: "user", content: uses.map((u) => results.find((r) => r.tool_use_id === u.id)!) });
     }
+    showCards();
+    await Promise.race([Promise.all(pending), new Promise((r) => setTimeout(r, 8000))]);
     const latencyMs = Date.now() - t0;
     c.history = messages;
     const p = priced();
-    c.msgs.push({ id: c.msgs.length + 1, ts: Date.now(), role: "assistant", content: text, steps: steps.filter((s) => s.t !== "text" || s.v), latencyMs, ...p });
+    c.msgs.push({ id: c.msgs.length + 1, ts: Date.now(), role: "assistant", content: text, steps: steps.filter((s) => s.t !== "text" || s.v), latencyMs, ...p, ...(Object.keys(shown).length ? { cards: shown } : {}) });
     c.updated = Date.now();
     await save(c);
     ev({ type: "done", text, cost: p.costUsd ?? 0, usage, latencyMs });
@@ -395,7 +418,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
   } catch (e) {
     const err = run.abort.signal.aborted ? "已停止" : e instanceof Error ? e.message : String(e);
     if (!run.abort.signal.aborted) log.warn({ chat: id, err }, "ai turn failed");
-    c.msgs.push({ id: c.msgs.length + 1, ts: Date.now(), role: "assistant", content: text, steps: steps.filter((s) => s.t !== "text" || s.v), error: err, latencyMs: Date.now() - t0, ...priced() });
+    c.msgs.push({ id: c.msgs.length + 1, ts: Date.now(), role: "assistant", content: text, steps: steps.filter((s) => s.t !== "text" || s.v), error: err, latencyMs: Date.now() - t0, ...priced(), ...(Object.keys(shown).length ? { cards: shown } : {}) });
     c.updated = Date.now();
     await save(c);
     ev({ type: "error", error: err });

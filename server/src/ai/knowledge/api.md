@@ -29,7 +29,7 @@ App 能做的事都对应这里的一个接口。用 app_api 调：method + path
 - POST /v1/pipeline/remove {hashes} — 从列表里移除已结束的任务记录（confirmed）
 - POST /v1/pipeline/run — 立刻跑一轮流水线检查
 - GET /v1/blacklist；POST /v1/blacklist/remove {hashes} — 被拉黑的资源（换源时自动拉黑）
-- GET /v1/history?page= — MoviePilot 下载历史
+- GET /v1/history?page= — MoviePilot 下载历史（每条：作品、季集、种子名、站点、时间、by = 谁触发的：订阅/用户名/插件；hash = 入库任务 id）。问『这部是怎么入库的』：subscriptions 的 by + 这里的记录 + GET /v1/pipeline/{hash}/events
 
 ## 115 和下载器
 

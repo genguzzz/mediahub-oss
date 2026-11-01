@@ -13,12 +13,15 @@ import { z } from "zod";
 import { config } from "../config.ts";
 import { readKnowledge, TOPICS, type Topic } from "./knowledge.ts";
 import { forget, KINDS, saveMemory, search as searchMemory } from "./memory.ts";
+import { build, remember, type CardStore } from "./cards.ts";
 
 export interface ToolCtx {
   app: FastifyInstance;
   adult: boolean;
   /** resources found by find_resources in this chat, by ref ("r1"…) */
   refs: Record<string, Resource>;
+  /** cards registered in this chat (cards.ts): tools stamp `card` refs, answers list them */
+  cards: CardStore;
   /** a memory was written (the app shows it) */
   saved: (text: string, replaces?: number) => void;
   /** ask the app to act on its network (cast: an Emby item to a TV; tv: control the TV by DLNA); resolves with what it reports */
@@ -34,14 +37,30 @@ export interface Resource {
 
 class ToolError extends Error {}
 
+/** A path the server doesn't have (the model guessed one): the API list's lines nearest to it, so it can correct itself. */
+function routeHint(method: string, url: string): string {
+  const lines = readKnowledge("api").split("\n").filter((l) => /^- (GET|POST|PUT|DELETE) \/v1\//.test(l));
+  const segs = url.split("?")[0].split("/").filter(Boolean).slice(1);
+  const score = (l: string) => segs.reduce((n, s) => n + (l.includes(`/${s}`) ? 1 : 0), 0) + (l.startsWith(`- ${method} `) ? 0.5 : 0);
+  const near = lines.map((l) => [score(l), l] as const).filter(([n]) => n >= 1).sort((a, b) => b[0] - a[0]).slice(0, 8).map(([, l]) => l);
+  return `没有这个接口：${method} ${url.split("?")[0]}。不要猜路径，只用接口清单（read_knowledge topic=api）里的。${near.length ? `相近的：\n${near.join("\n")}` : `全部：\n${lines.join("\n")}`}`;
+}
+
 async function call(ctx: ToolCtx, method: "GET" | "POST" | "PUT" | "DELETE", url: string, body?: unknown): Promise<any> {
   const r = await ctx.app.inject({
     method, url,
     headers: { authorization: `Bearer ${config.appToken}`, "content-type": "application/json", "x-request-id": "ai-tool" },
     ...(body !== undefined ? { payload: JSON.stringify(body) } : {}),
   });
-  const out = r.body ? JSON.parse(r.body) : {};
-  if (r.statusCode >= 400) throw new ToolError(out?.error || `HTTP ${r.statusCode}`);
+  let out: any = {};
+  try {
+    out = r.body ? JSON.parse(r.body) : {};
+  } catch {
+    out = { error: r.body.slice(0, 200) };
+  }
+  // Fastify's own 404 ("Route GET:/v1/x not found") = no such route, not a missing item
+  if (r.statusCode === 404 && /^Route \w+:/.test(String(out?.message ?? ""))) throw new ToolError(routeHint(method, url));
+  if (r.statusCode >= 400) throw new ToolError(out?.error && out.error !== "Not Found" ? out.error : out?.message || `HTTP ${r.statusCode}`);
   return out;
 }
 
@@ -57,33 +76,35 @@ const cut = (s: unknown, n: number) => {
   return t.length > n ? `${t.slice(0, n)}…` : t;
 };
 
-/** A TMDb-ish work as the model sees it (poster path kept so answers can show cards). */
-function work(m: any, overview = 90) {
+/** A TMDb-ish work as the model sees it; `card` is its ref for a ```cards block. */
+function work(ctx: ToolCtx, m: any, overview = 90) {
   if (!m) return null;
   return {
+    card: remember(ctx.cards, build.work(m)),
     type: m.type, tmdbid: m.tmdbid ?? m.tmdb_id ?? null, title: m.title ?? m.name ?? "", year: m.year ?? "",
     ...(m.originalTitle && m.originalTitle !== m.title ? { original: m.originalTitle } : {}),
     ...(m.vote ? { rating: Math.round(m.vote * 10) / 10 } : {}),
     ...(overview && m.overview ? { overview: cut(m.overview, overview) } : {}),
-    ...(m.poster ? { poster: String(m.poster).split("/").pop() } : {}),   // the app rebuilds the TMDb URL
     ...("library" in m ? { inLibrary: !!m.library } : {}),   // known only where the route looked it up
     ...(m.roles?.length ? { roles: m.roles.slice(0, 3) } : {}),
   };
 }
 
-/** A Bilibili live room as the model sees it (cover kept for the card, without the scheme). */
-function liveSlim(l: any) {
+/** A live room (Bilibili room / YouTube stream) as the model sees it. */
+function liveSlim(ctx: ToolCtx, l: any, site = "bilibili") {
   return {
-    live: !!l.live, roomId: l.roomId, title: cut(l.title, 60) || undefined, uname: l.uname || undefined, area: l.area || undefined,
-    online: l.online ?? undefined, ...(l.since ? { since: l.since } : {}), ...(l.cover ? { cover: String(l.cover).replace(/^https?:\/\//, "") } : {}),
+    ...(l.live ? { card: remember(ctx.cards, build.video({ ...l, site, live: true })) } : {}),
+    site, live: !!l.live, roomId: l.roomId, title: cut(l.title, 60) || undefined, uname: l.uname || undefined, area: l.area || undefined,
+    online: l.online ?? undefined, ...(l.since ? { since: l.since } : {}), 
   };
 }
 
 /** Same clock as the system prompt's "Now", so 昨天 / 今晚 line up. */
 const localTime = (iso: string) => new Date(iso).toLocaleString("zh-CN", { timeZone: process.env.TZ || "Asia/Shanghai", hour12: false, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 
-function embyItem(i: any) {
+function embyItem(ctx: ToolCtx, i: any) {
   return {
+    card: remember(ctx.cards, build.emby(i)),
     embyId: i.id, name: i.name, type: i.type, year: i.year ?? undefined,
     ...(i.series ? { series: i.series, season: i.season, episode: i.episode } : {}),
     ...(i.tmdbid ? { tmdbid: Number(i.tmdbid) || i.tmdbid } : {}),
@@ -114,7 +135,7 @@ export const TOOLS: Record<string, Def> = {
     label: (a) => `搜索「${a.query}」`,
     run: async (ctx, a) => {
       const r = await call(ctx, "GET", `/v1/media/search${qs({ q: a.query, page: a.page })}`);
-      return { works: (r.items ?? []).slice(0, 15).map((m: any) => work(m)), people: (r.persons ?? []).slice(0, 5).map((p: any) => ({ personId: p.id, name: p.name, dept: p.dept ?? p.known_for_department })) };
+      return { works: (r.items ?? []).slice(0, 15).map((m: any) => work(ctx, m)), people: (r.people ?? []).slice(0, 5).map((p: any) => ({ card: remember(ctx.cards, build.person(p)), personId: p.id, name: p.name, dept: p.dept || undefined })) };
     },
   },
   lookup_titles: {
@@ -124,7 +145,7 @@ export const TOOLS: Record<string, Def> = {
     label: (a) => `批量查 ${a.items?.length ?? ""} 部`,
     run: async (ctx, a) => {
       const r = await call(ctx, "POST", "/v1/media/lookup", { items: a.items.map((i: any) => ({ title: i.title, year: i.year ?? "", type: i.type })) });
-      return (r.items ?? []).map((m: any) => (m.tmdbid ? { query: m.query, ...work(m, 0) } : { query: m.query, notFound: true }));
+      return (r.items ?? []).map((m: any) => (m.tmdbid ? { query: m.query, ...work(ctx, m, 0) } : { query: m.query, notFound: true }));
     },
   },
   douban_related: {
@@ -132,7 +153,7 @@ export const TOOLS: Record<string, Def> = {
     description: "豆瓣『喜欢这部的人也喜欢』：给豆瓣条目 id（从 web_search 搜『片名 豆瓣』的 movie.douban.com/subject/<id> 链接里拿），返回相似作品，已对上 TMDb（tmdbid、海报、豆瓣评分、是否已入库）。主人提到豆瓣、或想要华语口碑向推荐时优先用。",
     input: z.object({ doubanId: z.string().regex(/^\d{4,10}$/), type: Type }),
     label: () => "读豆瓣相似推荐",
-    run: async (ctx, a) => ((await call(ctx, "GET", `/v1/douban/related${qs({ id: a.doubanId, type: a.type })}`)).items ?? []).map((m: any) => ({ ...work(m, 40), ...(m.doubanRating ? { douban: m.doubanRating } : {}) })),
+    run: async (ctx, a) => ((await call(ctx, "GET", `/v1/douban/related${qs({ id: a.doubanId, type: a.type })}`)).items ?? []).map((m: any) => ({ ...work(ctx, m, 40), ...(m.doubanRating ? { douban: m.doubanRating } : {}) })),
   },
   media_detail: {
     tier: "read",
@@ -143,10 +164,10 @@ export const TOOLS: Record<string, Def> = {
       const r = await call(ctx, "GET", `/v1/media/${a.type}/${a.tmdbid}`);
       const m = r.media ?? {};
       return {
-        ...work(m, 400), genres: m.genres, genreIds: (m.genreList ?? []).map((g: any) => `${g.id}:${g.name}`),
+        ...work(ctx, m, 400), genres: m.genres, genreIds: (m.genreList ?? []).map((g: any) => `${g.id}:${g.name}`),
         networks: m.networks, companies: m.companies, date: m.date, status: m.status, runtime: m.runtime,
         seasonsCount: m.seasons, episodesCount: m.episodes, country: m.country, tagline: m.tagline,
-        people: (m.people ?? []).slice(0, 10).map((p: any) => ({ personId: p.id, name: p.name, role: p.role ?? p.job ?? p.character })),
+        people: (m.people ?? []).slice(0, 12).map((p: any) => ({ card: remember(ctx.cards, build.person(p)), personId: p.id, name: p.name, role: p.role || undefined })),
         seasons: (r.seasons ?? []).map((s: any) => ({ season: s.season, name: s.name, episodes: s.episodes ?? s.episode_count, have: s.have ?? s.library?.length, air: s.air ?? s.air_date })),
         library: r.library ? { inLibrary: true, ...("have" in r.library ? { have: r.library.have } : {}) } : { inLibrary: false },
         subscription: r.subscription ?? r.subscriptions ?? null,
@@ -161,8 +182,8 @@ export const TOOLS: Record<string, Def> = {
     run: async (ctx, a) => {
       const r = await call(ctx, "GET", `/v1/media/${a.type}/${a.tmdbid}/related`);
       return {
-        recommendations: (r.recommendations ?? []).slice(0, 15).map((m: any) => work(m, 60)),
-        collection: r.collection ? { name: r.collection.name, parts: (r.collection.parts ?? []).map((m: any) => work(m, 0)) } : null,
+        recommendations: (r.recommendations ?? []).slice(0, 15).map((m: any) => work(ctx, m, 60)),
+        collection: r.collection ? { name: r.collection.name, parts: (r.collection.parts ?? []).map((m: any) => work(ctx, m, 0)) } : null,
         keywords: (r.keywords ?? []).slice(0, 15),
       };
     },
@@ -175,7 +196,7 @@ export const TOOLS: Record<string, Def> = {
     run: async (ctx, a) => {
       if (!a.section) return (await call(ctx, "GET", "/v1/discover")).sections;
       const r = await call(ctx, "GET", `/v1/discover/${encodeURIComponent(a.section)}${qs({ page: a.page })}`);
-      return { title: r.title, items: (r.items ?? []).slice(0, 30).map((m: any) => work(m, 50)) };
+      return { title: r.title, items: (r.items ?? []).slice(0, 30).map((m: any) => work(ctx, m, 50)) };
     },
   },
   tmdb_discover: {
@@ -188,17 +209,20 @@ export const TOOLS: Record<string, Def> = {
     label: () => "按条件发现作品",
     run: async (ctx, a) => {
       const r = await call(ctx, "GET", `/v1/tmdb/discover${qs({ type: a.type, with_genres: a.genres, with_networks: a.networks, with_companies: a.companies, with_keywords: a.keywords, sort_by: a.sort, page: a.page })}`);
-      return (r.items ?? []).slice(0, 25).map((m: any) => work(m, 50));
+      return (r.items ?? []).slice(0, 25).map((m: any) => work(ctx, m, 50));
     },
   },
   person_works: {
     tier: "read",
-    description: "某个演员/导演的作品年表（personId 来自 search_media 或 media_detail）。",
+    description: "某个演员/导演：资料（生日、出生地、别名、简介）和作品年表（新的在前，带角色、是否已入库）。personId 来自 search_media 或 media_detail。介绍一个人、找他演过什么时用。",
     input: z.object({ personId: z.number().int().positive() }),
-    label: () => "读人物作品",
+    label: () => "读人物资料和作品",
     run: async (ctx, a) => {
       const r = await call(ctx, "GET", `/v1/tmdb/person/${a.personId}`);
-      return (r.works ?? []).filter((w: any) => !w.minor).slice(0, 40).map((m: any) => work(m, 0));
+      return {
+        person: { card: remember(ctx.cards, build.person({ ...r, id: a.personId })), name: r.name, aka: r.aka?.length ? r.aka : undefined, dept: r.dept || undefined, birthday: r.birthday || undefined, deathday: r.deathday || undefined, place: r.place || undefined, bio: cut(r.bio, 700) || undefined },
+        works: (r.works ?? []).filter((w: any) => !w.minor).slice(0, 40).map((m: any) => work(ctx, m, 0)),
+      };
     },
   },
   library_search: {
@@ -206,7 +230,7 @@ export const TOOLS: Record<string, Def> = {
     description: "在 Emby 媒体库里按名字找条目（返回 embyId、类型、年份、tmdbid），用于要 embyId（刷新条目）或库里有、TMDb 对不上的片。判断有没有入库不需要它：search_media / lookup_titles / douban_related 的 inLibrary 已经给出。",
     input: z.object({ query: z.string().min(1), limit: z.number().int().min(1).max(40).optional() }),
     label: (a) => `在媒体库找「${a.query}」`,
-    run: async (ctx, a) => (await call(ctx, "GET", `/v1/emby/items${qs({ q: a.query, limit: a.limit ?? 20, noAdult: ctx.adult ? undefined : 1 })}`)).items?.map(embyItem) ?? [],
+    run: async (ctx, a) => (await call(ctx, "GET", `/v1/emby/items${qs({ q: a.query, limit: a.limit ?? 20, noAdult: ctx.adult ? undefined : 1 })}`)).items?.map((i: any) => embyItem(ctx, i)) ?? [],
   },
   cast_to_tv: {
     tier: "write",
@@ -302,7 +326,7 @@ export const TOOLS: Record<string, Def> = {
   },
   app_api: {
     tier: "write",
-    description: "调用影库服务端自己的 API（App 能做的事都在这里：Emby 条目全部元数据和文件（strm 指向、码率、音轨字幕轨）、入库任务的查看重试换源取消、115 离线和网盘、qBittorrent、统计、健康检查和修复、订阅、黑名单、索引器……）。先 read_knowledge topic=api 看有哪些接口和参数，再调。GET 随便读；POST/PUT/DELETE 只在主人要求时做。删除、取消、移除类操作（会删文件或丢任务）必须先跟主人说清楚影响、得到明确同意后，带 confirmed=true 再调；Emby 删除先 dryRun 看计划。method + path（以 /v1/ 开头，可带 ?查询参数）+ body。",
+    description: "调用影库服务端自己的 API（App 能做的事都在这里：Emby 条目全部元数据和文件（strm 指向、码率、音轨字幕轨）、入库任务的查看重试换源取消、115 离线和网盘、qBittorrent、统计、健康检查和修复、订阅、黑名单、索引器……）。路径只能用 read_knowledge topic=api 清单里的（没读过先读），不要猜。GET 随便读；POST/PUT/DELETE 只在主人要求时做。删除、取消、移除类操作（会删文件或丢任务）必须先跟主人说清楚影响、得到明确同意后，带 confirmed=true 再调；Emby 删除先 dryRun 看计划。method + path（以 /v1/ 开头，可带 ?查询参数）+ body。",
     input: z.object({ method: z.enum(["GET", "POST", "PUT", "DELETE"]), path: z.string().regex(/^\/v1\/[^\s#]*$/).max(600), body: z.record(z.string(), z.unknown()).optional(), confirmed: z.boolean().optional() }),
     label: (a) => (a.method === "GET" ? `读取 ${a.path.split("?")[0]}` : `执行 ${a.method} ${a.path.split("?")[0]}`),
     run: async (ctx, a) => {
@@ -324,14 +348,14 @@ export const TOOLS: Record<string, Def> = {
     description: "Emby 最近入库的电影和剧集。",
     input: z.object({ limit: z.number().int().min(1).max(50).optional() }),
     label: () => "看最近入库",
-    run: async (ctx, a) => (await call(ctx, "GET", `/v1/emby/latest${qs({ limit: a.limit ?? 20 })}`)).items?.map(embyItem) ?? [],
+    run: async (ctx, a) => (await call(ctx, "GET", `/v1/emby/latest${qs({ limit: a.limit ?? 20 })}`)).items?.map((i: any) => embyItem(ctx, i)) ?? [],
   },
   watch_history: {
     tier: "read",
     description: "主人在 Emby 的观看记录，按最后播放时间倒序：recent（默认，看完的和看了一部分的都有，带 played 日期、finished、进度 %）、played（只看完的）、resume（只看到一半的，『接着看』）。只记录在这台 Emby 上的播放；在别的播放器看的不会有。",
     input: z.object({ kind: z.enum(["recent", "played", "resume"]).optional(), limit: z.number().int().min(1).max(60).optional() }),
     label: (a) => (a.kind === "resume" ? "看在看的" : "读观看记录"),
-    run: async (ctx, a) => (await call(ctx, "GET", `/v1/emby/played${qs({ kind: a.kind ?? "recent", limit: a.limit ?? 30, adult: ctx.adult ? 1 : undefined })}`)).items?.map(embyItem) ?? [],
+    run: async (ctx, a) => (await call(ctx, "GET", `/v1/emby/played${qs({ kind: a.kind ?? "recent", limit: a.limit ?? 30, adult: ctx.adult ? 1 : undefined })}`)).items?.map((i: any) => embyItem(ctx, i)) ?? [],
   },
   tasks: {
     tier: "read",
@@ -341,7 +365,7 @@ export const TOOLS: Record<string, Def> = {
     run: async (ctx, a) => {
       const r = await call(ctx, "GET", `/v1/pipeline${qs({ limit: a.limit ?? 20 })}`);
       return (r.tasks ?? r.items ?? []).map((t: any) => ({
-        hash: t.hash, title: t.title ?? t.name, name: cut(t.name, 80), status: t.status, stage: t.stage, percent: t.percent,
+        card: remember(ctx.cards, build.task(t)), hash: t.hash, title: t.title ?? t.name, name: cut(t.name, 80), status: t.status, stage: t.stage, percent: t.percent,
         category: t.category, added: t.added ? new Date(t.added * 1000).toISOString().slice(0, 16) : undefined,
         last: cut(t.steps?.find((s: any) => s.state === "active")?.last ?? "", 100) || undefined, failed: t.failed || undefined,
       }));
@@ -349,10 +373,10 @@ export const TOOLS: Record<string, Def> = {
   },
   subscriptions: {
     tier: "read",
-    description: "MoviePilot 订阅列表（追更中的剧/想看的电影）。",
+    description: "MoviePilot 订阅列表（追更中的剧/想看的电影）：状态、缺几集、谁建的（by：用户名或自动订阅插件）、最近一次搜索/更新时间。『这部怎么来的』先看它和 GET /v1/subscriptions/{id}、/v1/history。",
     input: z.object({}),
     label: () => "查看订阅",
-    run: async (ctx) => ((await call(ctx, "GET", "/v1/subscriptions")).items ?? []).map((s: any) => ({ id: s.id, title: s.title, year: s.year, type: s.type, tmdbid: s.tmdbid, season: s.season, state: s.state, total: s.total, lack: s.lack })),
+    run: async (ctx) => ((await call(ctx, "GET", "/v1/subscriptions")).items ?? []).map((s: any) => ({ card: remember(ctx.cards, build.sub(s)), id: s.id, title: s.title, year: s.year, type: s.type, tmdbid: s.tmdbid, season: s.season, state: s.state, total: s.total, lack: s.lack, by: s.by || undefined, lastUpdate: s.lastUpdate || undefined })),
   },
   health: {
     tier: "read",
@@ -402,7 +426,7 @@ export const TOOLS: Record<string, Def> = {
   },
   video_search: {
     tier: "read",
-    description: "搜 B 站 / YouTube 视频（解说、影评、剪辑、预告、访谈、教程等 UGC）。site = bilibili | youtube | both（默认 both，两边并行）；sort = relevance | latest | views；filter 按时长或时间筛（short 短视频 | medium | long 长视频 | today | week | month，给了 filter 就不按 sort 排）。返回 site、id、标题、UP 主/频道、封面、时长、播放量、发布时间。展示用 video 卡片块。",
+    description: "搜 B 站 / YouTube 视频（解说、影评、剪辑、预告、访谈、教程等 UGC）。site = bilibili | youtube | both（默认 both，两边并行）；sort = relevance | latest | views；filter 按时长或时间筛（short 短视频 | medium | long 长视频 | today | week | month，给了 filter 就不按 sort 排）。返回 site、id、标题、UP 主/频道、时长、播放量、发布时间。",
     input: z.object({ query: z.string().min(1).max(100), site: z.enum(["bilibili", "youtube", "both"]).optional(), sort: z.enum(["relevance", "latest", "views"]).optional(), filter: z.enum(["short", "medium", "long", "today", "week", "month"]).optional(), limit: z.number().int().min(1).max(20).optional() }),
     label: (a) => `搜视频「${a.query}」`,
     run: async (ctx, a) => {
@@ -412,10 +436,8 @@ export const TOOLS: Record<string, Def> = {
         try {
           const r = await call(ctx, "GET", `/v1/ugc/search${qs({ site, q: a.query, sort: a.sort, filter: a.filter })}`);
           return (r.items ?? []).slice(0, n).map((v: any) => ({
-            site: v.site, id: v.id, title: cut(v.title, 70), author: v.author, duration: v.duration || undefined,
+            card: remember(ctx.cards, build.video(v)), site: v.site, id: v.id, title: cut(v.title, 70), author: v.author, duration: v.duration || undefined,
             views: v.views ?? undefined, published: v.published || undefined,
-            // YouTube covers follow from the id; Bilibili's are kept (host + path, no scheme)
-            ...(v.site === "bilibili" && v.cover ? { cover: String(v.cover).replace(/^https?:\/\//, "") } : {}),
           }));
         } catch (e) {
           return [{ site, error: e instanceof Error ? e.message : String(e) }];
@@ -471,7 +493,7 @@ export const TOOLS: Record<string, Def> = {
         try {
           const who = ((await call(ctx, "GET", `/v1/ugc/creators${qs({ site, q: a.name })}`)).items ?? []) as any[];
           const live = site === "bilibili" && who.length ? (await call(ctx, "GET", `/v1/ugc/live${qs({ uids: who.slice(0, 8).map((w) => w.id).join(",") })}`).catch(() => ({ status: {} }))).status ?? {} : {};
-          return { site, accounts: who.map((w) => ({ id: w.id, name: w.name, followers: w.followers ?? undefined, videos: w.videos ?? undefined, sign: w.sign || undefined, ...(live[w.id] ? { live: liveSlim(live[w.id]) } : {}) })) };
+          return { site, accounts: who.map((w) => ({ card: remember(ctx.cards, build.creator(w, site)), id: w.id, name: w.name, followers: w.followers ?? undefined, videos: w.videos ?? undefined, sign: w.sign || undefined, ...(live[w.id] ? { live: liveSlim(ctx, live[w.id]) } : {}) })) };
         } catch (e) {
           return { site, error: e instanceof Error ? e.message : String(e) };
         }
@@ -480,7 +502,7 @@ export const TOOLS: Record<string, Def> = {
   },
   live_search: {
     tier: "read",
-    description: "搜正在直播的（主播名、游戏、赛事、话题，如『英雄联盟』『LPL』『vtuber』）：site = bilibili（B 站直播间）| youtube（YouTube 正在直播的视频）| both（默认，两边并行）。返回 site、roomId（B 站房间号 / YouTube 视频 id）、标题、主播、分区、在线人数、封面，人多的在前。展示用 video 卡片块（live:true）。",
+    description: "搜正在直播的（主播名、游戏、赛事、话题，如『英雄联盟』『LPL』『vtuber』）：site = bilibili（B 站直播间）| youtube（YouTube 正在直播的视频）| both（默认，两边并行）。返回 site、roomId（B 站房间号 / YouTube 视频 id）、标题、主播、分区、在线人数，人多的在前。",
     input: z.object({ query: z.string().min(1).max(60), site: z.enum(["bilibili", "youtube", "both"]).optional(), limit: z.number().int().min(1).max(20).optional() }),
     label: (a) => `搜直播「${a.query}」`,
     run: async (ctx, a) => {
@@ -488,7 +510,7 @@ export const TOOLS: Record<string, Def> = {
       const n = a.limit ?? (sites.length > 1 ? 6 : 10);
       return (await Promise.all(sites.map(async (site: string) => {
         try {
-          return ((await call(ctx, "GET", `/v1/ugc/live${qs({ q: a.query, site })}`)).items ?? []).slice(0, n).map((l: any) => ({ site, ...liveSlim(l) }));
+          return ((await call(ctx, "GET", `/v1/ugc/live${qs({ q: a.query, site })}`)).items ?? []).slice(0, n).map((l: any) => liveSlim(ctx, l, site));
         } catch (e) {
           return [{ site, error: e instanceof Error ? e.message : String(e) }];
         }
@@ -523,12 +545,11 @@ export const TOOLS: Record<string, Def> = {
             site === "bilibili" ? call(ctx, "GET", `/v1/ugc/live${qs({ uids: pick.id })}`).then((r) => r.status?.[pick.id] ?? null).catch(() => null) : Promise.resolve(null),
           ]);
           return {
-            site, account: { id: pick.id, name: pick.name, followers: pick.followers ?? undefined, videos: pick.videos ?? undefined, url: pick.url },
-            ...(liveNow ? { live: liveSlim(liveNow) } : {}),
+            site, account: { card: remember(ctx.cards, build.creator(pick, site)), id: pick.id, name: pick.name, followers: pick.followers ?? undefined, videos: pick.videos ?? undefined, url: pick.url },
+            ...(liveNow ? { live: liveSlim(ctx, liveNow) } : {}),
             others: who.filter((w) => w.id !== pick.id).slice(0, 3).map((w) => `${w.name}（${w.followers ?? "?"} 粉）`),
             latest: vids.slice(0, a.limit ?? 10).map((v) => ({
-              site: v.site, id: v.id, title: cut(v.title, 70), author: v.author || pick.name, duration: v.duration || undefined, views: v.views ?? undefined, published: v.published || undefined,
-              ...(v.site === "bilibili" && v.cover ? { cover: String(v.cover).replace(/^https?:\/\//, "") } : {}),
+              card: remember(ctx.cards, build.video({ ...v, author: v.author || pick.name })), site: v.site, id: v.id, title: cut(v.title, 70), author: v.author || pick.name, duration: v.duration || undefined, views: v.views ?? undefined, published: v.published || undefined,
             })),
           };
         } catch (e) {
@@ -544,7 +565,7 @@ export const TOOLS: Record<string, Def> = {
     label: (a) => `看 ${a.provider} 目录`,
     run: async (ctx, a) => {
       const r = await call(ctx, "GET", `/v1/catalog/${a.provider}/list${qs({ sort: a.sort, tag: a.tag, q: a.q, page: a.page })}`);
-      return (r.items ?? []).slice(0, 30).map((i: any) => ({ id: i.id, title: cut(i.title, 80), date: i.date, rating: i.rating, tags: (i.tags ?? []).slice(0, 5) }));
+      return (r.items ?? []).slice(0, 30).map((i: any) => ({ card: remember(ctx.cards, build.catalog(a.provider, i)), id: i.id, title: cut(i.title, 80), date: i.date, rating: i.rating, tags: (i.tags ?? []).slice(0, 5) }));
     },
   },
   catalog_item: {

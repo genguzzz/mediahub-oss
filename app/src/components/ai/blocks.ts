@@ -1,7 +1,9 @@
 // Blocks in the assistant's Markdown: a fenced block whose info string is a block type and whose body is
 // JSON renders as a component; everything else stays Markdown. While streaming, an unclosed block is
 // `open` (skeleton); a closed block with bad JSON falls back to its raw text. Schemas: server/src/ai/prompt.ts.
-export const BLOCK_TYPES = ["media", "video"] as const;
+// ```cards is not JSON: one "ref | note" per line (the server sends each ref's card, server/src/ai/cards.ts);
+// ```media / ```video are the older JSON blocks, still in saved chats.
+export const BLOCK_TYPES = ["cards", "media", "video"] as const;
 export type BlockType = (typeof BLOCK_TYPES)[number];
 
 export type Segment =
@@ -31,7 +33,8 @@ export function segments(src: string, live: boolean): Segment[] {
     flush();
     let data: any = null;
     let error = false;
-    if (closed || !live) {
+    if (m[1] === "cards") data = cardLines(raw, closed || !live);
+    else if (closed || !live) {
       data = parseBlock(raw);
       error = data === null;
     }
@@ -39,6 +42,19 @@ export function segments(src: string, live: boolean): Segment[] {
     i = closed ? j : lines.length;
   }
   flush();
+  return out;
+}
+
+export type CardLine = { ref: string; note?: string };
+
+/** "tv:1396 | 理由" lines; while streaming, the last line may be cut, so only finished lines count. */
+function cardLines(raw: string, done: boolean): CardLine[] {
+  const lines = raw.split("\n");
+  const out: CardLine[] = [];
+  for (const l of done ? lines : lines.slice(0, -1)) {
+    const m = /^\s*[-*]?\s*([a-z]+:[^\s|｜]+)\s*(?:[|｜]\s*(.*))?$/.exec(l);
+    if (m && !out.some((x) => x.ref === m[1])) out.push({ ref: m[1], note: m[2]?.trim() || undefined });
+  }
   return out;
 }
 

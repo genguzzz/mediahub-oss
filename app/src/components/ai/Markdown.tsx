@@ -61,7 +61,7 @@ function addCaret(nodes: Node[]): boolean {
 
 // ---------- in-app links ----------
 
-const APP_PATH = /^\/(media\/(movie|tv)\/\d+|person\/\d+|task\/[0-9a-f]{40}|emby\/\w+|tasks|settings)?$/;
+const APP_PATH = /^\/(media\/(movie|tv)\/\d+|person\/\d+|task\/[0-9a-f]{40}|emby\/\w+|subscription\/\d+|catalog\/[\w-]+\/[^/\s]+|tasks|settings)?$/;
 
 /** A link the assistant writes ([绝命毒师](/media/tv/1396)) → the app's route. */
 export function appRoute(href: string): Href | null {
@@ -71,6 +71,8 @@ export function appRoute(href: string): Href | null {
   if ((m = href.match(/^\/person\/(\d+)$/))) return { pathname: "/tmdb/person/[id]", params: { id: m[1] } };
   if ((m = href.match(/^\/task\/([0-9a-f]{40})$/))) return { pathname: "/task/[hash]", params: { hash: m[1] } };
   if ((m = href.match(/^\/emby\/(\w+)$/))) return { pathname: "/emby/[id]", params: { id: m[1] } };
+  if ((m = href.match(/^\/subscription\/(\d+)$/))) return { pathname: "/subscription/[id]", params: { id: m[1] } };
+  if ((m = href.match(/^\/catalog\/([\w-]+)\/([^/\s]+)$/))) return { pathname: "/catalog/[p]/item/[id]", params: { p: m[1], id: decodeURIComponent(m[2]) } };
   if (href === "/settings") return "/settings";
   if (href === "/tasks") return "/pipeline";
   return "/";
