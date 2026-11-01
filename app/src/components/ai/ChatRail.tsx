@@ -19,6 +19,7 @@ const REST_MAX = 10; // ticks shown while idle
 const PITCH = 6; // distance between neighbouring ticks
 const STEP = 14; // finger travel (px) per message at a slow drag: damped, one switch at a time
 const MAX_GAIN = 3; // a fast drag moves up to this much further per px (≈ the ticks' own pitch)
+const MIN_HIT = 96; // the touch area is never shorter than this, so a rail of two ticks is still easy to hit
 const HIT = 4; // touch area = the ticks' own block plus this much above and below
 
 export function ChatRail({ marks, contentH, viewH, scrollY, onJump }: {
@@ -49,7 +50,8 @@ export function ChatRail({ marks, contentH, viewH, scrollY, onJump }: {
   const pitch = Math.min(PITCH, Math.max(2, (railH - 20) / Math.max(1, count)));
   const top = (railH - count * pitch) / 2;
   const yOf = (i: number) => top + (i - lo + 0.5) * pitch;
-  const hitTop = Math.max(0, top - HIT);
+  const hitH = Math.max(count * pitch + 2 * HIT, MIN_HIT);
+  const hitTop = Math.max(0, top + (count * pitch) / 2 - hitH / 2);
   const indexAt = (fy0: number) => { const fy = fy0 + hitTop; return Math.max(lo, Math.min(hi - 1, lo + Math.floor((fy - top) / pitch))); };
 
   const cursor = useRef({ from: 0, at: 0, acc: 0, y: 0, t: 0 }); // drag start index, index now, travelled messages (fractional), last finger y / time
@@ -84,7 +86,7 @@ export function ChatRail({ marks, contentH, viewH, scrollY, onJump }: {
     <>
       <View pointerEvents="none" onLayout={(e) => setRailH(e.nativeEvent.layout.height)} style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 1 }} />
       <GestureDetector gesture={Gesture.Exclusive(pan, tap)}>
-        <View style={{ position: "absolute", left: 0, top: hitTop, height: count * pitch + 2 * HIT, width: 22, zIndex: 5 }}>
+        <View style={{ position: "absolute", left: 0, top: hitTop, height: hitH, width: 22, zIndex: 5 }}>
           {marks.slice(lo, hi).map((m, j) => {
             const i = lo + j;
             const on = i === shown;
