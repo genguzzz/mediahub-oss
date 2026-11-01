@@ -172,11 +172,22 @@ function searchNames(m: MpMedia): SearchName[] {
   }).slice(0, 8);
 }
 
+// A work's title is a name, never a web address. TMDb translations get vandalised now and then (2026-11-01: the
+// zh-CN titles of top-rated films were replaced with spam site names like "淫片网 448832𝟵.com"), and MoviePilot
+// passes them on; a title carrying a URL or domain (after folding look-alike characters such as 𝟵) is dropped
+// for the original title.
+const SPAM_TITLE = /https?:\/\/|www\.|[a-z0-9-]+\.(?:com|net|org|cc|top|xyz|vip|me|tv|club|info|co|io|app|site|online|live|fun|cn|hk|tw)\b/i;
+export function cleanTitle(title: string | null | undefined, original?: string | null): string {
+  const t = (title ?? "").trim();
+  if (t && SPAM_TITLE.test(t.normalize("NFKC"))) return (original ?? "").trim() || "";
+  return t;
+}
+
 function brief(m: MpMedia) {
   return {
     type: kindOf(m.type),
     tmdbid: m.tmdb_id ?? null,
-    title: m.title ?? "",
+    title: cleanTitle(m.title, m.original_title) || m.original_title || "",
     year: m.year ?? "",
     originalTitle: m.original_title ?? "",
     poster: tmdbPath(m.poster_path),
@@ -506,7 +517,7 @@ app.get<{ Params: { id: string } }>("/v1/discover/:id", async (req) => {
 // ---------- TMDb metadata browsing (发现: person → works timeline; genre / network / company / keyword lists) ----------
 
 interface TmdbBrief { tmdbid: number; type: Kind; title: string; originalTitle: string; year: string; date: string; poster: string | null; vote: number; votes: number; overview: string }
-const tmdbItem = (b: TmdbBrief) => ({ ...b, poster: tmdbPath(b.poster), source: "themoviedb", sourceId: String(b.tmdbid) });
+const tmdbItem = (b: TmdbBrief) => ({ ...b, title: cleanTitle(b.title, b.originalTitle) || b.originalTitle, poster: tmdbPath(b.poster), source: "themoviedb", sourceId: String(b.tmdbid) });
 async function withLib<T extends { tmdbid: number | null; type: Kind }>(items: T[]) {
   const lib = await libraryOf(items);
   return items.map((i) => ({ ...i, library: i.tmdbid ? lib[`${i.type}:${i.tmdbid}`] ?? null : null }));
