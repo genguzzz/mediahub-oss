@@ -4,6 +4,8 @@
 凭据都留在插件配置里：App 后端只拿 MP 的 API key 调这些接口，不直接连 OpenList/qBittorrent 等服务。
 """
 import re
+import base64
+import hashlib
 import threading
 import time
 import urllib.parse
@@ -111,6 +113,33 @@ def _meta(title: str) -> Dict[str, Any]:
         return {"group": "", "res": "", "codec": "", "type": "", "effect": "", "season": None, "episodes": [], "se": ""}
 
 
+
+def _info_hash(data: bytes) -> Optional[str]:
+    """SHA-1 of the bencoded `info` dict of a .torrent (its info hash)."""
+    def skip(i: int) -> int:
+        c = data[i:i + 1]
+        if c == b"i":
+            return data.index(b"e", i) + 1
+        if c in (b"l", b"d"):
+            i += 1
+            while data[i:i + 1] != b"e":
+                i = skip(i)
+            return i + 1
+        n = data.index(b":", i)
+        return n + 1 + int(data[i:n])
+    try:
+        i = 1
+        while data[i:i + 1] != b"e":
+            k_end = skip(i)
+            key = data[data.index(b":", i) + 1:k_end]
+            v_end = skip(k_end)
+            if key == b"info":
+                return hashlib.sha1(data[k_end:v_end]).hexdigest()
+            i = v_end
+    except (ValueError, IndexError):
+        return None
+    return None
+
 class Hub:
     def __init__(self, plugin):
         self.p = plugin
@@ -124,6 +153,8 @@ class Hub:
             ("/hub/prowlarr/add", self.prowlarr_add, "POST", "添加公开索引器：{definition}"),
             ("/hub/prowlarr/update", self.prowlarr_update, "POST", "启用/停用索引器：{id, enable}"),
             ("/hub/prowlarr/delete", self.prowlarr_delete, "POST", "删除索引器：{id}"),
+            ("/hub/prowlarr/health", self.prowlarr_health, "GET", "Prowlarr 版本、健康提示、每个索引器的状态（暂停到何时、最近失败）"),
+            ("/hub/prowlarr/test", self.prowlarr_test, "POST", "测试一个索引器能不能用：{id}；返回失败原因"),
             ("/hub/search", self.search, "POST", "资源搜索：{tmdbid,type,season} 智能（MP 识别+过滤）或 {keyword,sources} 指定来源"),
             ("/hub/library", self.library, "POST", "批量查是否已入库：{items:[{tmdbid,type}]}"),
             ("/hub/library/item", self.library_item, "GET", "某作品在 Emby 里的条目和已有集：tmdbid,type"),
@@ -240,6 +271,35 @@ class Hub:
             msg = "；".join(str(e.get("errorMessage")) for e in body) if isinstance(body, list) else str(body)[:200]
             return {"ok": False, "error": f"保存失败（{code}）：{msg}"}
         return {"ok": True}
+
+    def prowlarr_health(self) -> Dict[str, Any]:
+        _, sysst = self._pw("GET", "/system/status", timeout=15)
+        _, health = self._pw("GET", "/health", timeout=15)
+        _, ix = self._pw("GET", "/indexer", timeout=15)
+        _, st = self._pw("GET", "/indexerstatus", timeout=15)
+        status = {x.get("indexerId"): x for x in st or [] if isinstance(x, dict)}
+        return {
+            "ok": isinstance(sysst, dict),
+            "version": (sysst or {}).get("version") if isinstance(sysst, dict) else None,
+            "health": [{"type": h.get("type"), "source": h.get("source"), "message": h.get("message")} for h in health or [] if isinstance(h, dict)],
+            "indexers": [{"id": i.get("id"), "name": i.get("name"), "definition": i.get("definitionName"), "enable": i.get("enable"),
+                          "privacy": i.get("privacy"), "baseUrl": next((f.get("value") for f in i.get("fields") or [] if f.get("name") == "baseUrl"), None),
+                          "disabledTill": (status.get(i.get("id")) or {}).get("disabledTill"),
+                          "mostRecentFailure": (status.get(i.get("id")) or {}).get("mostRecentFailure"),
+                          "initialFailure": (status.get(i.get("id")) or {}).get("initialFailure")}
+                         for i in ix or [] if isinstance(i, dict) and i.get("protocol") == "torrent"],
+        }
+
+    def prowlarr_test(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        iid = int(payload.get("id") or 0)
+        code, cur = self._pw("GET", f"/indexer/{iid}")
+        if code != 200 or not isinstance(cur, dict):
+            return {"ok": False, "error": "没有这个索引器"}
+        code, body = self._pw("POST", "/indexer/test", json=cur, timeout=90)
+        if code in (200, 204):
+            return {"ok": True, "name": cur.get("name")}
+        msg = "；".join(str(e.get("errorMessage")) for e in body if isinstance(e, dict)) if isinstance(body, list) else str(body)[:300]
+        return {"ok": False, "name": cur.get("name"), "error": f"{code}：{msg}"}
 
     def prowlarr_delete(self, payload: dict = Body(...)) -> Dict[str, Any]:
         iid = int(payload.get("id") or 0)
@@ -441,20 +501,69 @@ class Hub:
                 why = (getattr(res, "text", "") or "")[:160]
             raise RuntimeError(f"Prowlarr 返回 {getattr(res, 'status_code', '无响应')}{('：' + why.strip()[:200]) if why.strip() else ''}")
         out = []
-        for r in res.json() or []:
+        rows = res.json() or []
+        nomag: Dict[str, int] = {}
+        pending: List[tuple] = []
+        for r in rows:
             if r.get("protocol") not in (None, "torrent"):
                 continue
             h = (r.get("infoHash") or "").strip()
             mg = r.get("magnetUrl") if str(r.get("magnetUrl") or "").startswith("magnet:") else None
             if re.fullmatch(r"[0-9a-fA-F]{40}", h):
                 mg = f"magnet:?xt=urn:btih:{h.lower()}&dn={urllib.parse.quote(r.get('title') or '')}"
-            if not mg:
+            if not mg and r.get("downloadUrl"):
+                pending.append((len(out), r))     # .torrent only (ACG.RIP, Anibt, SubsPlease…): hash resolved below
+                mg = ""
+            elif not mg:
+                nomag[r.get("indexer") or "?"] = nomag.get(r.get("indexer") or "?", 0) + 1
                 continue
             out.append({"title": r.get("title") or "", "size": r.get("size"), "seeders": r.get("seeders"),
                         "peers": r.get("leechers"), "magnet": mg, "site": r.get("indexer") or "Prowlarr",
                         "indexer": r.get("indexer") or "", "pub": _ts(r.get("publishDate")),
                         "page": r.get("infoUrl") or r.get("guid") or ""})
+        if pending:
+            # Sites that give only a .torrent link: fetch it through Prowlarr (first 40, in parallel, cached) and
+            # turn its info hash into a magnet; the ones that cannot be read are left out
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                hashes = list(pool.map(lambda pr: self._torrent_hash(pr[1].get("downloadUrl")), pending[:40]))
+            for (i, r), h in zip(pending[:40], hashes):
+                if h:
+                    out[i]["magnet"] = f"magnet:?xt=urn:btih:{h}&dn={urllib.parse.quote(r.get('title') or '')}"
+            unresolved = sum(1 for x in out if not x["magnet"])
+            out = [x for x in out if x["magnet"]]
+            if unresolved:
+                nomag["读不到种子文件"] = unresolved
+        if nomag:
+            logger.info(f"【Prowlarr115】按来源搜「{q}」：Prowlarr 返回 {len(rows)} 条，跳过 {nomag}")
         return out
+
+    _hash_cache: Dict[str, str] = {}
+
+    def _torrent_hash(self, url: Optional[str]) -> Optional[str]:
+        """Info hash of a .torrent served by Prowlarr's download endpoint (or the magnet it redirects to)."""
+        if not url:
+            return None
+        if url in Hub._hash_cache:
+            return Hub._hash_cache[url]
+        # Prowlarr writes its own host into downloadUrl; go through the address the plugin uses
+        u = urllib.parse.urlsplit(url)
+        base = urllib.parse.urlsplit(self.p._prowlarr_url)
+        fetch = urllib.parse.urlunsplit((base.scheme, base.netloc, u.path, u.query, ""))
+        h = None
+        try:
+            res = RequestUtils(timeout=20).get_res(fetch, allow_redirects=False)
+            if res is not None and res.status_code in (301, 302, 303, 307, 308):
+                loc = res.headers.get("Location") or ""
+                m = re.search(r"btih:([0-9a-fA-F]{40}|[A-Z2-7]{32})", loc)
+                if m:
+                    h = m.group(1).lower() if len(m.group(1)) == 40 else base64.b16encode(base64.b32decode(m.group(1).upper())).decode().lower()
+            elif res is not None and res.status_code == 200 and res.content[:1] == b"d":
+                h = _info_hash(res.content)
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"【Prowlarr115】种子文件读取失败：{err}")
+        if h:
+            Hub._hash_cache[url] = h
+        return h
 
     def _score(self, items: List[dict], kind: str, media: Any, season: Optional[int], aired: List[int]) -> None:
         policy = self.p._policy()
