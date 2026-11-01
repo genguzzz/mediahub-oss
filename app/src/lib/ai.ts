@@ -17,7 +17,8 @@ export type ToolPart = { t: "tool"; id: string; name: string; label: string; inp
 /** The model's (summarized) reasoning; t0 = when it started streaming here, ms = its length once ended. */
 export type ThinkPart = { t: "think"; v: string; ms?: number; t0?: number; live?: boolean };
 export type Part = { t: "text"; v: string } | ThinkPart | ToolPart;
-export interface Msg { id?: number; role: "user" | "assistant"; parts: Part[]; error?: string; costUsd?: number; latencyMs?: number; live?: boolean }
+export interface Usage { input: number; output: number; cacheWrite: number; cacheRead: number; searches: number }
+export interface Msg { id?: number; role: "user" | "assistant"; parts: Part[]; error?: string; costUsd?: number; usage?: Usage; latencyMs?: number; live?: boolean }
 export interface ChatSummary { id: number; title: string; updated: number; costUsd: number; running: boolean }
 export interface Note { id: number; ts: number; text: string; by: "ai" | "owner" }
 
@@ -224,6 +225,7 @@ function apply(ev: any) {
       const m = last();
       m.live = false;
       m.costUsd = ev.cost;
+      m.usage = ev.usage;
       m.latencyMs = ev.latencyMs;
       m.parts.forEach((p) => {
         if (p.t === "tool" && p.ok == null) p.ok = true;
@@ -414,11 +416,11 @@ export async function stop() {
   await kfetch(`/v1/ai/chats/${ai.chatId}/stop`, { method: "POST" }).catch((e) => log.warn("stop failed", e));
 }
 
-interface StoredMsg { id: number; role: "user" | "assistant"; content: string; steps: any[]; costUsd?: number; latencyMs?: number; error?: string }
+interface StoredMsg { id: number; role: "user" | "assistant"; content: string; steps: any[]; costUsd?: number; usage?: Usage; latencyMs?: number; error?: string }
 function fromStored(m: StoredMsg): Msg {
   const parts: Part[] =
     Array.isArray(m.steps) && m.steps.length ? m.steps.map((s: any) => (s.t === "text" ? { t: "text", v: s.v } : s.t === "think" ? { t: "think", v: s.v, ms: s.ms } : { ...s, t: "tool" })) : m.content ? [{ t: "text", v: m.content }] : [];
-  return { id: m.id, role: m.role, parts, error: m.error, costUsd: m.costUsd, latencyMs: m.latencyMs };
+  return { id: m.id, role: m.role, parts, error: m.error, costUsd: m.costUsd, usage: m.usage, latencyMs: m.latencyMs };
 }
 
 /** Load a chat from the server and, while it is answering, follow it to the end. Throws on HTTP errors. */
@@ -613,4 +615,12 @@ export async function deleteNote(id: number) {
   if (!r.ok) throw await errorOf(r);
   ai.notes = ai.notes.filter((n) => n.id !== id);
   emit();
+}
+
+/** "18.2k tokens": everything the turn read and wrote (cache reads included — they are billed, at a tenth). */
+export function tokensLabel(u?: Usage): string {
+  if (!u) return "";
+  const n = u.input + u.output + u.cacheWrite + u.cacheRead;
+  if (!n) return "";
+  return `${n >= 1000 ? `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : n} tokens`;
 }

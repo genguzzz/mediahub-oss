@@ -23,6 +23,8 @@ SSE events: `chat {chatId}`, `text_start`, `text {delta}`, `think_start`, `think
 
 Two layers (after Letta/MemGPT core vs archival, mem0's update-not-duplicate, Claude's memory tool): `profile` (≤ 12 stable taste / rules, always in the prompt) and archival `fact` / `watching` / `event` / `plan` (searched). Each turn, the archival entries most relevant to the question (+ chat title) are recalled into `<recalled>`; scoring is character-bigram overlap (no tokenizer, fine for Chinese) + tag hits + recency + use, in memory. `memory_save` updates a near-duplicate of the same kind (similarity ≥ 0.72) or `replaces=id` instead of adding; writes are serialized. Cap 400 entries (least recalled archival ones drop first). The app's 偏好与记忆 pane is `/v1/ai/notes` over the same store (owner entries are `profile`). The old `notes.json` migrates to `profile` on first load.
 
+Usage and cost: each round's `usage` (input, output, cache write / read, web searches) is added up per turn; `settings.ts` prices it from Anthropic's price list (USD per MTok; web search $0.01 each, web fetch free) — the Messages API returns tokens, not money (OKX Helper's Agent SDK computes cost itself). Stored on the answer (`usage`, `costUsd`), sent with `done`, summed per chat in `/v1/ai/chats`; the app shows `7s · 18.2k tokens · $0.012`. A model without a price (a custom endpoint's) shows tokens only.
+
 The system prompt is two blocks: a stable one (cached; changes only with 隐藏内容) and a per-turn one (time, profile, recalled, recent chats, screen).
 
 ## Knowledge (progressive disclosure)

@@ -10,6 +10,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config.ts";
 import { logger } from "../log.ts";
 import { aiClient } from "./client.ts";
+import { costOf, type Usage } from "./settings.ts";
 import { systemPrompt } from "./prompt.ts";
 import { labelOf, runTool, toolList, type Resource, type ToolCtx } from "./tools.ts";
 import { profile, recall } from "./memory.ts";
@@ -22,7 +23,7 @@ export type Step =
   | { t: "think"; v: string; ms?: number }
   | { t: "tool"; id: string; name: string; label: string; input: string; ok: boolean | null; output?: string };
 
-interface StoredMsg { id: number; ts: number; role: "user" | "assistant"; content: string; steps: Step[]; latencyMs?: number; error?: string }
+interface StoredMsg { id: number; ts: number; role: "user" | "assistant"; content: string; steps: Step[]; latencyMs?: number; error?: string; costUsd?: number; usage?: Usage }
 interface Chat { id: number; created: number; updated: number; title: string; msgs: StoredMsg[]; history: Msg[]; refs: Record<string, Resource> }
 export interface Context {
   adult: boolean; screen?: string;
@@ -83,7 +84,7 @@ function emit(id: number, ev: unknown) {
 export async function listChats() {
   await load();
   return [...chats.values()].sort((a, b) => b.updated - a.updated).slice(0, 200)
-    .map((c) => ({ id: c.id, title: c.title, updated: c.updated, costUsd: 0, running: runs.has(c.id) }));
+    .map((c) => ({ id: c.id, title: c.title, updated: c.updated, costUsd: Math.round(c.msgs.reduce((sum, m) => sum + (m.costUsd ?? 0), 0) * 10000) / 10000, running: runs.has(c.id) }));
 }
 
 export async function getChat(id: number) {
@@ -225,6 +226,12 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
   const id = c.id;
   const ev = (e: Record<string, unknown>) => emit(id, e);
   let text = "";
+  const usage: Usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0, searches: 0 };
+  let usedModel = model ?? "";
+  const priced = () => {
+    const c = costOf(usedModel, usage);
+    return { usage, ...(c != null ? { costUsd: Math.round(c * 10000) / 10000 } : {}) };
+  };
   try {
     const { client, model: defModel, effort, webSearch } = await aiClient();
     const ctx: ToolCtx = {
@@ -249,6 +256,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
     const system = systemPrompt({ profile: core, recalled, recent: await recentTitles(id), context, now: new Date() });
     const tools = toolList(context.adult, context.webSearch ?? webSearch);
     const messages: Msg[] = [...trim(c.history), { role: "user", content: question }];
+    usedModel = model || defModel;
     for (let round = 0; round < 30; round++) {
       if (run.abort.signal.aborted) throw new Error("已停止");
       const stream = client.beta.messages.stream({
@@ -305,6 +313,15 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
         }
       });
       const msg = await stream.finalMessage();
+      // every round is billed: add up its tokens (and web searches) for the turn's usage and cost
+      const u = msg.usage as Anthropic.Beta.BetaUsage | undefined;
+      if (u) {
+        usage.input += u.input_tokens ?? 0;
+        usage.output += u.output_tokens ?? 0;
+        usage.cacheWrite += u.cache_creation_input_tokens ?? 0;
+        usage.cacheRead += u.cache_read_input_tokens ?? 0;
+        usage.searches += u.server_tool_use?.web_search_requests ?? 0;
+      }
       if (msg.stop_reason === "refusal") throw new Error("模型拒绝回答这个问题");
       // Tool inputs are complete only now: label them, run ours, mark web searches done.
       const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
@@ -363,15 +380,16 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
     }
     const latencyMs = Date.now() - t0;
     c.history = messages;
-    c.msgs.push({ id: c.msgs.length + 1, ts: Date.now(), role: "assistant", content: text, steps: steps.filter((s) => s.t !== "text" || s.v), latencyMs });
+    const p = priced();
+    c.msgs.push({ id: c.msgs.length + 1, ts: Date.now(), role: "assistant", content: text, steps: steps.filter((s) => s.t !== "text" || s.v), latencyMs, ...p });
     c.updated = Date.now();
     await save(c);
-    ev({ type: "done", text, cost: 0, latencyMs });
-    log.info({ chat: id, ms: latencyMs, steps: steps.length }, "ai turn done");
+    ev({ type: "done", text, cost: p.costUsd ?? 0, usage, latencyMs });
+    log.info({ chat: id, ms: latencyMs, steps: steps.length, model: usedModel, ...usage, cost: p.costUsd }, "ai turn done");
   } catch (e) {
     const err = run.abort.signal.aborted ? "已停止" : e instanceof Error ? e.message : String(e);
     if (!run.abort.signal.aborted) log.warn({ chat: id, err }, "ai turn failed");
-    c.msgs.push({ id: c.msgs.length + 1, ts: Date.now(), role: "assistant", content: text, steps: steps.filter((s) => s.t !== "text" || s.v), error: err, latencyMs: Date.now() - t0 });
+    c.msgs.push({ id: c.msgs.length + 1, ts: Date.now(), role: "assistant", content: text, steps: steps.filter((s) => s.t !== "text" || s.v), error: err, latencyMs: Date.now() - t0, ...priced() });
     c.updated = Date.now();
     await save(c);
     ev({ type: "error", error: err });

@@ -4,11 +4,13 @@
 // timeline in order: each thought shows its first lines (tap for all), each call opens to its
 // request and result.
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import type { ThinkPart, ToolPart } from "@/lib/ai";
 import { colors, fs, tnum } from "@/components/ai/look";
 import { tap } from "@/components/ui";
+import { showFullText } from "./AiPanes";
+import { InnerScroll } from "./InnerScroll";
 
 const mono = Platform.select({ ios: "Menlo", default: "monospace" });
 export type StepItem = ToolPart | ThinkPart;
@@ -72,13 +74,25 @@ function Status({ s, size = 14 }: { s: StepItem | "busy" | "ok" | "fail"; size?:
   );
 }
 
+// The full text scrolls inside its box (InnerScroll locks the chat list while a finger is in it);
+// 全屏 opens it in a full-height pane.
 function Block({ k, text }: { k: string; text: string }) {
+  const lines = text.split("\n").length;
+  const long = lines > 14 || text.length > 1400;
   return (
     <View style={{ gap: 3 }}>
-      <Text style={{ fontSize: fs.xs, color: colors.textFaint }}>{k}</Text>
-      <ScrollView nestedScrollEnabled style={{ maxHeight: 260, borderRadius: 8, backgroundColor: "#0a0a0a", borderWidth: 1, borderColor: colors.border }} contentContainerStyle={{ paddingHorizontal: 10, paddingVertical: 8 }}>
-        <Text selectable style={{ fontFamily: mono, fontSize: 11, lineHeight: 16, color: colors.textSoft }}>{text}</Text>
-      </ScrollView>
+      <View style={{ flexDirection: "row", alignItems: "center" }}>
+        <Text style={{ flex: 1, fontSize: fs.xs, color: colors.textFaint }}>{k}{long ? ` · ${lines} 行` : ""}</Text>
+        {long ? (
+          <Pressable hitSlop={8} onPress={() => { tap(); showFullText(k, text); }} style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
+            <Ionicons name="expand-outline" size={12} color={colors.primary} />
+            <Text style={{ fontSize: fs.xs, color: colors.primary }}>全屏</Text>
+          </Pressable>
+        ) : null}
+      </View>
+      <InnerScroll maxHeight={300} style={{ borderRadius: 8, backgroundColor: colors.cardMuted, borderWidth: 1, borderColor: colors.border }} contentStyle={{ paddingHorizontal: 10, paddingVertical: 8 }}>
+        <Text style={{ fontFamily: mono, fontSize: 11, lineHeight: 16, color: colors.textSoft }}>{text}</Text>
+      </InnerScroll>
     </View>
   );
 }
@@ -96,10 +110,22 @@ function Thought({ s, now }: { s: ThinkPart; now: number }) {
         <Text style={[{ fontSize: fs.sm, color: colors.text }, tnum]}>{s.live ? "思考中" : "思考"}<Text style={{ color: colors.textFaint }}>{`  ${secs(thinkMs(s, now))}`}</Text></Text>
       </View>
       {text ? (
-        <Pressable disabled={!long || !!s.live} onPress={() => { tap(); setFull(!full); }} style={{ marginLeft: 7, marginTop: 4, paddingLeft: 16, borderLeftWidth: 2, borderColor: "rgba(155,125,240,0.35)" }}>
-          <Text selectable={full} style={{ fontSize: fs.sm, lineHeight: 19, color: colors.textFaint }}>{shown}</Text>
-          {long && !s.live ? <Text style={{ fontSize: fs.xs, color: colors.textDim, marginTop: 3 }}>{full ? "收起" : "展开全部"}</Text> : null}
-        </Pressable>
+        <View style={{ marginLeft: 7, marginTop: 4, paddingLeft: 16, borderLeftWidth: 2, borderColor: "rgba(155,125,240,0.35)" }}>
+          {full ? (
+            <InnerScroll maxHeight={320}>
+              <Text style={{ fontSize: fs.sm, lineHeight: 19, color: colors.textFaint }}>{text}</Text>
+            </InnerScroll>
+          ) : (
+            <Pressable disabled={!long || !!s.live} onPress={() => { tap(); setFull(true); }}>
+              <Text style={{ fontSize: fs.sm, lineHeight: 19, color: colors.textFaint }}>{shown}</Text>
+            </Pressable>
+          )}
+          {long && !s.live ? (
+            <Pressable hitSlop={8} onPress={() => { tap(); setFull(!full); }}>
+              <Text style={{ fontSize: fs.xs, color: colors.textDim, marginTop: 3 }}>{full ? "收起" : "展开全部"}</Text>
+            </Pressable>
+          ) : null}
+        </View>
       ) : null}
     </View>
   );

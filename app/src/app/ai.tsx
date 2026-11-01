@@ -7,7 +7,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ai, clearContext, newChat, retry, send, setOpen, stop, textOf, useAi, type Msg } from "@/lib/ai";
+import { ai, clearContext, newChat, retry, send, setOpen, stop, textOf, tokensLabel, useAi, type Msg } from "@/lib/ai";
 import { copy, haptic } from "@/lib/device";
 import { useHoldToTalk, useTapToTalk } from "@/lib/voice";
 import { colors, fs } from "@/components/ai/look";
@@ -16,7 +16,8 @@ import { AiBlock } from "@/components/ai/AiBlock";
 import { AiSteps, type StepItem } from "@/components/ai/AiSteps";
 import { Markdown } from "@/components/ai/Markdown";
 import { Orb } from "@/components/ai/Orb";
-import { HistoryPane, NotesPane } from "@/components/ai/AiPanes";
+import { HistoryPane, NotesPane, SelectPane, onShowFullText } from "@/components/ai/AiPanes";
+import { ScrollLock } from "@/components/ai/InnerScroll";
 import { ModelChip, ModelMenu } from "@/components/ai/ModelMenu";
 import { VoiceWave } from "@/components/ai/VoiceWave";
 import { segments } from "@/components/ai/blocks";
@@ -55,11 +56,15 @@ export default function AiScreen() {
   const insets = useSafeAreaInsets();
   const [input, setInput] = useState("");
   // history / memory slide over the chat inside this sheet (a modal pushed from the sheet took no touches)
-  const [pane, setPane] = useState<"history" | "notes" | null>(null);
+  const [pane, setPane] = useState<"history" | "notes" | "select" | null>(null);
+  const [full, setFull] = useState<{ title: string; text: string } | null>(null);
+  // a finger in a step's scroll box (InnerScroll) stops the chat list so the box gets the drag
+  const [innerHeld, setInnerHeld] = useState(false);
+  const lockOuter = useCallback((on: boolean) => setInnerHeld(on), []);
   const [menu, setMenu] = useState(false);
   const [headH, setHeadH] = useState(60);
   const [slide] = useState(() => new Animated.Value(0));
-  const showPane = (p: "history" | "notes" | null) => {
+  const showPane = (p: "history" | "notes" | "select" | null) => {
     if (p) {
       setPane(p);
       slide.setValue(0);
@@ -120,6 +125,14 @@ export default function AiScreen() {
   const lastMsg = s.msgs[s.msgs.length - 1];
   const bottomPad = kb || Platform.OS === "web" ? 8 : insets.bottom + 8; // a sheet: no tab bar under it
 
+  // a step's 全屏: its full request / result as selectable text
+  useEffect(() => onShowFullText((r) => {
+    Keyboard.dismiss();
+    setFull(r);
+    showPane("select");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), []);
+
   // Dragging the header down closes the sheet. The native sheet only dismisses when the chat is
   // scrolled to its top, and a chat sits at its bottom, so swiping down there just scrolled it.
   const close = () => { if (router.canGoBack()) router.back(); else router.replace("/"); };
@@ -155,9 +168,11 @@ export default function AiScreen() {
       </GestureDetector>
 
       <KeyboardAvoidingView style={{ flex: 1, overflow: "hidden" }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <ScrollLock.Provider value={lockOuter}>
         <ScrollView
           ref={scroller}
           style={{ flex: 1 }}
+          scrollEnabled={!innerHeld}
           contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 6, paddingBottom: 16 }}
           keyboardDismissMode="interactive"
           keyboardShouldPersistTaps="handled"
@@ -211,6 +226,7 @@ export default function AiScreen() {
             </View>
           ) : null}
         </ScrollView>
+        </ScrollLock.Provider>
 
         {/* composer */}
         <View style={{ paddingHorizontal: 12, paddingTop: 8, paddingBottom: bottomPad, borderTopWidth: 1, borderColor: colors.border, backgroundColor: colors.bg }}>
@@ -261,7 +277,9 @@ export default function AiScreen() {
       {pane ? (
         <Animated.View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, zIndex: 10, backgroundColor: colors.bg,
           transform: [{ translateX: slide.interpolate({ inputRange: [0, 1], outputRange: [width, 0] }) }] }}>
-          {pane === "history" ? <HistoryPane onClose={() => showPane(null)} /> : <NotesPane onClose={() => showPane(null)} />}
+          {pane === "history" ? <HistoryPane onClose={() => showPane(null)} />
+            : pane === "select" ? <SelectPane text={full?.text ?? ""} title={full?.title} mono onClose={() => showPane(null)} />
+            : <NotesPane onClose={() => showPane(null)} />}
         </Animated.View>
       ) : null}
     </GestureHandlerRootView>
@@ -345,6 +363,7 @@ function Answer({ m, now }: { m: Msg; now: number }) {
             <Ionicons name="copy-outline" size={13} color={colors.textSoft} />
           </Pressable>
           {m.latencyMs ? <Text style={{ fontSize: fs.xs, color: colors.textFaint }}>{(m.latencyMs / 1000).toFixed(0)}s</Text> : null}
+          {tokensLabel(m.usage) ? <Text style={{ fontSize: fs.xs, color: colors.textFaint }}>· {tokensLabel(m.usage)}</Text> : null}
           {m.costUsd ? <Text style={{ fontSize: fs.xs, color: colors.textFaint }}>· ${m.costUsd.toFixed(3)}</Text> : null}
         </View>
       ) : null}

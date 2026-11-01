@@ -28,6 +28,20 @@ export const MODELS = [
   { value: "claude-opus-5-5", label: "Opus", hint: "最强，慢一些、更费 token" },
 ];
 
+// USD per million tokens (Anthropic's price list, platform.claude.com/docs/en/about-claude/pricing, 2026-11);
+// cacheWrite = 5-minute cache writes (the prompt's cache_control). Web search: $10 per 1,000; web fetch free.
+const PRICES: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }> = {
+  "claude-sonnet-5": { input: 2, output: 10, cacheWrite: 2.5, cacheRead: 0.2 },
+  "claude-opus-5-5": { input: 4, output: 20, cacheWrite: 5, cacheRead: 0.2 },
+};
+export interface Usage { input: number; output: number; cacheWrite: number; cacheRead: number; searches: number }
+/** Cost of a turn's usage in USD; null for a model without a known price (a custom endpoint's own model). */
+export function costOf(model: string, u: Usage): number | null {
+  const p = PRICES[model];
+  if (!p) return null;
+  return (u.input * p.input + u.output * p.output + u.cacheWrite * p.cacheWrite + u.cacheRead * p.cacheRead) / 1e6 + u.searches * 0.01;
+}
+
 const dir = path.join(config.dataDir, "ai");
 const file = path.join(dir, "settings.json");
 let stored: Stored = {};
