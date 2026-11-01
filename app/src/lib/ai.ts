@@ -53,7 +53,7 @@ export const ai = {
   screen: "",
   /** model for the next turn (remembered on this device) */
   model: "claude-sonnet-5",
-  /** thinking effort and web search for the next turns, picked on this device; null = the server's default (设置 → AI 助手) */
+  /** thinking effort and web search for the next turns, picked on this device; null = the server's default */
   effort: null as Effort | null,
   webSearch: null as boolean | null,
   notes: [] as Note[],

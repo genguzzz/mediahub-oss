@@ -1,6 +1,6 @@
 // The chat header's model chip and the card it opens: model, thinking effort, web search for the next
 // questions (remembered on this device). Effort and web search start from the server's defaults
-// (设置 → AI 助手) until picked here.
+// (server environment / admin) until picked here.
 import { useState } from "react";
 import { Pressable, Switch, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
