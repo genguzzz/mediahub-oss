@@ -1,8 +1,9 @@
 // TMDb / discover item → poster card, and opening one (Bangumi / Douban entries resolve to TMDb first).
 import { useRouter } from "expo-router";
 import type { CardData } from "./media";
-import { toastError } from "./ui";
-import { api, img, type MediaBrief } from "@/lib/api";
+import { Linking } from "react-native";
+import { toast, toastError } from "./ui";
+import { ApiError, api, img, type MediaBrief } from "@/lib/api";
 import { colors } from "@/lib/theme";
 import { track } from "@/lib/track";
 
@@ -10,7 +11,7 @@ export interface DiscoverItem extends MediaBrief { source: string; sourceId: str
 
 export function useOpenMedia() {
   const router = useRouter();
-  return async (m: { type: "movie" | "tv"; tmdbid: number | null; title: string; year: string }) => {
+  return async (m: { type: "movie" | "tv"; tmdbid: number | null; title: string; year: string; source?: string; sourceId?: string }) => {
     if (m.tmdbid) {
       router.push({ pathname: "/media/[type]/[id]", params: { type: m.type, id: String(m.tmdbid) } });
       return;
@@ -22,9 +23,26 @@ export function useOpenMedia() {
       router.push({ pathname: "/media/[type]/[id]", params: { type: r.type, id: String(r.tmdbid) } });
     } catch (e) {
       track("discover_resolve", { ok: false });
-      toastError("没有找到对应的 TMDb 条目", e);
+      if (!(e instanceof ApiError && e.status === 404)) {
+        toastError("打开失败", e);
+        return;
+      }
+      // Not on TMDb (yet): new 番 and Chinese web shows often are. It can still be found by title on the
+      // sources, and read on the site it came from.
+      const page = sourcePage(m.source, m.sourceId);
+      toast("TMDb 还没有这部作品", `《${m.title}》没有详情页，可以按标题去资源站搜索`, [
+        { label: "按来源搜索", onPress: () => router.push({ pathname: "/resources", params: { mode: "raw", type: m.type, keyword: m.title } }) },
+        ...(page ? [{ label: page.name, onPress: () => void Linking.openURL(page.url) }] : []),
+      ]);
     }
   };
+}
+
+function sourcePage(source?: string, id?: string) {
+  if (!id) return null;
+  if (source === "bangumi") return { name: "Bangumi 页面", url: `https://bgm.tv/subject/${id}` };
+  if (source === "douban") return { name: "豆瓣页面", url: `https://movie.douban.com/subject/${id}/` };
+  return null;
 }
 
 export function mediaCard(m: MediaBrief, open: () => void, rank?: number): CardData {
