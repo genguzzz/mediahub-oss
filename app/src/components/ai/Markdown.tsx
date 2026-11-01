@@ -96,15 +96,16 @@ export function openLink(href: string) {
 // ---------- styles (web AiPanel .md) ----------
 
 const mono = Platform.select({ ios: "Menlo", default: "monospace" });
+// read on every render (getters): colors change with the theme after this module loads
 const S = {
-  p: { fontSize: fs.lg, lineHeight: 24, color: colors.text, marginVertical: 5 } as TextStyle,
-  h1: { fontSize: fs.xl, lineHeight: 24, fontWeight: "700", color: colors.text, marginTop: 14, marginBottom: 6 } as TextStyle,
-  h4: { fontSize: fs.lg, lineHeight: 22, fontWeight: "700", color: colors.text, marginTop: 12, marginBottom: 4 } as TextStyle,
-  strong: { fontWeight: "700", color: colors.white } as TextStyle,
-  code: { fontFamily: mono, fontSize: fs.md - 0.5, backgroundColor: colors.cardMuted, color: colors.text } as TextStyle,
-  link: { color: colors.info, textDecorationLine: "underline" } as TextStyle,
-  chip: { color: colors.primary, fontWeight: "600", fontSize: fs.md, backgroundColor: colors.primarySoft } as TextStyle,
-  cell: { fontSize: fs.sm, lineHeight: 18, color: colors.text } as TextStyle,
+  get p() { return { fontSize: fs.lg, lineHeight: 24, color: colors.text, marginVertical: 5 } as TextStyle; },
+  get h1() { return { fontSize: fs.xl, lineHeight: 24, fontWeight: "700", color: colors.text, marginTop: 14, marginBottom: 6 } as TextStyle; },
+  get h4() { return { fontSize: fs.lg, lineHeight: 22, fontWeight: "700", color: colors.text, marginTop: 12, marginBottom: 4 } as TextStyle; },
+  get strong() { return { fontWeight: "700", color: colors.text } as TextStyle; },
+  get code() { return { fontFamily: mono, fontSize: fs.md - 0.5, backgroundColor: colors.cardMuted, color: colors.text } as TextStyle; },
+  get link() { return { color: colors.info, textDecorationLine: "underline" } as TextStyle; },
+  get chip() { return { color: colors.primary, fontWeight: "600", fontSize: fs.md, backgroundColor: colors.primarySoft } as TextStyle; },
+  get cell() { return { fontSize: fs.sm, lineHeight: 18, color: colors.text } as TextStyle; },
 };
 
 function inline(nodes: Node[], key = "i"): ReactNode[] {
