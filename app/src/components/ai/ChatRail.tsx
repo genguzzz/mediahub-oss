@@ -2,7 +2,7 @@
 // the owner's questions, ⚡ signal wake-ups, trade outcomes. The ticks are packed tightly together: at rest
 // only the (at most 10) around where you are reading; while a finger is on the rail, all of them (still
 // packed). Tap or drag to jump; while dragging, the nearest message is previewed with its time.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Text, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { haptic } from "@/lib/device";
@@ -17,6 +17,8 @@ const KIND: Record<RailKind, { color: string; icon: string }> = {
 };
 const REST_MAX = 10; // ticks shown while idle
 const PITCH = 6; // distance between neighbouring ticks
+const STEP = 14; // finger travel (px) per message at a slow drag: damped, one switch at a time
+const MAX_GAIN = 3; // a fast drag moves up to this much further per px (≈ the ticks' own pitch)
 const HIT = 4; // touch area = the ticks' own block plus this much above and below
 
 export function ChatRail({ marks, contentH, viewH, scrollY, onJump }: {
@@ -50,20 +52,30 @@ export function ChatRail({ marks, contentH, viewH, scrollY, onJump }: {
   const hitTop = Math.max(0, top - HIT);
   const indexAt = (fy0: number) => { const fy = fy0 + hitTop; return Math.max(lo, Math.min(hi - 1, lo + Math.floor((fy - top) / pitch))); };
 
-  const pick = (fy: number) => {
-    const i = indexAt(fy);
+  const cursor = useRef({ from: 0, at: 0, acc: 0, y: 0, t: 0 }); // drag start index, index now, travelled messages (fractional), last finger y / time
+  const show = (i: number) => {
+    cursor.current.at = i;
     if (i !== active) { void haptic("select"); setActive(i); }
   };
-  const jump = (fy: number) => {
-    const i = indexAt(fy);
+  const jump = () => {
+    const i = cursor.current.at;
     setActive(null);
     setFull(false);
     if (marks[i]) onJump(Math.max(0, marks[i].y - 8));
   };
-  const tap = Gesture.Tap().runOnJS(true).onEnd((e) => jump(e.y));
+  const begin = (fy: number) => { const i = indexAt(fy); Object.assign(cursor.current, { from: i, acc: 0, y: 0, t: 0 }); show(i); };
+  const tap = Gesture.Tap().runOnJS(true).onEnd((e) => { begin(e.y); jump(); });
   const pan = Gesture.Pan().runOnJS(true).activeOffsetY([-4, 4]).failOffsetX([-30, 30])
-    .onBegin((e) => pick(e.y)).onStart(() => setFull(true)).onUpdate((e) => pick(e.y)).onEnd((e) => jump(e.y))
-    .onFinalize(() => { setActive(null); setFull(false); });
+    .onBegin((e) => begin(e.y)).onStart(() => setFull(true))
+    .onUpdate((e) => {
+      const c = cursor.current, now = Date.now();
+      const dy = e.translationY - c.y;
+      const v = c.t ? Math.abs(dy) / Math.max(1, now - c.t) : 0; // px per ms
+      c.y = e.translationY; c.t = now;
+      c.acc = Math.max(-c.from, Math.min(n - 1 - c.from, c.acc + (dy * Math.min(MAX_GAIN, 1 + v * 1.5)) / STEP));
+      show(c.from + Math.round(c.acc));
+    })
+    .onEnd(() => jump()).onFinalize(() => { setActive(null); setFull(false); });
   if (n < 2 || contentH <= viewH + 40) return null;
 
   const a = active != null ? marks[active] : null;
