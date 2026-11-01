@@ -37,7 +37,7 @@ iPhone ──direct──▶ Emby (browse/play; playback 302 to the 115 CDN)
 ```
 
 - New NAS-side data → a `/hub/*` route in `plugin/prowlarr115/hub.py`, then a `/v1/*` route in `server/`. Emby/qB/OpenList/115 credentials stay in the plugin config; the server holds only MP's key, its own tokens and the app's Emby account.
-- Pipeline, selection policy, statuses, push and health design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). App structure and UI rules: [docs/APP.md](docs/APP.md). Player and native modules: [docs/PLAYER.md](docs/PLAYER.md).
+- Pipeline, selection policy, statuses, push and health design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). App structure and UI rules: [docs/APP.md](docs/APP.md). Player and native modules: [docs/PLAYER.md](docs/PLAYER.md). AI assistant (tools, settings, proxy rule): [docs/AI.md](docs/AI.md).
 
 ## UI rules (short)
 

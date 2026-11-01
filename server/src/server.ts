@@ -9,6 +9,7 @@ import { embyImage, extImage, posterPath, tmdbImage, tmdbPath } from "./images.t
 import { mp, mpRaw, plug, plugBytes, UpstreamError } from "./mp.ts";
 import { listUpdates, manifestResponse, storeUpdate } from "./updates.ts";
 import { registerCatalog } from "./catalog/index.ts";
+import { registerAi } from "./ai/index.ts";
 import { embyEvents, startEmbyEvents } from "./embyEvents.ts";
 import { egressSummary } from "./egress.ts";
 import { initLog } from "./log.ts";
@@ -33,7 +34,7 @@ await app.register(multipart, { limits: { fileSize: 60 * 1024 * 1024, files: 1 }
 app.addHook("onRequest", async (req, reply) => {
   reply.header("access-control-allow-origin", "*").header("access-control-expose-headers", "x-request-id");
   if (req.method === "OPTIONS") {
-    return reply.code(204).header("access-control-allow-methods", "GET,POST,DELETE").header("access-control-allow-headers", "authorization,content-type,x-request-id,x-app-version").header("access-control-max-age", "86400").send();
+    return reply.code(204).header("access-control-allow-methods", "GET,POST,PUT,DELETE").header("access-control-allow-headers", "authorization,content-type,x-request-id,x-app-version").header("access-control-max-age", "86400").send();
   }
 });
 
@@ -843,6 +844,23 @@ app.get("/v1/emby/latest", async (req) => {
   return { items: items.map(embyBrief) };
 });
 
+// The owner's watching: recently finished (played) or started and not finished (resume), as the app's Emby user.
+app.get("/v1/emby/played", async (req) => {
+  const q = z.object({ kind: z.enum(["played", "resume"]).default("played"), limit: z.coerce.number().int().min(1).max(100).default(30), adult: z.string().optional().transform((v) => v === "1" || v === "true") }).parse(req.query);
+  if (!embyEvents.userId) throw Object.assign(new Error("服务端还没登录 Emby 用户"), { statusCode: 503 });
+  const r = await embyGet<{ Items: EmbyItem[] }>(`/Users/${embyEvents.userId}/Items${q.kind === "resume" ? "/Resume" : ""}`, {
+    Recursive: "true", IncludeItemTypes: "Movie,Episode", Limit: q.limit, Fields: `${FIELDS},UserData`, EnableImageTypes: "Primary",
+    ...(q.kind === "played" ? { Filters: "IsPlayed", SortBy: "DatePlayed", SortOrder: "Descending" } : {}),
+  });
+  return {
+    // AV / 里番 only with 成人内容 on (their libraries are folders named like ADULT_LIBS)
+    items: (r?.Items ?? []).filter((i) => q.adult || ![...ADULT_LIBS].some((l) => (i.Path ?? "").includes(`/${l}/`))).map((i) => {
+      const u = i.UserData as { LastPlayedDate?: string; PlayedPercentage?: number } | undefined;
+      return { ...embyBrief(i), played: u?.LastPlayedDate ?? null, progress: q.kind === "resume" && u?.PlayedPercentage != null ? Math.round(u.PlayedPercentage) : null };
+    }),
+  };
+});
+
 app.get("/v1/emby/items", async (req) => {
   const q = z.object({
     parent: z.string().regex(/^\w+$/).optional(),
@@ -850,13 +868,15 @@ app.get("/v1/emby/items", async (req) => {
     start: z.coerce.number().int().min(0).default(0),
     limit: z.coerce.number().int().min(1).max(100).default(40),
     sort: z.enum(["added", "name", "year"]).default("added"),
+    noAdult: z.string().optional().transform((v) => v === "1"),   // the assistant with 成人内容 off
   }).parse(req.query);
   const sortBy = { added: "DateCreated", name: "SortName", year: "ProductionYear,SortName" }[q.sort];
   const r = await embyGet<{ Items: EmbyItem[]; TotalRecordCount: number }>("/Items", {
     Recursive: "true", ParentId: q.parent, SearchTerm: q.q, IncludeItemTypes: "Movie,Series", StartIndex: q.start, Limit: q.limit,
     SortBy: sortBy, SortOrder: q.sort === "name" ? "Ascending" : "Descending", Fields: FIELDS,
   });
-  return { total: r?.TotalRecordCount ?? 0, items: (r?.Items ?? []).map(embyBrief) };
+  const items = (r?.Items ?? []).filter((i) => !q.noAdult || ![...ADULT_LIBS].some((l) => (i.Path ?? "").includes(`/${l}/`)));
+  return { total: r?.TotalRecordCount ?? 0, items: items.map(embyBrief) };
 });
 
 app.get<{ Params: { id: string } }>("/v1/emby/item/:id", async (req) => {
@@ -910,6 +930,7 @@ app.get("/v1/emby/activity", async () => plug("GET", "/hub/emby/activity"));
 // ---------- catalog (AV / 里番 index) and online stream sources ----------
 
 registerCatalog(app, embyGet);
+registerAi(app);
 
 // ---------- subtitle files next to the video (115, via the plugin) ----------
 

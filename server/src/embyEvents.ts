@@ -13,7 +13,7 @@ const AUTH = 'MediaBrowser Client="MediaHubServer", Device="server", DeviceId="m
 const DEBOUNCE_MS = 3000;
 const KEEPALIVE_MS = 30_000;
 
-export const embyEvents = { connected: false, since: 0, events: 0, forwarded: 0, lastEvent: 0, lastError: "" };
+export const embyEvents = { connected: false, since: 0, events: 0, forwarded: 0, lastEvent: 0, lastError: "", userId: "" };
 
 export function startEmbyEvents(): void {
   if (!config.emby.user || !config.emby.url) return;
@@ -41,7 +41,9 @@ export function startEmbyEvents(): void {
       body: JSON.stringify({ Username: config.emby.user, Pw: config.emby.pass }),
     });
     if (!r.ok) throw new Error(`Emby login ${r.status}`);
-    return ((await r.json()) as { AccessToken: string }).AccessToken;
+    const j = (await r.json()) as { AccessToken: string; User?: { Id?: string } };
+    embyEvents.userId = j.User?.Id ?? "";   // /v1/emby/played reads this user's watching
+    return j.AccessToken;
   };
 
   const connect = async () => {
