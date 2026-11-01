@@ -10,6 +10,7 @@ import { FloatingOrb } from "@/components/ai/FloatingOrb";
 import { FullWindowOverlay } from "react-native-screens";
 import { ToastHost, toast } from "@/components/ui";
 import { initAi, useAiSelect } from "@/lib/ai";
+import { dismissKeyboardOnOutsideTouch } from "@/lib/keyboard";
 import { appVersion } from "@/lib/api";
 import { flush, installGlobalHandlers, logger, pruneLogs, sessionId } from "@/lib/log";
 import { installNotificationHandler, onNotificationTap, registerBackgroundCheck } from "@/lib/notify";
@@ -83,7 +84,7 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1 }} onTouchStart={dismissKeyboardOnOutsideTouch}>
       <SafeAreaProvider key={`${style}:${scheme}`}>
         <StatusBar style={scheme === "dark" ? "light" : "dark"} />
         {loaded ? (
