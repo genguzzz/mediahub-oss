@@ -1,7 +1,7 @@
 // 影库助手 (server/src/ai): streamed answers with step lists (each stage folds to "思考 N 次 · M 步"),
 // poster-card blocks and Markdown; model switch; history and preferences; the page it was opened from as
 // context; tap-to-talk in the composer and hold-to-talk on the orb. State and the connection: lib/ai.ts.
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, TextInput, useWindowDimensions, View, type ScrollViewInstance, type TextInputInstance } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
@@ -9,6 +9,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ai, clearContext, newChat, retry, send, setOpen, stop, textOf, tokensLabel, useAi, type Msg } from "@/lib/ai";
 import { copy, haptic } from "@/lib/device";
+import { clockStamp } from "@/lib/format";
 import { useHoldToTalk, useTapToTalk } from "@/lib/voice";
 import { colors, fs } from "@/components/ai/look";
 import { Screen, tap, toast, toastError } from "@/components/ui";
@@ -17,6 +18,7 @@ import { AiSteps, type StepItem } from "@/components/ai/AiSteps";
 import { Markdown } from "@/components/ai/Markdown";
 import { Orb } from "@/components/ai/Orb";
 import { HistoryPane, NotesPane, SelectPane, onShowFullText } from "@/components/ai/AiPanes";
+import { ChatRail, railLabel, type RailMark } from "@/components/ai/ChatRail";
 import { ScrollLock } from "@/components/ai/InnerScroll";
 import { ModelChip, ModelMenu } from "@/components/ai/ModelMenu";
 import { VoiceWave } from "@/components/ai/VoiceWave";
@@ -64,6 +66,18 @@ export default function AiScreen() {
   // a finger in a step's scroll box (InnerScroll) stops the chat list so the box gets the drag
   const [innerHeld, setInnerHeld] = useState(false);
   const lockOuter = useCallback((on: boolean) => setInnerHeld(on), []);
+  // the conversation's ruler: where each of the owner's questions sits
+  const [railY, setRailY] = useState<Record<string, number>>({});
+  const [railContent, setRailContent] = useState(0);
+  const [railView, setRailView] = useState(0);
+  const [railScroll] = useState(() => new Animated.Value(0));
+  const railAt = useCallback((k: string, y: number) => setRailY((m) => (m[k] === y ? m : { ...m, [k]: y })), []);
+  const railMarks = useMemo<RailMark[]>(() => s.msgs.flatMap((m, mi) => {
+    const k = String(m.id ?? "m" + mi);
+    const y = railY[k];
+    if (y == null || m.role !== "user") return [];
+    return [{ key: k, y, kind: "user" as const, label: railLabel(textOf(m)), ts: m.ts }];
+  }), [s.msgs, railY]);
   const [menu, setMenu] = useState(false);
   const [headH, setHeadH] = useState(60);
   const [slide] = useState(() => new Animated.Value(0));
@@ -172,8 +186,10 @@ export default function AiScreen() {
 
       <KeyboardAvoidingView style={{ flex: 1, overflow: "hidden" }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <ScrollLock.Provider value={lockOuter}>
+        <View style={{ flex: 1 }}>
         <ScrollView
           ref={scroller}
+          onLayout={(e) => setRailView(e.nativeEvent.layout.height)}
           style={{ flex: 1 }}
           scrollEnabled={!innerHeld}
           contentContainerStyle={{ paddingHorizontal: 16, paddingTop: 6, paddingBottom: 16 }}
@@ -183,8 +199,9 @@ export default function AiScreen() {
           onScroll={(e) => {
             const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
             stick.current = contentSize.height - contentOffset.y - layoutMeasurement.height < 80;
+            railScroll.setValue(contentOffset.y);
           }}
-          onContentSizeChange={() => { if (stick.current) scroller.current?.scrollToEnd({ animated: false }); }}
+          onContentSizeChange={(_, h) => { setRailContent(h); if (stick.current) scroller.current?.scrollToEnd({ animated: false }); }}
         >
           {!s.msgs.length ? (
             <View style={{ alignItems: "center", gap: 10, paddingTop: 26, paddingHorizontal: 4, paddingBottom: 8 }}>
@@ -212,7 +229,12 @@ export default function AiScreen() {
             </View>
           ) : null}
 
-          {s.msgs.map((m, mi) => (m.role === "user" ? <UserBubble key={m.id ?? "m" + mi} text={textOf(m)} /> : <Answer key={m.id ?? "m" + mi} m={m} now={now} />))}
+          {s.msgs.map((m, mi) => {
+            const k = String(m.id ?? "m" + mi);
+            return m.role === "user"
+              ? <View key={k} onLayout={(e) => railAt(k, e.nativeEvent.layout.y)}><UserBubble text={textOf(m)} ts={m.ts} /></View>
+              : <Answer key={k} m={m} now={now} />;
+          })}
 
           {s.running && lastMsg?.role === "user" ? <Thinking label="思考中" /> : null}
           {s.reconnecting ? (
@@ -229,6 +251,8 @@ export default function AiScreen() {
             </View>
           ) : null}
         </ScrollView>
+        <ChatRail marks={railMarks} contentH={railContent} viewH={railView} scrollY={railScroll} onJump={(y) => { stick.current = false; scroller.current?.scrollTo({ y, animated: true }); }} />
+        </View>
         </ScrollLock.Provider>
 
         {/* composer */}
@@ -315,8 +339,10 @@ function Spinner() {
   return <Animated.View style={{ width: 13, height: 13, borderRadius: 7, borderWidth: 2, borderColor: colors.borderStrong, borderTopColor: colors.primary, transform: [{ rotate: a.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] }) }] }} />;
 }
 
-const UserBubble = memo(function UserBubble({ text }: { text: string }) {
+const UserBubble = memo(function UserBubble({ text, ts }: { text: string; ts?: number }) {
   return (
+    <>
+    {ts ? <Text style={{ alignSelf: "flex-end", marginTop: 12, marginBottom: -8, fontSize: fs.xs, color: colors.textFaint }}>{clockStamp(ts)}</Text> : null}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 14, marginBottom: 6 }}>
       <Pressable
         onLongPress={() => { void haptic("medium"); void copy(text).then((ok) => ok && toast("已复制")); }}
@@ -325,6 +351,7 @@ const UserBubble = memo(function UserBubble({ text }: { text: string }) {
         <Text selectable style={{ fontSize: fs.lg, lineHeight: 21, color: colors.text }}>{text}</Text>
       </Pressable>
     </View>
+    </>
   );
 });
 
@@ -365,7 +392,8 @@ function Answer({ m, now }: { m: Msg; now: number }) {
           <Pressable hitSlop={8} accessibilityLabel="复制" onPress={() => { tap(); void copy(text).then((ok) => toast(ok ? "已复制" : "复制失败")); }} style={({ pressed }) => ({ width: 26, height: 26, borderRadius: 8, alignItems: "center", justifyContent: "center", backgroundColor: pressed ? colors.cardMuted : undefined })}>
             <Ionicons name="copy-outline" size={13} color={colors.textSoft} />
           </Pressable>
-          {m.latencyMs ? <Text style={{ fontSize: fs.xs, color: colors.textFaint }}>{(m.latencyMs / 1000).toFixed(0)}s</Text> : null}
+          {m.ts ? <Text style={{ fontSize: fs.xs, color: colors.textFaint }}>{clockStamp(m.ts)}</Text> : null}
+          {m.latencyMs ? <Text style={{ fontSize: fs.xs, color: colors.textFaint }}>· {(m.latencyMs / 1000).toFixed(0)}s</Text> : null}
           {tokensLabel(m.usage) ? <Text style={{ fontSize: fs.xs, color: colors.textFaint }}>· {tokensLabel(m.usage)}</Text> : null}
           {m.costUsd ? <Text style={{ fontSize: fs.xs, color: colors.textFaint }}>· ${m.costUsd.toFixed(3)}</Text> : null}
         </View>

@@ -74,3 +74,14 @@ export function clock(t: number | null | undefined, now: number): string {
   const today = new Date(now).toDateString() === d.toDateString();
   return today ? hm : `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, "0")} ${hm}`;
 }
+
+const p2 = (n: number) => String(n).padStart(2, "0");
+
+/** Local time of a chat message: "14:05", or "11-1 14:05" with the date (always, or when it is not today). */
+export function clockStamp(ts: number, withDate = false): string {
+  const d = new Date(ts);
+  const hm = `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  const n = new Date();
+  const today = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+  return withDate || !today ? `${d.getMonth() + 1}-${d.getDate()} ${hm}` : hm;
+}
