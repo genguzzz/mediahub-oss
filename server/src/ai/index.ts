@@ -2,7 +2,7 @@
 // `data: <json>` per event, `: ping` every 15 s; the run keeps going when the connection drops.
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
-import { attach, castResult, getChat, listChats, removeChat, startChat, stopChat } from "./chat.ts";
+import { attach, getChat, phoneResult, listChats, removeChat, startChat, stopChat } from "./chat.ts";
 import { allMemories, forget, saveMemory } from "./memory.ts";
 import { chatOptions, status, update } from "./settings.ts";
 
@@ -63,11 +63,14 @@ export function registerAi(app: FastifyInstance) {
     sse(reply, id);
   });
   app.get("/v1/ai/chats", async () => listChats());
-  // the app reports how a cast_to_tv request went
-  app.post<{ Params: { rid: string } }>("/v1/ai/cast/:rid", async (req) => {
-    const b = z.object({ ok: z.boolean(), tv: z.string().max(200).optional(), error: z.string().max(500).optional(), devices: z.array(z.string().max(200)).max(20).optional() }).parse(req.body ?? {});
-    return { ok: castResult(req.params.rid, b) };
-  });
+  // the app reports how a phone-side request (cast_to_tv, tv_control) went; /cast/ is the older app's path
+  for (const p of ["/v1/ai/phone/:rid", "/v1/ai/cast/:rid"]) {
+    app.post<{ Params: { rid: string } }>(p, async (req) => {
+      const b = z.object({ ok: z.boolean(), error: z.string().max(500).optional() }).passthrough().parse(req.body ?? {});
+      if (JSON.stringify(b).length > 4000) throw Object.assign(new Error("too large"), { statusCode: 413 });
+      return { ok: phoneResult(req.params.rid, b) };
+    });
+  }
   app.get<{ Params: { id: string } }>("/v1/ai/chats/:id", async (req) => {
     const c = await getChat(Number(req.params.id));
     if (!c) throw Object.assign(new Error("没有这个对话"), { statusCode: 404 });

@@ -1,6 +1,7 @@
-// The assistant's cast_to_tv: the server sends a `cast` event (lib/ai.ts), the phone casts the Emby item to a
-// TV by DLNA — the TV named in the request, else the one used last, else the first found — and posts the
-// outcome back to /v1/ai/cast/:rid, which the waiting tool returns to the model.
+// The assistant's TV tools, run on the phone (it shares the TV's network): the server sends an event
+// (lib/ai.ts) — `cast` (cast_to_tv: an Emby item to a TV by DLNA) or `tv` (tv_control: play / pause / seek /
+// volume / status) — on the TV named in the request, else the one used last, else the first found; the
+// outcome goes back to /v1/ai/phone/:rid, which the waiting tool returns to the model.
 import { api } from "./api";
 import { cast, describe, discover, type Renderer } from "./dlna";
 import { embyApi, playbackPlan } from "./emby";
@@ -32,8 +33,8 @@ export async function castForAssistant(req: CastRequest) {
   // a re-attached stream replays the turn's events: cast each request once, and only while the tool waits
   if (handled.has(req.rid) || Date.now() > req.expires) return;
   handled.add(req.rid);
-  const report = (r: { ok: boolean; tv?: string; error?: string; devices?: string[] }) =>
-    api(`/v1/ai/cast/${req.rid}`, { method: "POST", body: r }).catch((e) => log.warn("cast report failed", e));
+  const report = (r: { ok: boolean; error?: string; [k: string]: unknown }) =>
+    api(`/v1/ai/phone/${req.rid}`, { method: "POST", body: r }).catch((e) => log.warn("cast report failed", e));
   try {
     const { tv, devices } = await pickTv(req.tv);
     if (!tv) {
@@ -54,6 +55,51 @@ export async function castForAssistant(req: CastRequest) {
   } catch (e) {
     track("ai_cast", { ok: false });
     toastError("投屏失败", e);
+    await report({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+export interface TvRequest { rid: string; expires: number; action: string; seconds?: number; level?: number; step?: number; tv?: string }
+
+const LABEL: Record<string, string> = { PLAYING: "播放中", PAUSED_PLAYBACK: "已暂停", STOPPED: "已停止", TRANSITIONING: "加载中", NO_MEDIA_PRESENT: "没有在放" };
+
+export async function controlForAssistant(req: TvRequest) {
+  if (handled.has(req.rid) || Date.now() > req.expires) return;
+  handled.add(req.rid);
+  const report = (r: { ok: boolean; error?: string; [k: string]: unknown }) =>
+    api(`/v1/ai/phone/${req.rid}`, { method: "POST", body: r }).catch((e) => log.warn("tv report failed", e));
+  try {
+    const { tv, devices } = await pickTv(req.tv);
+    if (!tv) {
+      const error = req.tv ? `没找到名字像「${req.tv}」的电视${devices.length ? `，找到的有：${devices.join("、")}` : ""}` : "没找到电视：确认手机和电视在同一个 Wi-Fi";
+      await report({ ok: false, error, devices });
+      return;
+    }
+    const now = await cast.status(tv);
+    const step = req.step ?? 5;
+    switch (req.action) {
+      case "play": await cast.play(tv); break;
+      case "pause": await cast.pause(tv); break;
+      case "stop": await cast.stop(tv); break;
+      case "seek": await cast.seek(tv, req.seconds ?? 0); break;
+      case "forward": await cast.seek(tv, Math.min(now.duration || Infinity, now.position + (req.seconds ?? 30))); break;
+      case "back": await cast.seek(tv, Math.max(0, now.position - (req.seconds ?? 30))); break;
+      case "volume": await cast.setVolume(tv, req.level ?? 0); break;
+      case "volume_up":
+      case "volume_down": {
+        const v = await cast.volume(tv);
+        if (v == null) throw new Error("这台电视不支持调音量");
+        await cast.setVolume(tv, v + (req.action === "volume_up" ? step : -step));
+        break;
+      }
+    }
+    // the TV settles a moment after a command before its state reads back right
+    if (req.action !== "status") await new Promise((r) => setTimeout(r, 800));
+    const [st, vol] = await Promise.all([cast.status(tv), cast.volume(tv).catch(() => null)]);
+    track("ai_tv", { action: req.action, ok: true });
+    await report({ ok: true, tv: tv.name, state: LABEL[st.state] ?? st.state, position: Math.round(st.position), duration: Math.round(st.duration), title: st.title, volume: vol });
+  } catch (e) {
+    track("ai_tv", { action: req.action, ok: false });
     await report({ ok: false, error: e instanceof Error ? e.message : String(e) });
   }
 }

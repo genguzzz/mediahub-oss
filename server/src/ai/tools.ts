@@ -21,8 +21,8 @@ export interface ToolCtx {
   refs: Record<string, Resource>;
   /** a memory was written (the app shows it) */
   saved: (text: string, replaces?: number) => void;
-  /** ask the app to cast an Emby item to a TV by DLNA; resolves with what the app reports */
-  cast: (req: { embyId: string; title: string; resume: boolean; tv?: string }) => Promise<{ ok: boolean; tv?: string; error?: string; devices?: string[] }>;
+  /** ask the app to act on its network (cast: an Emby item to a TV; tv: control the TV by DLNA); resolves with what it reports */
+  phone: (type: "cast" | "tv", req: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; [k: string]: unknown }>;
   /** past conversations (chat.ts): search titles + questions, read one */
   chats: { list: (query: string, limit: number) => Promise<unknown>; read: (id: number, maxChars: number) => Promise<unknown> };
 }
@@ -248,8 +248,25 @@ export const TOOLS: Record<string, Def> = {
       const where = String(series?.item.path ?? target.path ?? "");
       if (!ctx.adult && /\/(AV|里番)\//.test(where)) throw new ToolError("隐藏内容未开启");
       const title = target.series ? `${target.series} 第${target.season}季第${target.episode}集${target.name ? ` ${target.name}` : ""}` : target.name;
-      const r = await ctx.cast({ embyId: target.id, title, resume: a.resume ?? true, tv: a.tv });
+      const r = await ctx.phone("cast", { embyId: target.id, title, resume: a.resume ?? true, tv: a.tv });
       return { ...r, item: { embyId: target.id, title } };
+    },
+  },
+  tv_control: {
+    tier: "write",
+    description: "控制正在 DLNA 投屏的电视（由手机 App 在本地网络里操作，默认上次投屏用的电视，tv 可指定名字）：status 看现在放什么、播到哪、音量；play / pause / stop；seek 跳到 seconds 秒（绝对位置）；forward / back 快进 / 快退 seconds 秒（默认 30）；volume 设音量 level（0–100），volume_up / volume_down 调 step（默认 5）。每次都返回操作后的状态（state、position、duration、title、volume）。『快进 5 分钟』= forward 300；『跳到 1 小时 20 分』= seek 4800。换片 / 换集用 cast_to_tv。",
+    input: z.object({
+      action: z.enum(["status", "play", "pause", "stop", "seek", "forward", "back", "volume", "volume_up", "volume_down"]),
+      seconds: z.number().min(0).max(86400).optional(), level: z.number().int().min(0).max(100).optional(),
+      step: z.number().int().min(1).max(50).optional(), tv: z.string().max(100).optional(),
+    }),
+    label: (a) => ({ status: "看电视在放什么", play: "电视继续播放", pause: "电视暂停", stop: "电视停止播放", seek: "电视跳转进度", forward: "电视快进", back: "电视快退", volume: "调电视音量", volume_up: "电视音量调大", volume_down: "电视音量调小" } as Record<string, string>)[a.action] ?? "控制电视",
+    run: async (ctx, a) => {
+      if (a.action === "seek" && a.seconds == null) throw new ToolError("seek 要给 seconds（跳到第几秒）");
+      if (a.action === "volume" && a.level == null) throw new ToolError("volume 要给 level（0–100）");
+      const r = await ctx.phone("tv", { action: a.action, seconds: a.seconds, level: a.level, step: a.step, tv: a.tv });
+      const clock = (n: number) => `${Math.floor(n / 3600)}:${String(Math.floor((n % 3600) / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
+      return typeof r.position === "number" ? { ...r, at: `${clock(r.position)} / ${typeof r.duration === "number" && r.duration ? clock(r.duration) : "?"}` } : r;
     },
   },
   library_latest: {

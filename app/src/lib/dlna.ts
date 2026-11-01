@@ -6,7 +6,7 @@ import { logger } from "./log";
 const log = logger("dlna");
 
 export interface Renderer { name: string; location: string; base: string; avt: string; rc: string }
-export interface CastStatus { state: string; position: number; duration: number }
+export interface CastStatus { state: string; position: number; duration: number; title?: string }
 
 const xmlText = (xml: string, tag: string) => new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, "i").exec(xml)?.[1]?.trim() ?? "";
 const unescapeXml = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
@@ -118,7 +118,9 @@ export const cast = {
   seek: (r: Renderer, to: number) => soap(r, "AVTransport", "Seek", `<Unit>REL_TIME</Unit><Target>${clock(to)}</Target>`),
   async status(r: Renderer): Promise<CastStatus> {
     const [t, p] = await Promise.all([soap(r, "AVTransport", "GetTransportInfo", ""), soap(r, "AVTransport", "GetPositionInfo", "")]);
-    return { state: xmlText(t, "CurrentTransportState"), position: seconds(xmlText(p, "RelTime")), duration: seconds(xmlText(p, "TrackDuration")) };
+    // the title from the track's DIDL metadata (escaped XML inside the SOAP answer), when the TV sends it
+    const title = unescapeXml(xmlText(unescapeXml(xmlText(p, "TrackMetaData")), "dc:title")) || undefined;
+    return { state: xmlText(t, "CurrentTransportState"), position: seconds(xmlText(p, "RelTime")), duration: seconds(xmlText(p, "TrackDuration")), title };
   },
   async volume(r: Renderer): Promise<number | null> {
     if (!r.rc) return null;

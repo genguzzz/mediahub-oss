@@ -57,15 +57,15 @@ const save = (c: Chat) => writeFile(path.join(chatDir, `${c.id}.json`), JSON.str
 
 interface Run { events: unknown[]; subs: Set<(ev: unknown) => void>; abort: AbortController }
 
-// Casting runs on the phone (it shares the TV's network; the server can't reach the TV): cast_to_tv sends a
-// `cast` event, the app casts by DLNA and posts the outcome to /v1/ai/cast/:rid, and the tool waits for it.
-// The event carries `expires`, so a replay of the turn (re-attach) doesn't cast again.
-export interface CastOutcome { ok: boolean; tv?: string; error?: string; devices?: string[] }
-const castWaits = new Map<string, (r: CastOutcome) => void>();
-const CAST_WAIT_MS = 45_000;
-export function castResult(rid: string, r: CastOutcome) {
-  const done = castWaits.get(rid);
-  castWaits.delete(rid);
+// Some tools act on the phone's surroundings (casting, the TV on its network — the server can't reach them):
+// the tool sends an event (`cast`, `tv`), the app does it and posts the outcome to /v1/ai/phone/:rid, and the
+// tool waits for it. The event carries `expires`, so a replay of the turn (re-attach) doesn't act again.
+export interface PhoneOutcome { ok: boolean; error?: string; [k: string]: unknown }
+const phoneWaits = new Map<string, (r: PhoneOutcome) => void>();
+const PHONE_WAIT_MS = 45_000;
+export function phoneResult(rid: string, r: PhoneOutcome) {
+  const done = phoneWaits.get(rid);
+  phoneWaits.delete(rid);
   done?.(r);
   return !!done;
 }
@@ -230,17 +230,17 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
     const ctx: ToolCtx = {
       app, adult: context.adult, refs: c.refs,
       saved: (text, replaces) => ev({ type: "memory", text, replaces }),
-      cast: (req) => new Promise<CastOutcome>((resolve) => {
+      phone: (type, req) => new Promise<PhoneOutcome>((resolve) => {
         const rid = Math.random().toString(36).slice(2, 12);
         const timer = setTimeout(() => {
-          castWaits.delete(rid);
-          resolve({ ok: false, error: "App 没有回应：投屏要 App 开着（在前台），手机和电视在同一个 Wi-Fi" });
-        }, CAST_WAIT_MS);
-        castWaits.set(rid, (r) => {
+          phoneWaits.delete(rid);
+          resolve({ ok: false, error: "App 没有回应：要 App 开着（在前台），手机和电视在同一个 Wi-Fi" });
+        }, PHONE_WAIT_MS);
+        phoneWaits.set(rid, (r) => {
           clearTimeout(timer);
           resolve(r);
         });
-        ev({ type: "cast", rid, expires: Date.now() + CAST_WAIT_MS, ...req });
+        ev({ type, rid, expires: Date.now() + PHONE_WAIT_MS, ...req });
       }),
       chats: { list: (q, n) => searchChats(q, n, id), read: (cid, n) => readChat(cid, n) },
     };
