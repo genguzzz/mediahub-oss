@@ -24,7 +24,11 @@ export type Step =
 
 interface StoredMsg { id: number; ts: number; role: "user" | "assistant"; content: string; steps: Step[]; latencyMs?: number; error?: string }
 interface Chat { id: number; created: number; updated: number; title: string; msgs: StoredMsg[]; history: Msg[]; refs: Record<string, Resource> }
-export interface Context { adult: boolean; screen?: string }
+export interface Context {
+  adult: boolean; screen?: string;
+  /** this turn's thinking effort and web search, picked in the app; unset = the server's settings */
+  effort?: "low" | "medium" | "high"; webSearch?: boolean;
+}
 
 const dir = path.join(config.dataDir, "ai");
 const chatDir = path.join(dir, "chats");
@@ -243,7 +247,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
     // memory: the core profile always; archival memories relevant to this question (and the chat's title)
     const [core, recalled] = await Promise.all([profile(), recall(`${c.title} ${question}`)]);
     const system = systemPrompt({ profile: core, recalled, recent: await recentTitles(id), context, now: new Date() });
-    const tools = toolList(context.adult, webSearch);
+    const tools = toolList(context.adult, context.webSearch ?? webSearch);
     const messages: Msg[] = [...trim(c.history), { role: "user", content: question }];
     for (let round = 0; round < 30; round++) {
       if (run.abort.signal.aborted) throw new Error("已停止");
@@ -254,7 +258,7 @@ async function turn(app: FastifyInstance, c: Chat, question: string, model: stri
         messages,
         tools,
         thinking: { type: "adaptive", display: "summarized" } as never,
-        output_config: { effort } as never,
+        output_config: { effort: context.effort ?? effort } as never,
       }, { signal: run.abort.signal });
       // Map the stream to the app's events; each content block becomes one step.
       const blockStep = new Map<number, Step>();

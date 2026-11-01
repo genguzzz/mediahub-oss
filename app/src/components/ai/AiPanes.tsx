@@ -117,7 +117,7 @@ export function NotesPane({ onClose }: { onClose: () => void }) {
             <TextInput
               value={text}
               onChangeText={setText}
-              placeholder="例如：杠杆偏好，多空都用 8 倍"
+              placeholder="例如：不看恐怖片；字幕只要外挂，不要硬字幕"
               placeholderTextColor={colors.textDim}
               maxLength={300}
               returnKeyType="done"

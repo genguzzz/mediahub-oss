@@ -61,7 +61,7 @@ export function AiSettings() {
       <Text style={[styles.faint, { marginTop: 14 }]}>默认模型{s.modelFrom ? ` · ${FROM[s.modelFrom]}` : ""}</Text>
       <Segmented value={s.models.some((m) => m.value === s.model) ? s.model : s.models[0].value} options={s.models} onChange={(v) => { tap(); void save({ model: v }); }} style={{ marginTop: 6 }} />
 
-      <Text style={[styles.faint, { marginTop: 14 }]}>思考程度（越低越省 token、越快；复杂的找片和推荐用中或高）{s.effortFrom ? ` · ${FROM[s.effortFrom]}` : ""}</Text>
+      <Text style={[styles.faint, { marginTop: 14 }]}>默认思考程度（对话里点模型名可以按这台手机单独调）{s.effortFrom ? ` · ${FROM[s.effortFrom]}` : ""}</Text>
       {s.efforts?.length ? <Segmented value={s.effort} options={s.efforts} onChange={(v) => { tap(); void save({ effort: v }); }} style={{ marginTop: 6 }} /> : null}
 
       <View style={{ flexDirection: "row", alignItems: "center", marginTop: 14 }}>

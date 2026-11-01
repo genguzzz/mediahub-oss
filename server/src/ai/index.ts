@@ -54,8 +54,10 @@ export function registerAi(app: FastifyInstance) {
       model: z.string().max(80).optional(),
       adult: z.boolean().default(false),
       screen: z.string().max(300).optional(),
+      effort: z.enum(["low", "medium", "high"]).optional(),
+      webSearch: z.boolean().optional(),
     }).parse(req.body ?? {});
-    const id = await startChat(app, { chatId: b.chatId || undefined, message: b.message, retry: b.retry, voice: b.voice, model: b.model, context: { adult: b.adult, screen: b.screen } });
+    const id = await startChat(app, { chatId: b.chatId || undefined, message: b.message, retry: b.retry, voice: b.voice, model: b.model, context: { adult: b.adult, screen: b.screen, effort: b.effort, webSearch: b.webSearch } });
     sse(reply, id);
   });
   app.get("/v1/ai/chats", async () => listChats());
