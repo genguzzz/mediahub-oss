@@ -656,7 +656,7 @@ export const TOOLS: Record<string, Def> = {
   },
   list_chats: {
     tier: "read",
-    description: "主人和你以前的对话：按关键词（片名、话题）搜标题和问答内容，返回对话 id、标题、时间、命中的片段。主人说『上次』『之前问过』『你推荐过的那几部』时先用它，再用 read_chat 看全文。",
+    description: "主人和你的对话：按关键词（片名、话题，空格分开任一命中）搜标题和问答内容，返回对话 id、标题、时间、命中的片段（当前对话标 current）；都没命中时给最近的对话。主人说『上次』『之前问过』『你推荐过的那几部』时先用它，再用 read_chat 看全文。",
     input: z.object({ query: z.string().optional(), limit: z.number().int().min(1).max(30).optional() }),
     label: (a) => (a.query ? `翻以前的对话「${a.query}」` : "翻以前的对话"),
     run: async (ctx, a) => ctx.chats.list(a.query ?? "", a.limit ?? 10),
@@ -709,14 +709,19 @@ export function mcpServer(ctx: ToolCtx) {
   });
 }
 
+/** A step's label. At a tool's start its input hasn't streamed yet: parts built from missing fields
+ *  ("搜索「undefined」", "查看作品 undefined") are dropped, so it reads "搜索" until the input arrives. */
 export function labelOf(name: string, input: unknown): string {
   const d = TOOLS[name];
   if (!d) return name;
+  let s: string;
   try {
-    return d.label((input ?? {}) as never);
+    s = String(d.label((input ?? {}) as never) ?? "");
   } catch {
     return name;
   }
+  s = s.replace(/「(?:undefined|null|NaN)?」/g, "").replace(/\s*\b(?:undefined|null|NaN)\b/g, "").replace(/\s{2,}/g, " ").trim();
+  return s || name;
 }
 
 export async function runTool(ctx: ToolCtx, name: string, input: unknown): Promise<{ ok: boolean; content: string }> {

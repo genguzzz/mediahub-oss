@@ -113,12 +113,12 @@ const plain = (m: StoredMsg) => (m.content || m.steps.filter((s) => s.t === "tex
   .replace(/```cards\s*([\s\S]*?)```/g, (b: string) => `[卡片：${refsIn(b).map((r, i) => `${i + 1}.${m.cards?.[r]?.title ? `《${m.cards[r]!.title}》` : ""}(${r})`).join(" ")}]`);
 
 // Any of the query's words (space-separated) matches; no hit → the recent chats, marked, so the model has
-// something to go on instead of an empty list. The current chat is skipped: it is already in the context.
-async function searchChats(query: string, limit: number, except: number) {
+// something to go on instead of an empty list. The current chat is listed, marked (as in OKX Helper).
+export async function searchChats(query: string, limit: number, current: number) {
   await load();
   const words = query.toLowerCase().split(/[\s,，、]+/).filter(Boolean);
-  const row = (c: Chat, hit?: string) => ({ id: c.id, title: c.title, updated: new Date(c.updated).toISOString().slice(0, 16), questions: c.msgs.filter((x) => x.role === "user").length, ...(hit ? { hit } : {}) });
-  const list = [...chats.values()].filter((c) => c.id !== except).sort((a, b) => b.updated - a.updated);
+  const row = (c: Chat, hit?: string) => ({ id: c.id, ...(c.id === current ? { current: true } : {}), title: c.title, updated: new Date(c.updated).toISOString().slice(0, 16), questions: c.msgs.filter((x) => x.role === "user").length, ...(hit ? { hit } : {}) });
+  const list = [...chats.values()].sort((a, b) => b.updated - a.updated);
   if (!words.length) return list.slice(0, limit).map((c) => row(c));
   const out: ReturnType<typeof row>[] = [];
   for (const c of list) {
@@ -138,7 +138,7 @@ async function searchChats(query: string, limit: number, except: number) {
     if (out.length >= limit) break;
   }
   if (out.length) return out;
-  return { noMatch: `以前的对话里没有「${query}」（当前这次对话不在搜索范围内，它已在上下文里）。最近的对话：`, recent: list.slice(0, Math.min(limit, 8)).map((c) => row(c)) };
+  return { noMatch: `对话里没有「${query}」。最近的对话：`, recent: list.slice(0, Math.min(limit, 8)).map((c) => row(c)) };
 }
 
 async function readChat(id: number, maxChars: number) {

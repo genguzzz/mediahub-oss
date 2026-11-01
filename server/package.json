@@ -9,7 +9,8 @@
   },
   "scripts": {
     "start": "node src/server.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "MP_API_KEY=test APP_TOKEN=test ADMIN_TOKEN=test node --test --experimental-strip-types --no-warnings \"test/**/*.test.ts\""
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.316",
