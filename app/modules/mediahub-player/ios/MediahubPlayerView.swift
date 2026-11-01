@@ -159,6 +159,7 @@ final class MediahubPlayerView: ExpoView {
     if source.probeBytes > 0 { options.probesize = Int64(source.probeBytes) }
     if source.analyzeMs > 0 { options.maxAnalyzeDuration = Int64(source.analyzeMs * 1000) }
     options.progressiveSegmentDelivery = source.progressive
+    options.audioShaping = Self.shaping(channels: Int(source.audioChannels))
     loadStartedAt = Date()
     let start = source.startPosition > 1 ? source.startPosition : nil
     loadTask = Task { @MainActor [weak self] in
@@ -348,13 +349,25 @@ final class MediahubPlayerView: ExpoView {
       }
       .store(in: &bag)
 
-    Publishers.CombineLatest3(e.$videoFormat, e.$activeVideoDecoder, e.$activeAudioDecoder)
+    // The playing audio track or the output changed: re-decide the downmix (a no-op when it stays the same).
+    Publishers.CombineLatest(e.$audioTracks, e.$activeAudioTrackIndex)
       .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
-      .sink { [weak self, weak e] format, vdec, adec in
+      .sink { [weak self] _, _ in self?.applyShaping() }
+      .store(in: &bag)
+    NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
+      .debounce(for: .milliseconds(500), scheduler: DispatchQueue.main)
+      .sink { [weak self] _ in self?.applyShaping() }
+      .store(in: &bag)
+
+    Publishers.CombineLatest4(e.$videoFormat, e.$activeVideoDecoder, e.$activeAudioDecoder, e.$audioShapingState)
+      .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
+      .sink { [weak self, weak e] format, vdec, adec, shaping in
         self?.onInfo([
           "videoFormat": Self.formatName(format),
           "videoDecoder": vdec ?? "",
           "audioDecoder": adec ?? "",
+          "audioShaping": shaping.rawValue,
+          "audioOutput": AVAudioSession.sharedInstance().currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: "+"),
           "codec": e?.sourceVideoCodecName ?? "",
           "container": e?.sourceContainerFormat ?? "",
           "route": e.map { String(describing: $0.videoRoute) } ?? "",
@@ -523,6 +536,33 @@ final class MediahubPlayerView: ExpoView {
       payload["message"] = message
     }
     onPhase(payload)
+  }
+
+  // MARK: - Surround on a two-channel output
+
+  /// A 5.1 / 7.1 track on the phone speaker or plain headphones: stream-copied to AVPlayer it is downmixed by
+  /// the system, and an E-AC-3 track whose dec3 AVPlayer cannot use plays silent with no error (feedback
+  /// 2026-11-01, 无间道 Criterion EAC3 5.1). There the engine decodes it and folds it to stereo itself, with the
+  /// centre (dialogue) 3 dB up, which a plain downmix leaves quiet. AirPlay / HDMI / USB outputs and
+  /// headphones with spatial audio keep the bitstream (Atmos, real surround, head-tracked 5.1).
+  static func shaping(channels: Int) -> AudioShaping {
+    channels > 2 && stereoOutput() ? AudioShaping(maxChannels: 2, dialogueGainDB: 3) : AudioShaping()
+  }
+
+  static func stereoOutput() -> Bool {
+    let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+    let surroundPorts: [AVAudioSession.Port] = [.airPlay, .HDMI, .usbAudio, .carAudio]
+    if outputs.contains(where: { surroundPorts.contains($0.portType) }) { return false }
+    if outputs.contains(where: { $0.isSpatialAudioEnabled }) { return false }
+    return true
+  }
+
+  private func applyShaping() {
+    guard let e = engine, loaded else { return }
+    let active = e.activeAudioTrackIndex.flatMap { i in e.audioTracks.first { $0.id == i } }
+    guard let track = active else { return }
+    let next = Self.shaping(channels: track.channels)
+    if next != e.audioShaping { e.setAudioShaping(next) }
   }
 
   private static func track(_ t: TrackInfo) -> [String: Any] {

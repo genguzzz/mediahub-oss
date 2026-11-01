@@ -269,7 +269,7 @@ export default function PlayerScreen() {
         stalls.current = 0;
         setStart(0);
         tl.current?.mark("plan");
-        setPlan({ uri: r.uri, headers: r.headers ?? {}, mediaSourceId: "", playSessionId: "", externalSubtitles: [], sourcePath: "" });
+        setPlan({ uri: r.uri, audioChannels: 0, headers: r.headers ?? {}, mediaSourceId: "", playSessionId: "", externalSubtitles: [], sourcePath: "" });
       } catch (e) {
         if (cancelled) return;
         log.error("plan failed", { stream: web.provider, err: e instanceof Error ? e.message : e });
@@ -563,7 +563,7 @@ export default function PlayerScreen() {
           <PlayerView
             ref={ref}
             style={{ flex: 1 }}
-            source={plan ? { uri: plan.uri, headers: plan.headers, startPosition: start, externalSubtitles: [...plan.externalSubtitles, ...extraSubs], subtitleLanguages: SUB_LANGS, ...STARTUP } : null}
+            source={plan ? { uri: plan.uri, headers: plan.headers, startPosition: start, externalSubtitles: [...plan.externalSubtitles, ...extraSubs], subtitleLanguages: SUB_LANGS, audioChannels: plan.audioChannels ?? 0, ...STARTUP } : null}
             paused={paused}
             rate={boost ? 2 : rate}
             subtitleScale={subtitleScale}

@@ -311,6 +311,8 @@ export function techBadges(i: Item): string[] {
 
 export interface PlaybackPlan {
   uri: string;
+  /** channels of the audio track that will most likely play (default, else first); 0 = unknown */
+  audioChannels: number;
   headers: Record<string, string>;
   mediaSourceId: string;
   playSessionId: string;
@@ -346,7 +348,8 @@ export async function playbackPlan(itemId: string, startSeconds: number): Promis
       name: s.DisplayTitle ?? s.Title ?? s.Language ?? "外挂字幕",
       language: s.Language ?? "",
     }));
-  return { uri, headers: { "User-Agent": PLAYER_UA }, mediaSourceId: src.Id, playSessionId: info.PlaySessionId, externalSubtitles, sourcePath: src.Path ?? "" };
+  const audio = (src.MediaStreams ?? []).find((s) => s.Type === "Audio" && s.IsDefault) ?? (src.MediaStreams ?? []).find((s) => s.Type === "Audio");
+  return { uri, audioChannels: audio?.Channels ?? 0, headers: { "User-Agent": PLAYER_UA }, mediaSourceId: src.Id, playSessionId: info.PlaySessionId, externalSubtitles, sourcePath: src.Path ?? "" };
 }
 
 // The player starts PlaybackInfo as soon as it has the item id, alongside the Items fetch, and takes

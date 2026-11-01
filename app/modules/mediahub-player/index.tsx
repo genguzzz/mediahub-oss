@@ -17,7 +17,8 @@ export interface PlayerSource {
   subtitleLanguages?: string[];
   probeBytes?: number;       // runtime 4: demux probe budget (AetherEngine default 50 MB)
   analyzeMs?: number;        // runtime 4: max analyze duration (default 60 s)
-  progressive?: boolean;     // runtime 4: serve loopback segments while they are written
+  progressive?: boolean;
+  audioChannels?: number;    // runtime 7: channels of the track expected to play (5.1 on a stereo output loads downmixed)     // runtime 4: serve loopback segments while they are written
 }
 
 export interface PlayerTrack { id: number; name: string; codec: string; language: string; channels: number; isDefault: boolean; isForced: boolean; isAtmos: boolean; isExternal: boolean }

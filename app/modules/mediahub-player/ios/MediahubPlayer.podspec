@@ -16,7 +16,7 @@ Pod::Spec.new do |s|
   s.dependency 'ExpoModulesCore'
   spm_dependency(s,
     url: 'https://github.com/superuser404notfound/AetherEngine.git',
-    requirement: { kind: 'exactVersion', version: '7.48.0' },
+    requirement: { kind: 'exactVersion', version: '7.54.0' },
     products: ['AetherEngine']
   )
 

@@ -21,7 +21,7 @@ const embyServer = (process.env.APP_EMBY_SERVER || "https://emby.example.com:892
 //    recognition) + player: PiP, background audio, Now Playing, AirPlay, add-subtitle, brightness/volume.
 // 2: AetherEngine player (modules/mediahub-player + plugins/with-aether-engine), iOS 18 floor,
 //    screen orientation. 1: first build (router, image, secure-store, notifications, background task).
-export const RUNTIME_VERSION = "6";
+export const RUNTIME_VERSION = "7";
 
 const config: ExpoConfig = {
   name: "影库",

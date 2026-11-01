@@ -23,6 +23,9 @@ struct PlayerSourceRecord: Record {
   @Field var probeBytes: Double = 0
   @Field var analyzeMs: Double = 0
   @Field var progressive: Bool = false
+  // Runtime 7: channels of the audio track expected to play (Emby's default), 0 = unknown. Lets a 5.1 track
+  // on a two-channel output load already decoded + downmixed instead of rebuilding once its tracks are known.
+  @Field var audioChannels: Double = 0
 }
 
 struct NowPlayingRecord: Record {

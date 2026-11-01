@@ -5,12 +5,12 @@
 // duplicate symbols (CI run 40365617237).
 const { withXcodeProject } = require("expo/config-plugins");
 
-// Keep in step with what AetherEngine 7.48.0 resolves (Package.resolved: FFmpegBuild 3.10.x, LibDovi 2.1.x).
+// Keep in step with what AetherEngine 7.54.0 resolves (Package.resolved: FFmpegBuild 3.11.x, LibDovi 2.1.x).
 const PACKAGES = [
   {
     name: "FFmpegBuild",
     url: "https://github.com/superuser404notfound/FFmpegBuild",
-    requirement: { kind: "upToNextMinorVersion", minimumVersion: "3.10.1" },
+    requirement: { kind: "upToNextMinorVersion", minimumVersion: "3.11.1" },
     products: ["AetherLibavcodec", "AetherLibavformat", "AetherLibavutil", "AetherLibswresample", "AetherLibswscale", "AetherLibavfilter", "AetherLibdav1d", "AetherLibzimg", "AetherLibzvbi"],
   },
   {
