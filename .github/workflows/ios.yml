@@ -1,7 +1,7 @@
 name: iOS IPA
 
 # Builds an unsigned IPA on a GitHub-hosted Mac. Signing happens on the phone (全能签).
-#   push to main        → build only (artifact), to catch breakage early
+#   push to main        → nothing (JS changes ship by scripts/ota.sh; no IPA unless asked)
 #   push tag vX.Y.Z      → build + GitHub Release
 #   manual run           → build only (optionally with an explicit build number)
 # Instance build: with the APP_BUNDLE_ID / APP_SERVER / APP_EMBY_SERVER / IPA_PASSPHRASE secrets set
@@ -13,9 +13,7 @@ name: iOS IPA
 # Cut a release with: ./scripts/release.sh 0.2.0 "更新说明" [--publish]
 on:
   push:
-    branches: [main]
     tags: ["v*.*.*"]
-    paths: ["app/**", ".github/workflows/ios.yml"]
   workflow_dispatch:
     inputs:
       build_number:

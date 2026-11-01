@@ -17,6 +17,7 @@ const KIND: Record<RailKind, { color: string; icon: string }> = {
 };
 const REST_MAX = 10; // ticks shown while idle
 const PITCH = 6; // distance between neighbouring ticks
+const HIT = 4; // touch area = the ticks' own block plus this much above and below
 
 export function ChatRail({ marks, contentH, viewH, scrollY, onJump }: {
   marks: RailMark[]; contentH: number; viewH: number; scrollY: Animated.Value; onJump: (y: number) => void;
@@ -46,7 +47,8 @@ export function ChatRail({ marks, contentH, viewH, scrollY, onJump }: {
   const pitch = Math.min(PITCH, Math.max(2, (railH - 20) / Math.max(1, count)));
   const top = (railH - count * pitch) / 2;
   const yOf = (i: number) => top + (i - lo + 0.5) * pitch;
-  const indexAt = (fy: number) => Math.max(lo, Math.min(hi - 1, lo + Math.floor((fy - top) / pitch)));
+  const hitTop = Math.max(0, top - HIT);
+  const indexAt = (fy0: number) => { const fy = fy0 + hitTop; return Math.max(lo, Math.min(hi - 1, lo + Math.floor((fy - top) / pitch))); };
 
   const pick = (fy: number) => {
     const i = indexAt(fy);
@@ -68,13 +70,14 @@ export function ChatRail({ marks, contentH, viewH, scrollY, onJump }: {
   const shown = active ?? cur;
   return (
     <>
+      <View pointerEvents="none" onLayout={(e) => setRailH(e.nativeEvent.layout.height)} style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 1 }} />
       <GestureDetector gesture={Gesture.Exclusive(pan, tap)}>
-        <View onLayout={(e) => setRailH(e.nativeEvent.layout.height)} style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 22, zIndex: 5 }}>
+        <View style={{ position: "absolute", left: 0, top: hitTop, height: count * pitch + 2 * HIT, width: 22, zIndex: 5 }}>
           {marks.slice(lo, hi).map((m, j) => {
             const i = lo + j;
             const on = i === shown;
             return (
-              <View key={m.key} pointerEvents="none" style={{ position: "absolute", left: 3, top: yOf(i) - 1, width: on ? 14 : 8, height: 2, borderRadius: 1, backgroundColor: KIND[m.kind].color, opacity: on ? 1 : active == null ? 0.55 : 0.4 }} />
+              <View key={m.key} pointerEvents="none" style={{ position: "absolute", left: 3, top: yOf(i) - 1 - hitTop, width: on ? 14 : 8, height: 2, borderRadius: 1, backgroundColor: KIND[m.kind].color, opacity: on ? 1 : active == null ? 0.55 : 0.4 }} />
             );
           })}
         </View>
