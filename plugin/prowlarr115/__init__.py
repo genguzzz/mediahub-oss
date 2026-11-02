@@ -1647,18 +1647,8 @@ class Prowlarr115(_PluginBase):
                 return {"ok": False, "error": f"115 离线提交失败：{err}"}
             if p.qb and t.get("buffer"):
                 p.qb.post("/api/v2/torrents/delete", {"hashes": h, "deleteFiles": "true"})
-            t.pop("buffer", None)
-            t.update(status="downloading", added=int(datetime.now().timestamp()), percent=0)
             note = "已重新提交 115 离线"
-        else:
-            t["status"] = "uploaded"
-            for k in ("emby", "done", "identity_warn"):
-                t.pop(k, None)
-        for k in ("strm_errors", "empty_rounds", "warned", "fail_reason", "stalled"):   # 重试从头计数：上次用完的空轮次不能让这次一轮就判 no-video
-            t.pop(k, None)
-        # 步骤时间点从重试的那一步往后清掉：留着旧的 offline 会让刚重交的 115 任务直接显示成「生成 strm 中」
-        redo = ("strm_start", "strm", "emby", "failed") + (("offline", "uploaded") if mode in ("offline", "buffer") else ())
-        t["ts"] = {k: v for k, v in (t.get("ts") or {}).items() if k not in redo}
+        Pipeline.retry_reset(t, mode)
         p.mutate(h, lambda cur: (cur.clear(), cur.update(t)))   # 整个替换：pop 掉的键（emby/done）也要删
         p.event(h, "manual", f"手动{ {'strm': '重新生成 strm', 'buffer': '改用 NAS 缓冲', 'offline': '重新提交 115 离线'}.get(mode, mode) }")
         threading.Thread(target=self.track, name="prowlarr115-retry", daemon=True).start()

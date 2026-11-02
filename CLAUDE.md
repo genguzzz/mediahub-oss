@@ -21,7 +21,7 @@ This repo and every fork are public. **Nothing deployment-specific is committed*
 ## Ship it
 
 - Before committing: `cd app && npx tsc --noEmit && npx eslint src`; `cd server && npx tsc --noEmit -p .`; `python3 -m py_compile plugin/prowlarr115/*.py`.
-- Server → `./server/deploy/deploy.sh` (`--dry-run` first). JS-only app → `./scripts/ota.sh "说明"`. Native → bump `RUNTIME_VERSION`, `./scripts/release.sh X.Y.Z "…" --publish`. Deploy the server before the app when both change. Plugin → your MoviePilot local-plugin dir + reinstall (your instance's NOTES.md says how).
+- Server → `./server/deploy/deploy.sh` (`--dry-run` first). JS-only app → `./scripts/ota.sh "说明"`. Native → bump `RUNTIME_VERSION`, `./scripts/release.sh X.Y.Z "…" --publish`. Deploy the server before the app when both change. Plugin → `python3 -m pytest plugin/tests -q` first (offline fakes for 115/OpenList/qB/Emby; add a test for every task state or retry change), then your MoviePilot local-plugin dir + reinstall (your instance's NOTES.md says how).
 - JS-only commits on `main` carry `[skip ci]` (IPA builds only for native changes or releases).
 - Operations (status, tasks, reselect, health, stats, feedback, logs, Emby push): the **`mediahub-ops` skill** in `.claude/skills/mediahub-ops/`.
 - Errors: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Fork upkeep: [docs/UPSTREAM.md](docs/UPSTREAM.md). First deployment: [docs/DEPLOY_PROMPT.md](docs/DEPLOY_PROMPT.md).

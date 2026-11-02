@@ -747,7 +747,7 @@ class Hub:
             pos = 3
         err = {"too-big": 2, "dead": 2, "no-video": 3, "strm-failed": 3, "needs-id": 3, "scrape-failed": 4}.get(st)
         if st == "done" and emby < 0:
-            err = 3
+            err = 4                                  # 刮削那一步失败（strm 已生成）
         steps = []
         times = Hub._times(t)
         for i, k in enumerate(keys):

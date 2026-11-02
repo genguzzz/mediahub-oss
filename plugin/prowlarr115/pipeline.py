@@ -251,6 +251,22 @@ class Pipeline:
                 self.log(f"失败回调出错：{e}")
 
     @staticmethod
+    def retry_reset(t: dict, mode: str) -> None:
+        """手动重试前把任务改回对应步骤：strm=重新生成；offline=重新 115 离线；buffer=已由 buffer_start 改好状态。
+        失败计数和失败原因清零；步骤时间点从重试的那一步往后清掉（留着旧的 offline 会让刚重交的任务直接显示成「生成 strm 中」）。"""
+        if mode == "offline":
+            t.pop("buffer", None)
+            t.update(status="downloading", added=now(), percent=0)
+        elif mode == "strm":
+            t["status"] = "uploaded"
+            for k in ("emby", "done", "identity_warn"):
+                t.pop(k, None)
+        for k in ("strm_errors", "empty_rounds", "warned", "fail_reason", "stalled"):
+            t.pop(k, None)
+        redo = ("strm_start", "strm", "emby", "failed") + (("offline", "uploaded") if mode in ("offline", "buffer") else ())
+        t["ts"] = {k: v for k, v in (t.get("ts") or {}).items() if k not in redo}
+
+    @staticmethod
     def mark(t: dict, step: str, at: Optional[int] = None) -> None:
         """记录步骤时间点（只记第一次）：submitted / offline / buffer / uploaded / strm / emby。"""
         t.setdefault("ts", {}).setdefault(step, at or now())
@@ -720,7 +736,7 @@ class Pipeline:
                 if cur[h].get("api_ts", 0) > t.get("api_ts", 0):
                     t.update(cur[h])                   # 这一轮处理期间被 API（retry/task_meta）改过：以 API 为准，本轮结果作废
                     return
-                cur[h].update(t)
+                cur[h] = t                             # 整个替换：本轮删掉的键（stalled、strm_errors…）也要删
                 self.save(cur)
 
     def _finish_traced(self, h: str, t: dict) -> None:

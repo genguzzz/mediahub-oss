@@ -9,3 +9,4 @@ __pycache__/
 app/dist-ota/
 instance.env
 secrets.env
+.pytest_cache/
