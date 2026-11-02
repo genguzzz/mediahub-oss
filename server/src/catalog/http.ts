@@ -9,8 +9,13 @@
 // - proxied(): pages from a source whose exit is configured per source (egress.ts, SOURCE_PROXY;
 //   JavDB blocks some countries, so its default is INDEX_PROXY)
 //   (e.g. home broadband) and pages and images go through it. Unset = direct.
-import { Agent, fetch as ufetch } from "undici";
-import { dispatcherFor, type Source } from "../egress.ts";
+import { Agent, Headers, Response, fetch as ufetch } from "undici";
+import { execFile } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { promisify } from "node:util";
+import path from "node:path";
+import { config } from "../config.ts";
+import { dispatcherFor, proxyOf, solverOf, type Source } from "../egress.ts";
 import { errText, logger } from "../log.ts";
 import { onClearCaches } from "../cacheControl.ts";
 
@@ -126,8 +131,106 @@ function viaBrowser(url: string, urgent: boolean): Promise<string> {
   }, urgent));
 }
 
+// ---- Cloudflare clearance for proxied sources (JavDB challenges every client since 2026-11-02) ----
+// A clearance only works from the IP and user agent that solved it, so it is solved by the source's own
+// FlareSolverr (SOURCE_FLARESOLVERR) through the source's proxy, kept in $DATA_DIR/cf-clearance.json and
+// sent (cf_clearance + that browser's user agent) with every request of the source, next to its login
+// cookies. A new challenge drops it and solves again, once per request.
+type Clr = { ua: string; cookie: string; at: number; host: string };
+const CF_PAGE = /<title>Just a moment|Attention Required! \| Cloudflare|cf-chl-|challenge-platform/;
+const CLR_FILE = () => path.join(config.dataDir, "cf-clearance.json");
+let clrs: Partial<Record<Source, Clr>> | null = null;
+const solving = new Map<Source, Promise<void>>();
+
+async function clrLoad() {
+  clrs ??= await readFile(CLR_FILE(), "utf8").then((t) => JSON.parse(t) as Partial<Record<Source, Clr>>).catch(() => ({}));
+  return clrs;
+}
+async function clrSave() {
+  await mkdir(config.dataDir, { recursive: true });
+  await writeFile(CLR_FILE(), JSON.stringify(clrs), { mode: 0o600 });
+}
+
+/** Solve the challenge for `source` through its FlareSolverr and proxy; concurrent callers share one solve. */
+export function renewClearance(source: Source, url: string): Promise<void> {
+  const busy = solving.get(source);
+  if (busy) return busy;
+  const run = timed("cf-solve", url, async () => {
+    const solver = solverOf(source);
+    if (!solver) throw new Error(`${source} 被 Cloudflare 拦截，没有配置 SOURCE_FLARESOLVERR`);
+    const proxy = proxyOf(source).replace(/^socks5h:/i, "socks5:");
+    const res = await fetch(solver, { method: "POST", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(90_000),
+      body: JSON.stringify({ cmd: "request.get", url, maxTimeout: 60_000, ...(proxy ? { proxy: { url: proxy } } : {}) }) });
+    const d = (await res.json()) as { status?: string; message?: string; solution?: { userAgent?: string; cookies?: { name: string; value: string }[] } };
+    const cf = d.solution?.cookies?.find((c) => c.name === "cf_clearance");
+    if (d.status !== "ok" || !cf || !d.solution?.userAgent) throw new Error(`Cloudflare 验证没过：${d.message ?? "没拿到 cf_clearance"}`);
+    (await clrLoad())[source] = { ua: d.solution.userAgent, cookie: `cf_clearance=${cf.value}`, at: Date.now(), host: new URL(url).host };
+    await clrSave();
+    log.info({ source }, "cloudflare clearance renewed");
+  }).finally(() => solving.delete(source));
+  solving.set(source, run);
+  return run;
+}
+
+// Hanime1's Cloudflare refuses Node's HTTP client by its TLS fingerprint even with a valid clearance
+// (403 「Attention Required」), but serves curl: its requests go through a curl child process (no shell).
+const CURL_SOURCES = new Set<Source>(["hanime1"]);
+const run = promisify(execFile);
+
+async function curlFetch(url: string, headers: Record<string, string>, init: { method?: string; body?: string; redirect?: "follow" | "manual" }, proxy: string): Promise<Response> {
+  const args = ["-sS", "-i", "--compressed", "--max-time", "25", "-X", init.method ?? "GET"];
+  if (init.redirect !== "manual") args.push("-L");
+  if (proxy) args.push("-x", proxy.replace(/^socks5:/i, "socks5h:"));
+  for (const [k, v] of Object.entries(headers)) args.push("-H", `${k}: ${v}`);
+  if (init.body !== undefined) args.push("--data-binary", init.body);
+  args.push("--", url);
+  const { stdout } = await run("curl", args, { encoding: "buffer", maxBuffer: 32 << 20, timeout: 30_000 });
+  // -i puts every header block (proxy CONNECT, redirects, final) before the body: keep the last one
+  let body = stdout;
+  let head = "";
+  while (body.subarray(0, 5).toString("latin1") === "HTTP/") {
+    const end = body.indexOf("\r\n\r\n");
+    if (end < 0) break;
+    head = body.subarray(0, end).toString("latin1");
+    body = body.subarray(end + 4);
+  }
+  const [status = "", ...lines] = head.split("\r\n");
+  const hs = new Headers();
+  for (const l of lines) {
+    const i = l.indexOf(":");
+    if (i > 0) hs.append(l.slice(0, i).trim(), l.slice(i + 1).trim());
+  }
+  hs.delete("content-encoding");      // curl already decoded the body
+  hs.delete("content-length");
+  return new Response(body, { status: Number(status.split(" ")[1]) || 502, headers: hs });
+}
+
 export async function proxiedRaw(url: string, headers: Record<string, string> = {}, init: { method?: string; body?: string; redirect?: "follow" | "manual" } = {}, source: Source = "javdb") {
-  return ufetch(url, { dispatcher: dispatcherFor(source), ...init, headers: { "user-agent": UA, "accept-language": "zh-CN,zh;q=0.9", ...headers }, signal: AbortSignal.timeout(25_000) });
+  for (let attempt = 0; ; attempt++) {
+    const kept = (await clrLoad())[source];
+    const clr = kept?.host === new URL(url).host ? kept : undefined;   // only for the host it was solved on (not the image CDN)
+    const h: Record<string, string> = { "user-agent": UA, "accept-language": "zh-CN,zh;q=0.9", ...headers };
+    if (clr) {
+      h["user-agent"] = clr.ua;              // the clearance only holds with the browser that solved it
+      h.cookie = [clr.cookie, headers.cookie].filter(Boolean).join("; ");
+    }
+    const res = CURL_SOURCES.has(source)
+      ? await curlFetch(url, h, init, proxyOf(source))
+      : await ufetch(url, { dispatcher: dispatcherFor(source), ...init, headers: h, signal: AbortSignal.timeout(25_000) });
+    if ((res.status !== 403 && res.status !== 503) || res.headers.get("server") !== "cloudflare") return res;
+    // JavDB marks its challenge with cf-mitigated; Hanime1 answers with an 「Attention Required」 page instead
+    if (res.headers.get("cf-mitigated") === "challenge") await res.body?.cancel();
+    else {
+      const body = await res.text();
+      if (!CF_PAGE.test(body)) return new Response(body, { status: res.status, headers: res.headers });
+    }
+    if (clr) {
+      delete clrs![source];
+      await clrSave();
+    }
+    if (attempt > 0) throw new Error(`${source} 刚过的 Cloudflare 验证不被接受`);
+    await renewClearance(source, url);
+  }
 }
 
 /** The page needs a logged-in account (the site redirected to its login page). */

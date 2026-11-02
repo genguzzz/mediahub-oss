@@ -6,7 +6,8 @@
 // Values: `direct`, `http(s)://…` (HTTP CONNECT proxy) or `socks5://…`. A source not listed goes direct,
 // except `javdb`, which falls back to INDEX_PROXY (the older single setting). Sources: javdb, jable,
 // hanime, hanime1 (refuses datacenter addresses: offered only when an exit is set), tmdb, douban,
-// bangumi, bilibili, youtube (video search, ugc.ts). Jable pages go through FlareSolverr (FLARESOLVERR_URL), which uses its own network; Emby, MoviePilot and the plugin are reached directly.
+// bangumi, bilibili, youtube (video search, ugc.ts). SOURCE_FLARESOLVERR names a FlareSolverr for sources behind a
+// Cloudflare challenge (catalog/http.ts keeps their clearance). Jable pages go through FlareSolverr (FLARESOLVERR_URL), which uses its own network; Emby, MoviePilot and the plugin are reached directly.
 import { Agent, type Dispatcher, ProxyAgent, Socks5ProxyAgent } from "undici";
 import { logger } from "./log.ts";
 
@@ -25,6 +26,15 @@ function parse(): Map<string, string> {
 }
 
 const config = parse();
+
+// FlareSolverr per source for sites that challenge every client (SOURCE_FLARESOLVERR="javdb=http://127.0.0.1:8193/v1").
+// Cloudflare binds a clearance to the solving IP, so this instance must be able to reach the source's proxy.
+const solvers = new Map<string, string>();
+for (const part of (process.env.SOURCE_FLARESOLVERR ?? "").split(/[;\n]/)) {
+  const i = part.indexOf("=");
+  if (i > 0) solvers.set(part.slice(0, i).trim().toLowerCase(), part.slice(i + 1).trim());
+}
+export const solverOf = (source: Source) => solvers.get(source) ?? "";
 const agents = new Map<string, Dispatcher>();
 const directAgent = new Agent();
 
@@ -56,7 +66,7 @@ export function egressSummary(): Record<Source, string> {
     }
     try {
       const u = new URL(url);
-      out[s] = `${u.protocol.replace(":", "")} proxy ${u.hostname}:${u.port || (u.protocol === "https:" ? 443 : 80)}`;
+      out[s] = `${u.protocol.replace(":", "")} proxy ${u.hostname}:${u.port || (u.protocol === "https:" ? 443 : 80)}` + (solverOf(s) ? " + Cloudflare clearance" : "");
     } catch {
       out[s] = "invalid proxy URL";
     }
