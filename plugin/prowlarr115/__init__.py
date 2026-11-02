@@ -1352,7 +1352,10 @@ class Prowlarr115(_PluginBase):
             # 没有 TMDb 条目：不放进按 TMDb 刮削的库（只有名字的目录 Emby 会按名字乱认），先下到「待识别」，
             # 不生成 strm、发通知，在 App 任务详情里「改为另一部」选定作品后再入库
             path = f"{self._root}/待识别/{folder}"
-            logger.warning(f"【Prowlarr115】{name} 没有 TMDb 条目，下到待识别：{path}")
+            seen = self.__dict__.setdefault("_noid_logged", {})
+            if time.time() - seen.get(path, 0) > 3600:                  # _plan 每个候选种子都会调一次，同一部一小时只记一条
+                seen[path] = time.time()
+                logger.warning(f"【Prowlarr115】{name} 没有 TMDb 条目，下到待识别：{path}")
             return path, {"title": name, "year": year, "needs_id": True,
                           "bangumi_id": getattr(media, "bangumi_id", None), "douban_id": getattr(media, "douban_id", None),
                           "type": media.type.value if media.type else "", "season": None}

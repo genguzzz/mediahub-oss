@@ -25,9 +25,17 @@ SUB_EXT = (".ass", ".ssa", ".srt", ".sup")
 LIBS = ("电影", "剧集", "动漫")
 MIN_MOVIE = 300e6
 MIN_EPISODE = 50e6
-STALL_AFTER = 6 * 3600
-STALL_HINT = 30 * 60          # 115 离线 30 分钟仍 0%：标成「卡住」，App 里给出改用 NAS 缓冲 / 换资源（6 小时后才自动改缓冲）
-LOST_AFTER = 3 * 86400
+STALL_HINT = 30 * 60          # 115 离线 30 分钟仍 0%：标成「卡住」，App 里给出改用 NAS 缓冲 / 换资源
+GB = 1 << 30
+
+
+def offline_limit(size: Any) -> int:
+    """115 离线最长等多久：每 GB 1 小时（至少 1 小时；大小未知按 1 小时）。超时直接判失败，不改缓冲、不重试。"""
+    return int(max(1.0, float(size or 0) / GB) * 3600)
+
+
+def fmt_limit(sec: int) -> str:
+    return f"{sec / 3600:.1f}".rstrip("0").rstrip(".") + " 小时"
 DEAD_AFTER = 24 * 3600
 UPLOAD_TIMEOUT = 6 * 3600
 EMBY_GIVEUP = 3 * 3600
@@ -716,6 +724,8 @@ class Pipeline:
         with self.ctx(h, "strm"):
             if "strm_start" not in (t.get("ts") or {}):
                 self.mark(t, "strm_start")
+                av = (t.get("meta") or {}).get("kind") == "av"
+                self.event(h, "strm", "开始写入 MDC 收件箱" if av else "开始生成 strm")
             self._finish_one(t, h)
             if t.get("status") != before:
                 self.mark(t, "strm")
@@ -815,17 +825,38 @@ class Pipeline:
                 self.notify("🈶 " + label(t["dir"]), note)
 
     # ---------------- 定时推进 ----------------
+    def _warn_once(self, h: str, key: str) -> bool:
+        """同一任务同一条提示只发一次（进程内记，不依赖任务落盘：落盘被 API 改动盖掉时曾每分钟重发）。"""
+        seen = self.__dict__.setdefault("_warned_once", set())
+        if (h, key) in seen:
+            return False
+        seen.add((h, key))
+        return True
+
+    def _offline_timeout(self, h: str, t: dict, info: Optional[dict], age: int) -> bool:
+        size = (info or {}).get("size") or t.get("size")
+        if size:
+            t["size"] = size
+        limit = offline_limit(size)
+        if age <= limit:
+            return False
+        if info:
+            self.c115.task_del(h)
+        why = f"115 离线超过 {fmt_limit(limit)}（按 1 小时/GB）仍未完成" if info else f"115 里 {fmt_limit(limit)} 内一直找不到这个任务"
+        self.event(h, "offline", why + "，已判失败", "error")
+        self.notify("❌ " + label(t["dir"]), why)
+        t["done"] = now()
+        self.failed(h, t, "dead", why)
+        return True
+
     def _advance_offline(self, h: str, t: dict, info: Optional[dict], age: int, ready: List[str]) -> None:
         if info is None:
-            if age > LOST_AFTER:
-                self.buffer_start(h, t, "115 任务列表里找不到")
-            elif not t.get("ev_missing"):
-                t["ev_missing"] = 1
-                self.event(h, "offline", "115 离线列表里暂时找不到这个任务", "warn")
+            if self._offline_timeout(h, t, None, age):
+                return
+            if self._warn_once(h, "missing"):
+                self.event(h, "offline", "115 离线列表里暂时找不到", "warn")
             if age > STALL_HINT and not t.get("stalled"):
                 t["stalled"] = now()
-                self.notify("⏳ " + label(t["dir"]), f"115 离线列表里找不到这个任务（已 {int(age / 60)} 分钟）。可在影库 App 任务详情里"
-                                                     f"「改用 NAS 缓冲」或「换一个资源」；{LOST_AFTER // 86400} 天后会自动改用 NAS 缓冲")
             return
         old = int(t.get("percent") or 0)
         t["percent"], t["name"] = info.get("percentDone"), info.get("name")
@@ -836,17 +867,14 @@ class Pipeline:
             self.c115.task_del(h)
             self.buffer_start(h, t, "115 离线失败")
         elif info.get("status") != 2:
+            if self._offline_timeout(h, t, info, age):
+                return
             if t.get("percent"):
                 t.pop("stalled", None)
             elif age > STALL_HINT and not t.get("stalled"):
                 t["stalled"] = now()
-                why = "还没拿到种子信息" if not info.get("size") else "没有下载进度"
+                why = "还没拿到种子信息" if not info.get("size") else "没有进度"
                 self.event(h, "offline", f"115 离线 {int(age / 60)} 分钟仍是 0%（{why}）", "warn")
-                self.notify("⏳ " + label(t["dir"]), f"115 离线 {int(age / 60)} 分钟仍是 0%（{why}）。可在影库 App 任务详情里"
-                                                     f"「改用 NAS 缓冲」或「换一个资源」；{STALL_AFTER // 3600} 小时后会自动改用 NAS 缓冲")
-            if not t.get("percent") and age > STALL_AFTER:
-                self.c115.task_del(h)
-                self.buffer_start(h, t, f"115 离线 {int(age / 3600)} 小时仍是 0%")
         else:
             if "offline" not in (t.get("ts") or {}):
                 self.mark(t, "offline")

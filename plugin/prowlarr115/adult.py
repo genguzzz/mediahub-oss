@@ -77,8 +77,9 @@ def safe(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]', " ", name or "").strip()
 
 
-def rejected(text: str) -> bool:
-    return bool(JAV_RX.search(text) or LIVE_RX.search(text) or MINOR_RX.search(text))
+def rejected(text: str, av: bool = False) -> bool:
+    """里番入库要挡的真人片 / 直播 / 未成年内容；AV 任务本来就是番号片，不查 JAV_RX。"""
+    return bool((not av and JAV_RX.search(text)) or LIVE_RX.search(text) or MINOR_RX.search(text))
 
 
 def split_vol(title: str) -> Tuple[str, Optional[int]]:
@@ -285,6 +286,7 @@ class Adult:
         files: List[tuple] = []
         try:
             self.ol.refresh_path(d)            # OpenList 的 115 目录有缓存：不刷新就看不到刚下完的文件，空 6 轮会被误判 no-video
+            self.ol.list(d, refresh=True)      # refresh_path 只刷到 d 的父级；AV 直接下到 /115/Emby/下载，新文件夹在 d 自己的缓存里
         except Exception:  # noqa: BLE001
             pass
         if scope:
@@ -299,7 +301,7 @@ class Adult:
                 raise RuntimeError(f"OpenList 里还看不到下载的文件夹 {scope[:60]}")
             files = list(self.ol.walk(f"{d}/{scope}")) if hit.get("is_dir") else [(f"{d}/{scope}", hit)]
         # 字幕组常附「前作/」目录（上一部作品，另一个 Bangumi 条目）：不算本作的集（诊察日誌附了研修日誌）
-        vids = [(r, it) for r, it in files if r.lower().endswith(VIDEO) and not rejected(r) and "/前作/" not in r[len(d):]]
+        vids = [(r, it) for r, it in files if r.lower().endswith(VIDEO) and not rejected(r, kind == "av") and "/前作/" not in r[len(d):]]
         if not vids:
             return []
         biggest = max(it.get("size", 0) for _, it in vids)

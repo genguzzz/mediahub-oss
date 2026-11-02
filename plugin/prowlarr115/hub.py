@@ -24,7 +24,7 @@ from . import tmdb as tmdb_mod
 from .adult import CAT_ANIME, CAT_REAL
 from .adult import magnet as adult_magnet
 from .adult import VIDEO as VIDEO_EXT
-from .pipeline import STALL_AFTER, btih, ep_of
+from .pipeline import btih, ep_of, offline_limit
 from .policy import features, pick, runtime_minutes, score, year_conflict
 from .sources import animetosho, dmhy_rss, hex_magnet, mikan_rss, nyaa_limited
 
@@ -729,6 +729,9 @@ class Hub:
         # 三类资源同一套步骤，只有入库/刮削两步不同：影视 TMDb、里番 Emby 的 Bangumi 插件、AV 交给 MDC 刮削整理
         labels = ["搜索选片", "提交", via, *{"av": ("写入 MDC 收件箱", "MDC 刮削整理"), "hentai": ("生成 strm", "Bangumi 刮削")}.get(kind, ("生成 strm", "Emby 刮削")), "完成"]
         pos = {"downloading": 2, "buffer": 2, "uploaded": 3, "scraping": 4, "done": 6 if emby > 0 else 4}.get(st)
+        dl_done = st == "downloading" and bool((t.get("ts") or {}).get("offline"))   # 115 已下完、strm 这步还在重试：状态要等 strm 成功才改，步骤不能停在下载
+        if dl_done:
+            pos = 3
         err = {"too-big": 2, "dead": 2, "no-video": 3, "strm-failed": 3, "needs-id": 3, "scrape-failed": 4}.get(st)
         if st == "done" and emby < 0:
             err = 3
@@ -748,6 +751,8 @@ class Hub:
                  "scraping": "MDC 刮削中", "scrape-failed": "MDC 刮削失败",
                  "strm-failed": "生成 strm 连续失败，已停止重试", "needs-id": "没有 TMDb 条目，请选择作品后入库", "too-big": "种子太大，已放弃", "dead": "死种",
                  "no-video": "没认出可入库的视频", "superseded": "库里已有其他版本", "cancelled": "已取消"}.get(st, st)
+        if dl_done:
+            stage = "写入 MDC 收件箱中" if kind == "av" else "生成 strm 中"
         if st == "done":
             stage = "已入库" if emby > 0 else "Emby 未能刮削，需手动识别" if emby < 0 else \
                 ("已生成 strm，等待 Bangumi 刮削" if kind == "hentai" else "已生成 strm，等待 Emby 刮削")
@@ -778,6 +783,7 @@ class Hub:
         ev = (self.p.get_data("events") or {}) if self.p._pipe else {}
         for h, t in keep:
             stage, steps, failed = self._steps(t)
+            dl_done = t.get("status") == "downloading" and bool((t.get("ts") or {}).get("offline"))
             rows = ev.get(h) or []
             for s_ in steps:
                 mine = [r for r in rows if r[1] in self.STEP_EVENTS.get(s_["key"], [])]
@@ -788,8 +794,8 @@ class Hub:
             row = {"hash": h, "kind": "media", "status": t.get("status"), "stage": stage, "steps": steps, "failed": failed,
                    "dir": t.get("dir"), "name": t.get("name") or t.get("title") or "", "added": t.get("added"),
                    "done": t.get("done"), "emby": t.get("emby"), "identityWarn": t.get("identity_warn") or "", "percent": t.get("percent"), "strm": len(t.get("strm") or []),
-                   "stalled": t.get("stalled") if t.get("status") == "downloading" else None,
-                   "autoBufferAt": (t.get("added") or 0) + STALL_AFTER if t.get("status") == "downloading" and not t.get("percent") else None,
+                   "stalled": t.get("stalled") if t.get("status") == "downloading" and not dl_done else None,
+                   "failAt": (t.get("added") or 0) + offline_limit(t.get("size")) if t.get("status") == "downloading" and not dl_done else None,
                    "episodes": meta.get("episodes") or [], "subId": meta.get("sub_id"),
                    "title": meta.get("title") or (t.get("dir") or "").split("/")[-2 if "/Season " in (t.get("dir") or "") else -1],
                    "year": meta.get("year"), "tmdbid": meta.get("tmdbid"), "season": meta.get("merged_season") or meta.get("season"),

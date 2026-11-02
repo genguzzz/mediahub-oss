@@ -18,7 +18,7 @@ const STEP_HINT_ADULT: Record<string, Record<string, string>> = {
 const STEP_HINT: Record<string, string> = {
   select: "怎么选中这个资源的：订阅自动 / 自动入库 / 手动 / 换资源，按选片规则的评分和理由（4K HEVC 优先，码率过高扣分，不要硬字幕）",
   submit: "磁力已交给插件，按 TMDb 识别结果算好 115 目录",
-  download: "115 离线下载；提交失败、6 小时 0% 或任务丢失时改用 NAS qBittorrent 缓冲，下完一个文件传一个到 115",
+  download: "115 离线下载，按 1 小时/GB 计时，超时判失败；提交失败或 115 离线失败时改用 NAS 缓冲",
   strm: "只处理本任务的种子目录（排除特典），生成 OpenList 签名直链 strm、拷外挂字幕、替换旧版本",
   scrape: "通知 Emby 扫描，确认条目有 TMDb ID 和海报；没中文字幕的动画会在后台从 sub_share 补字幕",
   finish: "Emby 已刮削，可以播放",
@@ -102,7 +102,7 @@ export default function TaskScreen() {
               </View>
               <Text style={[styles.body, { color: colors.textSoft }]}>
                 {files.data?.note ? `${files.data.note.replace(/[。.]$/, "")}。` : "115 离线一直是 0%。"}
-                {t.autoBufferAt && t.status === "downloading" ? `若不处理，${clock(t.autoBufferAt, now)} 自动改用 NAS 缓冲。` : ""}
+                {t.failAt && t.status === "downloading" ? `${clock(t.failAt, now)} 前没下完将判失败。` : ""}
               </Text>
             </Card>
           ) : null}
