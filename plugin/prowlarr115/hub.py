@@ -176,6 +176,7 @@ class Hub:
             ("/hub/offline", self.offline, "GET", "115 离线任务列表"),
             ("/hub/offline/delete", self.offline_delete, "POST", "删 115 离线任务：{hashes:[..]}"),
             ("/hub/task/remove", self.task_remove, "POST", "从入库列表移除已结束（完成/失败/取消）的任务记录：{hashes:[..]}"),
+            ("/hub/task/delete", self.task_delete, "POST", "删除一个入库任务（进行中的先停下载）：{hash, files}；files=true 连 115/strm/AV/缓冲文件一起删"),
             ("/hub/av/cancel", self.av_cancel, "POST", "取消/删除 AV 记录：{key, files}（files=true 连 115 已下文件）"),
             ("/hub/emby/delete", self.emby_delete, "POST", "删 Emby 条目（电影/剧/季/集）：{id, files, dry_run}；files=true 连 115 原文件一起删"),
             ("/hub/qb", self.qb, "GET", "NAS qBittorrent 任务和速度"),
@@ -718,6 +719,18 @@ class Hub:
     STEP_EVENTS = {"select": ["select"], "submit": ["submit"], "download": ["offline", "buffer"], "strm": ["strm", "subs"],
                    "scrape": ["emby"], "finish": ["manual"]}
 
+    PICK_BY = {"subscription": "订阅更新", "auto": "自动入库", "manual": "手动入库", "reselect": "手动换资源",
+               "rss": "RSS 追更", "catalog": "追更目录"}
+
+    @classmethod
+    def _event_groups(cls, steps: List[dict]) -> Dict[str, str]:
+        """事件 step -> App 步骤 key。失败时「manual」（拉黑、回滚订阅）记在出错那一步，不落到「完成」。"""
+        group = {e: k for k, es in cls.STEP_EVENTS.items() for e in es}
+        err = next((s["key"] for s in steps if s["state"] == "error"), None)
+        if err:
+            group["manual"] = err
+        return group
+
     @staticmethod
     def _steps(t: dict) -> tuple:
         """任务 -> (阶段文字, 五步进度, 是否失败)。步骤：提交 → 115 离线/NAS 缓冲 → 生成 strm → Emby 刮削 → 完成。"""
@@ -746,13 +759,21 @@ class Hub:
                 p = pos if pos is not None else 0
                 state = "done" if i < p else "active" if i == p else "pending"
             st_at, en_at = times[i]
-            steps.append({"key": k, "label": labels[i], "state": state, "start": st_at, "end": en_at if state != "active" else None})
+            if state in ("pending", "skipped"):
+                st_at = en_at = None                 # 没走到的步骤不显示时间（失败任务以前会把失败时刻算成后面几步的开始）
+            elif state == "active":
+                en_at = None
+            elif state == "error":
+                en_at = (t.get("ts") or {}).get("failed") or en_at or (abs(emby) if emby < 0 else None) or t.get("done")
+            steps.append({"key": k, "label": labels[i], "state": state, "start": st_at, "end": en_at})
         stage = {"downloading": f"{via}下载中", "buffer": "NAS 缓冲下载，逐个上传 115", "uploaded": "等待生成 strm",
                  "scraping": "MDC 刮削中", "scrape-failed": "MDC 刮削失败",
-                 "strm-failed": "生成 strm 连续失败，已停止重试", "needs-id": "没有 TMDb 条目，请选择作品后入库", "too-big": "种子太大，已放弃", "dead": "死种",
+                 "strm-failed": "生成 strm 连续失败，已停止重试", "needs-id": "没有 TMDb 条目，请选择作品后入库", "too-big": "种子太大，已放弃", "dead": "下载失败",
                  "no-video": "没认出可入库的视频", "superseded": "库里已有其他版本", "cancelled": "已取消"}.get(st, st)
         if dl_done:
             stage = "写入 MDC 收件箱中" if kind == "av" else "生成 strm 中"
+        if err is not None and t.get("fail_reason") and st in ("dead", "too-big", "no-video"):
+            stage = f"{stage}：{t['fail_reason']}"
         if st == "done":
             stage = "已入库" if emby > 0 else "Emby 未能刮削，需手动识别" if emby < 0 else \
                 ("已生成 strm，等待 Bangumi 刮削" if kind == "hentai" else "已生成 strm，等待 Emby 刮削")
@@ -784,19 +805,25 @@ class Hub:
         for h, t in keep:
             stage, steps, failed = self._steps(t)
             dl_done = t.get("status") == "downloading" and bool((t.get("ts") or {}).get("offline"))
+            group = self._event_groups(steps)
             rows = ev.get(h) or []
             for s_ in steps:
-                mine = [r for r in rows if r[1] in self.STEP_EVENTS.get(s_["key"], [])]
+                mine = [r for r in rows if group.get(r[1], "finish") == s_["key"]]
                 s_["events"] = len(mine)
                 s_["last"] = mine[-1][3][:120] if mine else ""
                 s_["warn"] = any(r[2] in ("warn", "error") for r in mine)
+                if s_["state"] == "error" and not t.get("fail_reason") and t.get("status") == "dead":
+                    why = next((r[3] for r in reversed(mine) if r[2] == "error" and not r[3].startswith("已推送")), "")
+                    stage = f"{stage}：{why[:60]}" if why else stage   # 旧任务没存失败原因：用这一步最后一条错误
             meta = t.get("meta") or {}
             row = {"hash": h, "kind": "media", "status": t.get("status"), "stage": stage, "steps": steps, "failed": failed,
                    "dir": t.get("dir"), "name": t.get("name") or t.get("title") or "", "added": t.get("added"),
                    "done": t.get("done"), "emby": t.get("emby"), "identityWarn": t.get("identity_warn") or "", "percent": t.get("percent"), "strm": len(t.get("strm") or []),
                    "stalled": t.get("stalled") if t.get("status") == "downloading" and not dl_done else None,
-                   "failAt": (t.get("added") or 0) + offline_limit(t.get("size")) if t.get("status") == "downloading" and not dl_done else None,
-                   "episodes": meta.get("episodes") or [], "subId": meta.get("sub_id"),
+                   "bufferAt": (t.get("added") or 0) + offline_limit(t.get("size")) if t.get("status") == "downloading" and not dl_done and not t.get("buffer") else None,
+                   "episodes": sorted({int(e) + int(meta.get("ep_offset") or 0) for e in meta.get("episodes") or [] if str(e).isdigit()}),   # 媒体库编号（订阅第三季第 5 集 = 第 1 季第 53 集）
+                   "subId": meta.get("sub_id"),
+                   "source": self.PICK_BY.get((meta.get("pick") or {}).get("by") or "", ""),
                    "title": meta.get("title") or (t.get("dir") or "").split("/")[-2 if "/Season " in (t.get("dir") or "") else -1],
                    "year": meta.get("year"), "tmdbid": meta.get("tmdbid"), "season": meta.get("merged_season") or meta.get("season"),
                    "type": "movie" if meta.get("type") == "电影" or "/电影/" in (t.get("dir") or "") else "tv",
@@ -821,8 +848,8 @@ class Hub:
         """{events:[{at, step, group, level, msg}]}：group 是 App 里五个步骤的 key。"""
         h = hash.lower()
         rows = self.p._pipe.events(h) if self.p._pipe else []
-        group = {e: k for k, es in self.STEP_EVENTS.items() for e in es}
         t = (self.p._load_tasks() or {}).get(h) or {}
+        group = self._event_groups(self._steps(t)[1] if t else [])
         out = [{"at": r[0], "step": r[1], "group": group.get(r[1], "finish"), "level": r[2], "msg": r[3]} for r in rows]
         if not out and t:
             out = [{"at": t.get("added"), "step": "submit", "group": "submit", "level": "info",
@@ -914,6 +941,119 @@ class Hub:
         if gone:
             self.p._save_tasks(tasks)
         return {"ok": True, "removed": gone, "active": kept}
+
+    def task_delete(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        """删除一个入库任务（进行中的先停下载）：{hash, files}。files=false 只删记录，115 和媒体库里的文件留着；
+        files=true 连它留下的文件一起删：115 上的种子目录/文件、生成的 strm 和同名字幕、AV 收件箱和整理后的目录、NAS 缓冲。
+        不拉黑、不回滚订阅。"""
+        p = self.p._pipe
+        if not p:
+            return {"ok": False, "error": "流水线未就绪"}
+        h = str(payload.get("hash") or "").lower()
+        files = bool(payload.get("files"))
+        t = (p.load() or {}).get(h)
+        if not t:
+            return {"ok": False, "error": "任务不存在"}
+        ol, removed, errors = p.ol, [], []
+
+        def rm(path: str) -> None:
+            try:
+                if ol.get(path):
+                    d, n = path.rsplit("/", 1)
+                    ol.remove(d, [n])
+                    removed.append(path)
+            except Exception as err:  # noqa: BLE001
+                errors.append(f"{path[-60:]}：{err}")
+
+        def rm_if_empty(d: str, floor: str) -> None:
+            """d 里没有视频/strm 了就删 d，再往上删到 floor（不含）为止。"""
+            while d.startswith(floor + "/") and d.count("/") > floor.count("/"):
+                try:
+                    if not ol.get(d):
+                        break
+                    if any(x.lower().endswith(VIDEO_EXT + (".strm",)) for x, _ in ol.walk(d)):
+                        break
+                except Exception:  # noqa: BLE001
+                    break
+                rm(d)
+                d = d.rsplit("/", 1)[0]
+
+        try:
+            p.c115.task_del(h)
+        except Exception:  # noqa: BLE001
+            pass
+        if p.qb and (t.get("buffer") or t.get("status") == "buffer"):
+            try:
+                p.qb.post("/api/v2/torrents/delete", {"hashes": h, "deleteFiles": "true"})   # 缓冲的本地文件只是中转，总是删
+            except Exception as err:  # noqa: BLE001
+                errors.append(f"qB：{err}")
+        if files:
+            touched: List[str] = []
+            for rel in t.get("strm") or []:
+                stub = f"{p.lib_ol}/{rel}"
+                d, n = stub.rsplit("/", 1)
+                stem = n.rsplit(".", 1)[0]
+                try:
+                    remote = ol.remote_of_strm(stub) if ol.get(stub) else None
+                    if remote and remote.startswith(p.root + "/") and remote.count("/") >= p.root.count("/") + 2:
+                        rd, rn = remote.rsplit("/", 1)
+                        rstem = rn.rsplit(".", 1)[0]
+                        for i in ol.list(rd, refresh=True):
+                            if i["name"] == rn or i["name"].startswith(rstem + "."):
+                                rm(f"{rd}/{i['name']}")
+                        touched.append(rd)
+                    for i in ol.list(d, refresh=True):
+                        if i["name"] == n or i["name"].startswith(stem + "."):
+                            rm(f"{d}/{i['name']}")
+                    rm_if_empty(d, p.lib_ol + "/" + rel.split("/", 1)[0])
+                except Exception as err:  # noqa: BLE001
+                    errors.append(f"{stub[-60:]}：{err}")
+            name = t.get("name") or ""
+            if name and "/" not in name:
+                try:
+                    p.ol.refresh_path(t["dir"])
+                    p.ol.list(t["dir"], refresh=True)
+                except Exception:  # noqa: BLE001
+                    pass
+                rm(f"{t['dir']}/{name}")
+            a = self.p._adult
+            if a and (t.get("meta") or {}).get("kind") == "av":
+                av = a.get_data("av") or {}
+                for key, v in list((av.get("stubbed") or {}).items()):
+                    if v.get("hash") == h:
+                        r = a.av_cancel(key, True)
+                        removed += r.get("files") or []
+                for v in av.get("done") or []:
+                    tgt = v.get("target") or ""
+                    if v.get("hash") == h and tgt.startswith("/media/library/") and tgt.count("/") >= 5:
+                        rel_dir = tgt[len("/media/library/"):].rsplit("/", 1)[0]
+                        rm(f"{a.av_lib}/{rel_dir}")
+                        rm(f"{a.remote_av}/{rel_dir}")
+                        a.av_cancel(f"done:{v.get('code')}:{v.get('at')}")
+            root_floor = f"{p.root}/{t['dir'][len(p.root) + 1:].split('/', 1)[0]}"
+            busy = [x.get("dir") or "" for k, x in (p.load() or {}).items()
+                    if k != h and x.get("status") in ("downloading", "buffer", "uploaded")]
+            for d in sorted(set(touched + [t["dir"]]), key=len, reverse=True):
+                if not any(b == d or b.startswith(d + "/") for b in busy):   # 别的任务还在往这个目录下载：留着
+                    rm_if_empty(d, root_floor)
+            try:
+                lib_dirs = sorted({r.rsplit("/", 1)[0] for r in removed if r.startswith(p.lib_ol + "/")})
+                if lib_dirs:
+                    p.emby.updated([p.emby_path(d) for d in lib_dirs])
+            except Exception:  # noqa: BLE001
+                pass
+        with p._save_lock:
+            cur = p.load()
+            cur.pop(h, None)
+            p.save(cur)
+        if p._ev_load and p._ev_save:
+            with p._ev_lock:
+                ev = p._ev_load() or {}
+                if ev.pop(h, None) is not None:
+                    p._ev_save(ev)
+        self._c115_cache = (0.0, {})
+        p.log(f"删除任务 {h[:8]} {t.get('dir')}{'（连文件）' if files else ''}：删了 {len(removed)} 项" + (f"，{len(errors)} 项出错" if errors else ""))
+        return {"ok": not errors, "removed": removed, "errors": errors, **({"error": "；".join(errors)[:300]} if errors else {})}
 
     # ---------------- Emby 删除（连 115 原文件） ----------------
     def _lib_ol(self, emby_path: str) -> Optional[str]:

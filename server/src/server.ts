@@ -840,6 +840,13 @@ app.post<{ Params: { hash: string } }>("/v1/pipeline/:hash/cancel", async (req) 
   return plug("POST", "/cancel", { body: { hashes: [hash] }, timeoutMs: 60_000 });
 });
 
+// Delete one task (stops it if still downloading); files=true also removes its 115 files, strm and buffer.
+app.post<{ Params: { hash: string } }>("/v1/pipeline/:hash/delete", async (req) => {
+  const hash = z.string().regex(/^[0-9a-f]{40}$/).parse(req.params.hash);
+  const { files } = z.object({ files: z.boolean().default(false) }).parse(req.body ?? {});
+  return plug("POST", "/hub/task/delete", { body: { hash, files }, timeoutMs: 120_000 });
+});
+
 app.post("/v1/pipeline/run", async () => plug("POST", "/run"));
 
 // Drop ended task records from the 入库 list (active ones must be cancelled first).

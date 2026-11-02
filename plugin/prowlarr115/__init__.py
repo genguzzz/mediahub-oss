@@ -328,6 +328,19 @@ def _magnet(info_hash: str, name: str = "") -> str:
 _SPAM_TITLE = re.compile(r"https?://|www\.|[a-z0-9-]+\.(?:com|net|org|cc|top|xyz|vip|me|tv|club|info|co|io|app|site|online|live|fun|cn|hk|tw)\b", re.I)
 
 
+def _dur(sec: float) -> str:
+    sec = int(max(0, sec))
+    return f"{sec} 秒" if sec < 60 else f"{sec // 60} 分钟" if sec < 3600 else f"{sec // 3600} 小时 {sec % 3600 // 60} 分" if sec < 86400 else f"{sec // 86400} 天 {sec % 86400 // 3600} 小时"
+
+
+def _eps_text(eps: List[int]) -> str:
+    """[53] -> 第 53 集；[1..12] -> 第 1-12 集；[] -> 全部集。"""
+    if not eps:
+        return "全部集"
+    eps = sorted(eps)
+    return f"第 {eps[0]} 集" if len(eps) == 1 else f"第 {eps[0]}-{eps[-1]} 集" if eps[-1] - eps[0] == len(eps) - 1 else "第 " + "、".join(map(str, eps)) + " 集"
+
+
 def _work_title(media: Any) -> str:
     """The work's title for folders and messages; a vandalised (URL-carrying) title falls back to the original one."""
     t = (getattr(media, "title", None) or "").strip()
@@ -542,7 +555,7 @@ class Prowlarr115(_PluginBase):
                         cur["identity_warn"] = t2["identity_warn"]
                     p.mark(cur, "emby")
                 p.mutate(h, apply)
-                p.event(h, "emby", f"Emby 已刮削（提交后 {int(t2['emby'] - (t.get('added') or t2['emby']))} 秒）")
+                p.event(h, "emby", f"Emby 已刮削，距提交 {_dur(t2['emby'] - (t.get('added') or t2['emby']))}")
                 n += 1
         return n
 
@@ -559,19 +572,20 @@ class Prowlarr115(_PluginBase):
         sid, eps = meta.get("sub_id"), [int(e) for e in meta.get("episodes") or [] if str(e).isdigit()]
         if not sid:
             return
+        step = getattr(self._pipe._cur, "step", None) or "manual"     # 记在出错的那一步下面，不要落到「完成」
         try:
             from app.db.oper.subscribe import SubscribeOper
             oper = SubscribeOper()
             sub = oper.get(int(sid))
             if not sub:
-                self._pipe.event(h, "manual", f"订阅 {sid} 已结束，没法回滚已下载集；请在影库 App 里换资源", "warn")
+                self._pipe.event(h, step, f"订阅 {sid} 已结束，没法回滚已下载集，请手动换资源", "warn")
                 self._post("⚠️ " + (t.get("dir") or "").split("/")[-2 if "/Season " in (t.get("dir") or "") else -1],
                            f"{reason}，但对应订阅已结束：请在影库 App 任务详情里「换一个资源」")
                 return
             note = [e for e in (sub.note or []) if not eps or int(e) not in eps] if isinstance(sub.note, list) else sub.note
             prio = {k: v for k, v in (sub.episode_priority or {}).items() if not eps or int(k) not in eps}
             oper.update(int(sid), {"note": note, "episode_priority": prio})
-            self._pipe.event(h, "manual", f"已从订阅 {sub.name} 的已下载集里去掉 {eps or '全部'}，MP 下一轮会换资源")
+            self._pipe.event(h, step, f"已拉黑这个资源，并把{_eps_text(eps)}从订阅「{sub.name}」的已下载里去掉，MP 下一轮会重新找资源")
         except Exception as err:  # noqa: BLE001
             logger.warning(f"【Prowlarr115】回滚订阅 {sid} 失败：{err}")
 
@@ -1640,10 +1654,13 @@ class Prowlarr115(_PluginBase):
             t["status"] = "uploaded"
             for k in ("emby", "done", "identity_warn"):
                 t.pop(k, None)
-        for k in ("strm_errors", "empty_rounds", "warned"):   # 重试从头计数：上次用完的空轮次不能让这次一轮就判 no-video
+        for k in ("strm_errors", "empty_rounds", "warned", "fail_reason", "stalled"):   # 重试从头计数：上次用完的空轮次不能让这次一轮就判 no-video
             t.pop(k, None)
+        # 步骤时间点从重试的那一步往后清掉：留着旧的 offline 会让刚重交的 115 任务直接显示成「生成 strm 中」
+        redo = ("strm_start", "strm", "emby", "failed") + (("offline", "uploaded") if mode in ("offline", "buffer") else ())
+        t["ts"] = {k: v for k, v in (t.get("ts") or {}).items() if k not in redo}
         p.mutate(h, lambda cur: (cur.clear(), cur.update(t)))   # 整个替换：pop 掉的键（emby/done）也要删
-        p.event(h, "manual", f"手动重试（{ {'strm': '重新生成 strm', 'buffer': '改用 NAS 缓冲', 'offline': '重新提交 115 离线'}.get(mode, mode) }）")
+        p.event(h, "manual", f"手动{ {'strm': '重新生成 strm', 'buffer': '改用 NAS 缓冲', 'offline': '重新提交 115 离线'}.get(mode, mode) }")
         threading.Thread(target=self.track, name="prowlarr115-retry", daemon=True).start()
         return {"ok": True, "status": t.get("status"), "note": note}
 

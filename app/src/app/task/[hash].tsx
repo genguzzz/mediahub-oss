@@ -8,6 +8,8 @@ import { Card, CopyText, ErrorBox, Loading, PillButton, Poster, ProgressBar, Row
 import { api, img, pipelineQuery, type Candidate, type MediaBrief, type Step, type TaskEvent, type TaskFiles } from "@/lib/api";
 import { ago, bytes, clock, dur, eta, pct, speed } from "@/lib/format";
 import { useQuery } from "@/lib/query";
+import { taskDeleteActions, taskTitle } from "@/lib/tasks";
+import { ActionSheet } from "@/components/ActionSheet";
 import { colors } from "@/lib/theme";
 
 // 影视 / AV / 里番 share the steps; only the ingest and scrape steps differ.
@@ -18,7 +20,7 @@ const STEP_HINT_ADULT: Record<string, Record<string, string>> = {
 const STEP_HINT: Record<string, string> = {
   select: "怎么选中这个资源的：订阅自动 / 自动入库 / 手动 / 换资源，按选片规则的评分和理由（4K HEVC 优先，码率过高扣分，不要硬字幕）",
   submit: "磁力已交给插件，按 TMDb 识别结果算好 115 目录",
-  download: "115 离线下载，按 1 小时/GB 计时，超时判失败；提交失败或 115 离线失败时改用 NAS 缓冲",
+  download: "115 离线下载，按 1 小时/GB 计时；超时、提交失败或 115 离线失败时自动改用 NAS 缓冲（qB 下完逐个传到 115）",
   strm: "只处理本任务的种子目录（排除特典），生成 OpenList 签名直链 strm、拷外挂字幕、替换旧版本",
   scrape: "通知 Emby 扫描，确认条目有 TMDb ID 和海报；没中文字幕的动画会在后台从 sub_share 补字幕",
   finish: "Emby 已刮削，可以播放",
@@ -34,11 +36,14 @@ export default function TaskScreen() {
   const [open, setOpen] = useState<string | null>(null);
   const [retarget, setRetarget] = useState(false);
   const [reselect, setReselect] = useState(openReselect === "1");
+  const [deleting, setDeleting] = useState(false);
   const running = !!t && t.steps.some((s) => s.state === "active");
   const moving = !!t && (t.status === "downloading" || t.status === "buffer");
   // Download detail: 115 state or the NAS buffer's per-file progress; polled while moving.
   const files = useQuery(hash && t ? `task:files:${hash}` : null, () => api<TaskFiles>(`/v1/pipeline/${hash}/files`, { timeoutMs: 45_000 }), { interval: moving ? 15_000 : undefined, staleMs: 10_000 });
   const adultTask = !!t?.category && t.category !== "media";
+  // Files reached 115 (the download step finished), so regenerating strm makes sense.
+  const onCloud = !!t && ["done", "uploaded", "no-video", "strm-failed", "needs-id", "scrape-failed", "superseded"].includes(t.status);
   const canReselect = (!!t?.tmdbid || adultTask) && (moving || t?.failed || ["cancelled", "no-video", "dead", "too-big", "scrape-failed"].includes(t?.status ?? ""));
   // Event log: refetched with the task while something is still running.
   const ev = useQuery(hash ? `task:ev:${hash}` : null, () => api<{ events: TaskEvent[] }>(`/v1/pipeline/${hash}/events`), { interval: running ? 10_000 : undefined, staleMs: 5_000 });
@@ -84,8 +89,11 @@ export default function TaskScreen() {
       {!t && q.data ? <ErrorBox text="最近的任务里没有它（可能太早了）" /> : null}
       {t ? (
         <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 60 }}>
-          <Text style={styles.h2}>{t.title}{t.type === "tv" && t.season ? ` · 第 ${t.season} 季` : ""}</Text>
-          <Text style={[styles.body, { marginTop: 4, color: t.failed ? colors.danger : colors.primary, fontWeight: "600" }]}>{t.stage}</Text>
+          <Text style={styles.h2}>{taskTitle(t)}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 6 }}>
+            {t.source ? <Tag text={t.source} color={colors.textSoft} /> : null}
+            <Text style={[styles.body, { flex: 1, color: t.failed ? colors.danger : colors.primary, fontWeight: "600" }]}>{t.stage}</Text>
+          </View>
           {t.status === "downloading" || t.status === "buffer" ? (
             <View style={{ marginTop: 12, gap: 4 }}>
               <ProgressBar value={t.percent} height={8} />
@@ -102,7 +110,7 @@ export default function TaskScreen() {
               </View>
               <Text style={[styles.body, { color: colors.textSoft }]}>
                 {files.data?.note ? `${files.data.note.replace(/[。.]$/, "")}。` : "115 离线一直是 0%。"}
-                {t.failAt && t.status === "downloading" ? `${clock(t.failAt, now)} 前没下完将判失败。` : ""}
+                {t.bufferAt ? `${clock(t.bufferAt, now)} 前还没下完就自动改用 NAS 缓冲。` : ""}
               </Text>
             </Card>
           ) : null}
@@ -110,16 +118,16 @@ export default function TaskScreen() {
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
             {t.status === "downloading" ? <PillButton small variant={t.stalled ? "primary" : "soft"} icon="server-outline" label="改用 NAS 缓冲" loading={busy === "改用缓冲"} onPress={() => confirm("改用 NAS 缓冲", "用 NAS 上的 qBittorrent 下载，下完一个文件传一个到 115。", "改用缓冲", () => void retry("buffer", "改用缓冲"))} style={{ flexGrow: 1 }} /> : null}
             {canReselect ? <PillButton small variant="soft" icon="swap-horizontal" label="换一个资源" onPress={() => { tap(); setReselect(true); }} style={{ flexGrow: 1 }} /> : null}
-            {t.failed || t.status === "buffer" ? <PillButton small variant="soft" icon="cloud-upload-outline" label="重新提交 115 离线" loading={busy === "重新提交"} onPress={() => retry("offline", "重新提交")} style={{ flexGrow: 1 }} /> : null}
-            {t.tmdbid && !moving ? <PillButton small variant="soft" icon="albums-outline" label="在媒体库中查看" onPress={openInLibrary} style={{ flexGrow: 1 }} /> : null}
+            {["dead", "too-big", "buffer"].includes(t.status) ? <PillButton small variant="soft" icon="cloud-upload-outline" label="重新提交 115 离线" loading={busy === "重新提交"} onPress={() => retry("offline", "重新提交")} style={{ flexGrow: 1 }} /> : null}
+            {t.tmdbid && t.status === "done" ? <PillButton small variant="soft" icon="albums-outline" label="在媒体库中查看" onPress={openInLibrary} style={{ flexGrow: 1 }} /> : null}
             {["done", "uploaded", "superseded", "needs-id"].includes(t.status) ? <PillButton small variant="soft" icon="git-compare-outline" label="改为另一部作品" onPress={() => setRetarget(true)} style={{ flexGrow: 1 }} /> : null}
-            {!moving && !["cancelled", "superseded"].includes(t.status) ? <PillButton small variant="soft" icon="refresh" label="重新生成 strm" loading={busy === "重试入库"} onPress={() => retry("strm", "重试入库")} style={{ flexGrow: 1 }} /> : null}
-            {moving || t.status === "uploaded" ? <PillButton small variant="danger" icon="trash-outline" label="取消任务" loading={busy === "取消"} onPress={() => confirm("取消任务", "会删除 115 离线任务和已下到 115 的文件；缓冲中的连 qB 种子和本地文件一起删。已生成的 strm 不动。", "取消任务", () => void act("取消", () => api(`/v1/pipeline/${hash}/cancel`, { body: {} }), "已取消"), true)} style={{ flexGrow: 1 }} /> : null}
+            {onCloud ? <PillButton small variant="soft" icon="refresh" label="重新生成 strm" loading={busy === "重试入库"} onPress={() => retry("strm", "重试入库")} style={{ flexGrow: 1 }} /> : null}
+            <PillButton small variant="danger" icon="trash-outline" label="删除任务" onPress={() => { tap(); setDeleting(true); }} style={{ flexGrow: 1 }} />
           </View>
 
           <Summary steps={t.steps} now={now} />
 
-          <SectionTitle title="进度" right={<Text style={styles.faint}>点步骤看日志</Text>} />
+          <SectionTitle title="进度" right={<Text style={styles.faint}>点开看日志 · 长按复制</Text>} />
           <Card>
             {t.steps.map((s, i) => (
               <StepRow
@@ -183,6 +191,15 @@ export default function TaskScreen() {
           hash={t.hash}
           onClose={() => setReselect(false)}
           onDone={(next) => { setReselect(false); void q.refresh(); if (next) router.replace({ pathname: "/task/[hash]", params: { hash: next } }); }}
+        />
+      ) : null}
+      {t ? (
+        <ActionSheet
+          visible={deleting}
+          onClose={() => setDeleting(false)}
+          title="删除任务"
+          message={taskTitle(t)}
+          actions={taskDeleteActions(t, (msg) => { toast(msg); void q.refresh(); router.back(); })}
         />
       ) : null}
       {t ? (
@@ -308,7 +325,8 @@ const STEP_NAME: Record<string, string> = { select: "选片", submit: "提交", 
 function Summary({ steps, now }: { steps: Step[]; now: number }) {
   const first = steps[0]?.start;
   const fin = steps[steps.length - 1];
-  const end = fin?.state === "done" ? fin.end : null;
+  const bad = steps.find((s) => s.state === "error");
+  const end = fin?.state === "done" ? fin.end : bad ? (bad.end ?? bad.start) : null;
   if (!first) return null;
   const total = (end ?? now / 1000) - first;
   const spans = steps.filter((s) => ["download", "strm", "scrape"].includes(s.key)).map((s) => ({ s, d: s.start ? (s.end ?? (s.state === "active" ? now / 1000 : NaN)) - s.start : NaN })).filter((x) => Number.isFinite(x.d));
@@ -316,7 +334,7 @@ function Summary({ steps, now }: { steps: Step[]; now: number }) {
   return (
     <View style={{ flexDirection: "row", gap: 10, marginTop: 14 }}>
       <View style={{ flex: 1, padding: 12, borderRadius: 14, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border }}>
-        <Text style={styles.faint}>{end ? "总用时" : "已进行"}</Text>
+        <Text style={styles.faint}>{end ? (bad ? "失败前用时" : "总用时") : "已进行"}</Text>
         <Text style={{ fontSize: 20, fontWeight: "800", color: colors.text, marginTop: 2 }}>{dur(total)}</Text>
       </View>
       {slow ? (
@@ -346,9 +364,14 @@ function StepRow({ s, last, now, open, events, onPress, hint }: { s: Step; last:
   const d = s.start && span ? span - s.start : null;
   const instant = s.key === "select" || s.key === "submit" || s.key === "finish";
   const time = s.start ? (instant ? clock(s.start, now) : `${clock(s.start, now)}${s.end ? ` → ${clock(s.end, now)}` : " 起"}`) : "";
+  const copy = () => {
+    tap();
+    const text = [`${s.label}${time ? ` ${time}` : ""}`, ...(events.length ? events.map((e) => `${clock(e.at, now)} ${e.msg}`) : [s.last || hint])].join("\n");
+    void Clipboard.setStringAsync(text).then(() => toast(`已复制「${s.label}」的日志`, events.length ? `${events.length} 条` : undefined));
+  };
   return (
     <Animated.View layout={LinearTransition.duration(220)}>
-      <Pressable onPress={onPress} style={({ pressed }) => ({ flexDirection: "row", gap: 12, opacity: pressed ? 0.75 : 1 })}>
+      <Pressable onPress={onPress} onLongPress={copy} delayLongPress={350} style={({ pressed }) => ({ flexDirection: "row", gap: 12, opacity: pressed ? 0.75 : 1 })}>
         <View style={{ alignItems: "center" }}>
           <Ionicons name={icon} size={20} color={color} />
           {!last ? <View style={{ width: 2, flex: 1, minHeight: 18, backgroundColor: s.state === "done" ? colors.success : colors.border }} /> : null}

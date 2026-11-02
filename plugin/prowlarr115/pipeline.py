@@ -30,7 +30,7 @@ GB = 1 << 30
 
 
 def offline_limit(size: Any) -> int:
-    """115 离线最长等多久：每 GB 1 小时（至少 1 小时；大小未知按 1 小时）。超时直接判失败，不改缓冲、不重试。"""
+    """115 离线最长等多久：每 GB 1 小时（至少 1 小时；大小未知按 1 小时）。超时就删掉 115 任务，改用 NAS 缓冲。"""
     return int(max(1.0, float(size or 0) / GB) * 3600)
 
 
@@ -220,7 +220,9 @@ class Pipeline:
         self._notify_fn(title, text)
         h = getattr(self._cur, "h", None)
         if h:
-            self.event(h, getattr(self._cur, "step", ""), f"通知：{title} {text}", "notice")
+            last = (self.events(h) or [[0, "", "", ""]])[-1][3]
+            if text[:40] not in last:            # 刚记过同一句的事件就不再重复一条「已推送」
+                self.event(h, getattr(self._cur, "step", ""), f"已推送通知：{text}", "notice")
 
     class _Ctx:
         def __init__(self, cur, h, step):
@@ -240,6 +242,8 @@ class Pipeline:
     def failed(self, h: str, t: dict, status: str, reason: str) -> None:
         """资源本身不可用（太大 / 死种 / 没有可入库的视频）：置状态，交给插件拉黑并回滚订阅。"""
         t["status"] = status
+        t.setdefault("ts", {})["failed"] = now()
+        t["fail_reason"] = str(reason)[:200]
         if self.on_fail:
             try:
                 self.on_fail(h, t, reason)
@@ -729,8 +733,12 @@ class Pipeline:
             self._finish_one(t, h)
             if t.get("status") != before:
                 self.mark(t, "strm")
-                self.event(h, "strm", f"生成 strm 完成：{t.get('status')}，{len(t.get('strm') or [])} 个 strm",
-                           "info" if t.get("status") == "done" else "warn")
+                res = {"done": "完成", "scraping": "完成，交给 MDC 刮削", "superseded": "库里已有同一集的其他版本，没替换",
+                       "no-video": "没认出可入库的视频", "strm-failed": "连续出错，已停止重试", "needs-id": "等待指定作品"}
+                n = len(t.get("strm") or [])
+                self.event(h, "strm", ("写入 MDC 收件箱" if (t.get("meta") or {}).get("kind") == "av" else "生成 strm ")
+                           + res.get(t.get("status") or "", t.get("status") or "") + (f"，共 {n} 个" if n else ""),
+                           "info" if t.get("status") in ("done", "scraping") else "warn")
 
     def _finish_one(self, t: dict, h: str = "") -> None:
         """一个下载完成的任务：生成 strm、补字幕、通知 Emby、发通知。"""
@@ -766,6 +774,7 @@ class Pipeline:
             if n >= self.STRM_MAX_ERRORS:
                 # 不再每轮无限重试：标失败并通知，修好后在 App 或 mpctl retry 里重试
                 t["status"] = "strm-failed"
+                t.setdefault("ts", {})["failed"] = now()
                 self.notify("❌ " + label(t["dir"]), f"生成 strm 连续失败 {n} 次，已停止重试：{e}")
             return
         replaced, zero = getattr(self._tl, "replaced", 0), getattr(self._tl, "zero", [])
@@ -840,13 +849,15 @@ class Pipeline:
         limit = offline_limit(size)
         if age <= limit:
             return False
-        if info:
-            self.c115.task_del(h)
-        why = f"115 离线超过 {fmt_limit(limit)}（按 1 小时/GB）仍未完成" if info else f"115 里 {fmt_limit(limit)} 内一直找不到这个任务"
-        self.event(h, "offline", why + "，已判失败", "error")
-        self.notify("❌ " + label(t["dir"]), why)
-        t["done"] = now()
-        self.failed(h, t, "dead", why)
+        why = f"115 离线 {fmt_limit(limit)}没下完（{int(t.get('percent') or 0)}%）" if info else f"115 离线列表里 {fmt_limit(limit)}都找不到这个任务"
+        try:
+            if info:
+                self.c115.task_del(h)
+            self.buffer_start(h, t, why)             # 自己会记 buffer 事件和发通知
+        except Exception as e:  # noqa: BLE001 没配 qB 或添加失败：只能判失败
+            why = f"{why}，改用 NAS 缓冲也失败：{e}"
+            self.notify("❌ " + label(t["dir"]), why)
+            self.failed(h, t, "dead", why)
         return True
 
     def _advance_offline(self, h: str, t: dict, info: Optional[dict], age: int, ready: List[str]) -> None:
@@ -862,7 +873,7 @@ class Pipeline:
         t["percent"], t["name"] = info.get("percentDone"), info.get("name")
         new = int(t.get("percent") or 0)
         if new // 25 > old // 25 or (new and not old):
-            self.event(h, "offline", f"115 离线进度 {new}%（{info.get('name') or ''}）"[:200])
+            self.event(h, "offline", f"115 离线进度 {new}%" + (f"，共 {info['size'] / GB:.1f} GB" if info.get("size") and not old else ""))
         if info.get("status") == -1:
             self.c115.task_del(h)
             self.buffer_start(h, t, "115 离线失败")
@@ -878,7 +889,7 @@ class Pipeline:
         else:
             if "offline" not in (t.get("ts") or {}):
                 self.mark(t, "offline")
-                self.event(h, "offline", "115 离线下载完成")
+                self.event(h, "offline", "115 离线下载完成" + (f"：{info.get('name')}" if info.get("name") else ""))
             ready.append(h)
 
     round_started: Optional[float] = None     # a tracking round in progress (health reports one stuck > 15 min)

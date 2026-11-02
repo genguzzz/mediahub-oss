@@ -6,6 +6,7 @@ import { Card, Chip, ChipRow, EmptyState, ErrorBox, IconButton, Loading, Progres
 import { api, pipelineQuery, type AdultRow, type EmbyActivity, type Task } from "@/lib/api";
 import { ago, bytes, eta, pct, speed } from "@/lib/format";
 import { diffPipeline } from "@/lib/notify";
+import { taskDeleteActions, taskTitle } from "@/lib/tasks";
 import { mutate, useQuery } from "@/lib/query";
 import { track } from "@/lib/track";
 import { useSettings } from "@/lib/settings";
@@ -98,7 +99,7 @@ ${a.key}`, ok: "删除" }, run: cancel(true) });
     setSheet({ title: a.code, message: [a.stage, a.error, a.name !== a.code ? a.name : ""].filter(Boolean).join("\n"), actions });
   };
 
-  // Media tasks: cancel while moving, remove the record once ended.
+  // Media tasks: switch to the buffer, pick another release, delete (record only, or with its files).
   const taskActions = (t: Task) => {
     const active = ["downloading", "buffer", "uploaded"].includes(t.status) && !(t.status === "uploaded" && t.emby);
     const actions: SheetAction[] = [{ label: "查看详情", icon: "information-circle-outline", run: () => router.push({ pathname: "/task/[hash]", params: { hash: t.hash } }) }];
@@ -110,19 +111,11 @@ ${a.key}`, ok: "删除" }, run: cancel(true) });
       actions.push({ label: "换一个资源", icon: "swap-horizontal", note: "在任务详情里挑选",
         run: () => router.push({ pathname: "/task/[hash]", params: { hash: t.hash, reselect: "1" } }) });
     }
-    if (active) {
-      actions.push({ label: "取消任务", icon: "close-circle-outline", destructive: true,
-        confirm: { title: "取消任务", message: "会删除 115 离线任务和已下到 115 的文件；缓冲中的连 qB 种子和本地文件一起删。已生成的 strm 不动。", ok: "取消任务" },
-        run: async () => { await api(`/v1/pipeline/${t.hash}/cancel`, { body: {} }); done("已取消"); } });
-    } else {
-      actions.push({ label: "从列表移除", icon: "eye-off-outline", note: "只删这条任务记录，不动文件和媒体库",
-        run: async () => {
-          await api("/v1/pipeline/remove", { body: { hashes: [t.hash] } });
-          mutate<typeof q.data>("pipeline", (d) => (d ? { ...d, tasks: d.tasks.filter((x) => x.hash !== t.hash) } : d));
-          done("已移除");
-        } });
-    }
-    setSheet({ title: t.title, message: [t.stage, t.name || t.dir].filter(Boolean).join("\n"), actions });
+    actions.push(...taskDeleteActions(t, (msg) => {
+      mutate<typeof q.data>("pipeline", (d) => (d ? { ...d, tasks: d.tasks.filter((x) => x.hash !== t.hash) } : d));
+      done(msg);
+    }));
+    setSheet({ title: taskTitle(t), message: [t.stage, t.name || t.dir].filter(Boolean).join("\n"), actions });
   };
 
   const ended = (q.data?.tasks ?? []).filter((t) => t.status === "cancelled" || (t.status === "done" && (t.emby ?? 0) > 0));
@@ -191,7 +184,7 @@ function TaskCard({ t, now, onPress, onLongPress }: { t: Task; now: number; onPr
   return (
     <Card onPress={onPress} onLongPress={() => { tap(); onLongPress(); }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Text style={[styles.title, { flex: 1 }]} numberOfLines={1}>{t.title}{t.type === "tv" && t.season ? ` · 第 ${t.season} 季` : ""}</Text>
+        <Text style={[styles.title, { flex: 1 }]} numberOfLines={1}>{taskTitle(t)}</Text>
         <Tag text={t.category === "av" ? "AV" : t.category === "hentai" ? "里番" : "影视"} color={t.category && t.category !== "media" ? colors.warning : colors.primary} />
         <Text style={styles.faint}>{ago(t.added, now)}</Text>
       </View>

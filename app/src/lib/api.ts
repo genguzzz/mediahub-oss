@@ -273,7 +273,8 @@ export interface Task {
   peers?: number;
   buffer?: { reason: string; since: number; uploaded: number; uploading: string[] };
   stalled?: number | null;      // epoch s when the plugin flagged it (115 at 0% / missing for 30 min)
-  failAt?: number | null;       // deadline (1 h per GB): past it the plugin fails the task, no retry
+  bufferAt?: number | null;     // deadline (1 h per GB): past it the plugin drops the 115 task and switches to the NAS buffer
+  source?: string;              // what started it: 订阅更新 / 自动入库 / 手动入库 / 手动换资源 / RSS 追更 / 追更目录
   episodes?: number[];          // episodes this release was picked for (subscription numbering)
   subId?: number | null;
   category?: "media" | "av" | "hentai"; // which pipeline: 影视 (TMDb) / AV (MDC) / 里番 (Bangumi)
