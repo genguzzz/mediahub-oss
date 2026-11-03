@@ -27,6 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.domain.context import TorrentInfo
@@ -60,6 +61,7 @@ _PROWLARR_SEM = threading.BoundedSemaphore(4)   # NAS 只有 2GB：2026-10-11 �
 # 当前这次搜索的目标媒体和季号（由包装后的 SearchChain 入口设置），插件资源源调用里拿不到它们
 _TARGET: ContextVar = ContextVar("prowlarr115_target", default=None)
 _SEASONS: ContextVar = ContextVar("prowlarr115_seasons", default=None)
+_PROWLARR_ONE_SEM = threading.BoundedSemaphore(12)   # 单索引器查询（App 渐进搜索按索引器扇出）很轻，限流放宽
 # 同一轮搜索（MP v3.1.2+ 的 SearchSources：网页渐进式搜索、自动订阅）会按每个别名各调一次插件；
 # 插件第一次就用全部关键词搜完，同一轮后面的调用返回空，避免重复结果和重复请求 Prowlarr
 _ROUND: ContextVar = ContextVar("prowlarr115_round", default=None)
@@ -949,9 +951,13 @@ class Prowlarr115(_PluginBase):
 
     def _search_target(self, keyword: str, mtype: Optional[MediaType], target: Any) -> List[TorrentInfo]:
         """已知搜索目标时：用中文名、原名、英文名和拉丁字母别名各搜一次，并给确认是这部作品的结果声明 IMDb 身份。
-
         MP 只拿中文名调一次插件；Nyaa 等站的发布大多只写英文/罗马音名，既搜不到也会被 MP 判为身份不匹配。
-        """
+        App 的渐进搜索（hub.search_stream）复用 plan / filter，按「关键词 × 索引器」自己扇出。"""
+        plan = self._target_plan(keyword, target, sorted(int(x) for x in (_SEASONS.get() or {getattr(target, "season", None)}) if x))
+        return self._target_filter(plan, self._target_fetch(plan, mtype))
+
+    def _target_plan(self, keyword: str, target: Any, seasons: List[int]) -> SimpleNamespace:
+        """搜一部作品要用的关键词和认身份的依据（只算一次）。direct 非空 = 番剧走直连源 (jp_latin, zh)。"""
         twin = self._tmdb_twin(target) if getattr(target, "type", None) == MediaType.TV else None
         names = [n for n in [target.title, getattr(target, "original_title", None), getattr(target, "en_title", None)]
                  + list(getattr(target, "names", None) or []) if n]
@@ -960,14 +966,11 @@ class Prowlarr115(_PluginBase):
             names += [n for n in [twin.title, twin.original_title, twin.en_title] + list(twin.names or []) if n]
         names = list(dict.fromkeys(names + [b for b in (_base_name(n) for n in names) if b]))
         latin = [n for n in names if re.fullmatch(r"[\x20-\x7e]+", n) and len(_norm(n)) >= 4]
-        seasons = sorted(int(x) for x in (_SEASONS.get() or {getattr(target, "season", None)}) if x)
         ctx = query_context(keyword, target, seasons)
         queries = render_queries(self._conf.get("query_templates") or DEFAULT_QUERY_TEMPLATES, ctx,
                                  int(self._conf.get("max_queries") or 9))
-        anime = getattr(target, "type", None) == MediaType.TV and (
-            ANIMATION_GENRE in (getattr(target, "genre_ids", None) or []) or bool(getattr(target, "bangumi_id", None))
-            or (twin is not None and ANIMATION_GENRE in (twin.genre_ids or [])))
-        if anime and self._conf.get("anime_direct", True):
+        direct = None
+        if self._anime_direct(target, twin):
             # 番剧：直连 Nyaa（按做种数 2 页 + 最新 1 页，名字用 | 合并）+ Mikan，一次覆盖所有季，1–2 秒。
             # 用去掉季标记的作品名搜（季由 MP 按标题过滤）
             jp_latin = [n for n in [getattr(target, "original_title", None), ctx.get("en_title")] + ctx["latin_names"]
@@ -975,16 +978,12 @@ class Prowlarr115(_PluginBase):
                         + ([twin.original_title, twin.en_title] if twin is not None else []) if n]
             jp_latin = list(dict.fromkeys(b for b in (_base_name(n) for n in jp_latin) if b))
             zh = list(dict.fromkeys(b for b in (_base_name(n) for n in [target.title, ctx.get("short_title")] if n) if b))
-            batches = [self._search_anime(jp_latin, zh)]
+            direct = (jp_latin, zh)
             queries = [f"[直连] {' | '.join(dict.fromkeys(jp_latin + zh))}"]
-        else:
-            with ThreadPoolExecutor(max_workers=4) as pool:  # Prowlarr 每个查询会扇出到全部索引器，别开太多
-                batches = list(pool.map(lambda q: self._search(q, mtype), queries))
-        out, seen = [], set()
+        tv = getattr(target, "type", None) == MediaType.TV
         # 剧集可以用英文名冒号前的短名（「Mushoku Tensei: Jobless Reincarnation」->「Mushoku Tensei」）；
         # 电影不行：「Evangelion」「Demon Slayer」这种系列名会把同系列的其他电影/TV 合集都认成这一部
-        heads = [re.split(r"\s*[:：]\s*", n)[0] for n in latin] if getattr(target, "type", None) == MediaType.TV else []
-        keys = {k for k in (_norm(n) for n in names + heads) if len(k) >= 2 and (len(k) >= 4 or not k.isascii())}
+        heads = [re.split(r"\s*[:：]\s*", n)[0] for n in latin] if tv else []
         imdb = getattr(target, "imdb_id", None) or (twin.imdb_id if twin is not None else None)
         if imdb and not getattr(target, "imdb_id", None):
             try:
@@ -1000,8 +999,23 @@ class Prowlarr115(_PluginBase):
         start = str(getattr(target, "release_date", "") or "")[:10] if getattr(target, "bangumi_id", None) else ""
         cut = (datetime.strptime(start, "%Y-%m-%d") - timedelta(days=3)).strftime("%Y-%m-%d") \
             if re.fullmatch(r"\d{4}-\d{2}-\d{2}", start) else ""
+        return SimpleNamespace(
+            target=target, twin=twin, names=names, seasons=seasons, queries=queries, direct=direct, tv=tv,
+            keys={k for k in (_norm(n) for n in names + heads) if len(k) >= 2 and (len(k) >= 4 or not k.isascii())},
+            imdb=imdb, year=year, abs_off=abs_off, abs_len=abs_len, start=start, cut=cut,
+            merged=_merged_season(target) if tv else None)
+
+    def _target_fetch(self, plan: SimpleNamespace, mtype: Optional[MediaType]) -> List[List[TorrentInfo]]:
+        if plan.direct:
+            return [self._search_anime(*plan.direct)]
+        with ThreadPoolExecutor(max_workers=4) as pool:  # Prowlarr 每个查询会扇出到全部索引器，别开太多
+            return list(pool.map(lambda q: self._search(q, mtype), plan.queries))
+
+    def _target_filter(self, plan: SimpleNamespace, batches: List[List[TorrentInfo]], log: bool = True) -> List[TorrentInfo]:
+        """去重、策略排除、本季开播前的、年份不对的去掉，绝对集号换算，确认是这部作品的声明 IMDb 身份。"""
+        target, seasons, start, abs_off = plan.target, plan.seasons, plan.start, plan.abs_off
+        out, seen = [], set()
         declared = relabeled = early = wrong_year = 0
-        merged = _merged_season(target) if getattr(target, "type", None) == MediaType.TV else None
         if len(_MERGED_ENCL) > 5000:
             _MERGED_ENCL.clear()
         pol, vetoed, bl = self._policy(), {}, self._blacklist()
@@ -1015,39 +1029,46 @@ class Prowlarr115(_PluginBase):
                 key = bad.split("：")[0]
                 vetoed[key] = vetoed.get(key, 0) + 1
                 continue
-            if cut and str(t.pubdate or "")[:10] and str(t.pubdate)[:10] < cut:
+            if plan.cut and str(t.pubdate or "")[:10] and str(t.pubdate)[:10] < plan.cut:
                 early += 1
                 continue
             if abs_off and len(seasons) == 1:
                 se = ep_of(t.title)
                 # 绝对集号的判断：超出本季集数，或超出发布时本季最多能播到的集数（开播后每周一集，+2 容首播连播）。
                 # 「杀手旅店 第二季」Bangumi 写 15 集，「2nd Season - 14」没超出集数，但开播才一周不可能有第 14 集
-                cap = abs_len
+                cap = plan.abs_len
                 if start and str(t.pubdate or "")[:10] >= start:
                     weeks = (datetime.strptime(str(t.pubdate)[:10], "%Y-%m-%d") - datetime.strptime(start, "%Y-%m-%d")).days // 7
-                    cap = min(abs_len, weeks + 2)
-                if se and se[0] in (None, seasons[0]) and se[1] > cap and 1 <= se[1] - abs_off <= abs_len:
+                    cap = min(plan.abs_len, weeks + 2)
+                if se and se[0] in (None, seasons[0]) and se[1] > cap and 1 <= se[1] - abs_off <= plan.abs_len:
                     t.title = _relabel_abs(t.title, se[1], se[1] - abs_off, seasons[0])
                     relabeled += 1
-            if getattr(target, "type", None) == MediaType.MOVIE and year_conflict(t.title, year, names):
+            if getattr(target, "type", None) == MediaType.MOVIE and year_conflict(t.title, plan.year, plan.names):
                 wrong_year += 1
                 continue                   # 另一年的那一部（年度演唱会、重制版），交给 MP 也会被当成这一部下载
-            if imdb and self._name_ok(t.title, keys) and self._year_ok(t.title, year, getattr(target, "type", None)):
-                t.media_source, t.media_id = "imdb", str(imdb)   # MP 会按 IMDb 身份直接认可
+            if plan.imdb and self._name_ok(t.title, plan.keys) and self._year_ok(t.title, plan.year, getattr(target, "type", None)):
+                t.media_source, t.media_id = "imdb", str(plan.imdb)   # MP 会按 IMDb 身份直接认可
                 declared += 1
-                if merged is not None:
-                    _MERGED_ENCL[t.enclosure] = merged
+                if plan.merged is not None:
+                    _MERGED_ENCL[t.enclosure] = plan.merged
             out.append(t)
         out, heavy = self._drop_heavy(out, target, pol)
-        logger.info(f"【Prowlarr115】{target.title}：{len(queries)} 个关键词 {queries} 共 {len(out)} 条，"
-                    f"{declared} 条按 IMDb {imdb} 声明身份" + (f"，{relabeled} 条绝对集号按偏移 {abs_off} 换算" if relabeled else "")
-                    + (f"，{early} 条早于本季开播（{start}）丢弃" if early else "")
-                    + (f"，{wrong_year} 条年份对不上丢弃" if wrong_year else "")
-                    + ("，策略排除 " + "、".join(f"{k} {v}" for k, v in vetoed.items()) if vetoed else "")
-                    + (f"，{heavy} 条码率过高（同集有更合适的版本）去掉" if heavy else "")
-
-                    + (f"（TMDb 对应 {twin.tmdb_id}）" if twin is not None else ""))
+        if log:
+            logger.info(f"【Prowlarr115】{target.title}：{len(plan.queries)} 个关键词 {plan.queries} 共 {len(out)} 条，"
+                        f"{declared} 条按 IMDb {plan.imdb} 声明身份" + (f"，{relabeled} 条绝对集号按偏移 {abs_off} 换算" if relabeled else "")
+                        + (f"，{early} 条早于本季开播（{start}）丢弃" if early else "")
+                        + (f"，{wrong_year} 条年份对不上丢弃" if wrong_year else "")
+                        + ("，策略排除 " + "、".join(f"{k} {v}" for k, v in vetoed.items()) if vetoed else "")
+                        + (f"，{heavy} 条码率过高（同集有更合适的版本）去掉" if heavy else "")
+                        + (f"（TMDb 对应 {plan.twin.tmdb_id}）" if plan.twin is not None else ""))
         return out
+
+    def _anime_direct(self, target: Any, twin: Any = None) -> bool:
+        """番剧走直连源（Nyaa + Mikan），不经 Prowlarr。"""
+        anime = getattr(target, "type", None) == MediaType.TV and (
+            ANIMATION_GENRE in (getattr(target, "genre_ids", None) or []) or bool(getattr(target, "bangumi_id", None))
+            or (twin is not None and ANIMATION_GENRE in (twin.genre_ids or [])))
+        return bool(anime and self._conf.get("anime_direct", True))
 
     @staticmethod
     def _drop_heavy(items: List[TorrentInfo], target: Any, pol: dict) -> Tuple[List[TorrentInfo], int]:
@@ -1184,14 +1205,14 @@ class Prowlarr115(_PluginBase):
     _cache: Dict[str, tuple] = {}
     CACHE_TTL = 1200
 
-    def _search(self, keyword: str, mtype: Optional[MediaType]) -> List[TorrentInfo]:
+    def _search(self, keyword: str, mtype: Optional[MediaType], indexers: Optional[List[int]] = None) -> List[TorrentInfo]:
         """带缓存的 Prowlarr 查询：同一关键词 20 分钟内复用（订阅定时搜索、批量入库会反复查同一部，Prowlarr 在 2G 内存的 NAS 上）。"""
         import copy
-        key = f"{mtype.value if mtype else ''}|{keyword}"
+        key = f"{mtype.value if mtype else ''}|{keyword}|{','.join(map(str, indexers or []))}"
         hit = self._cache.get(key)
         if hit and time.time() - hit[0] < self.CACHE_TTL:
             return copy.deepcopy(hit[1])
-        res = self._search_raw(keyword, mtype)
+        res = self._search_raw(keyword, mtype, indexers)
         if len(self._cache) > 300:
             self._cache.clear()
         self._cache[key] = (time.time(), res)
@@ -1223,18 +1244,29 @@ class Prowlarr115(_PluginBase):
         self._cache[key] = (time.time(), out)
         return copy.deepcopy(out)
 
-    def _search_raw(self, keyword: str, mtype: Optional[MediaType]) -> List[TorrentInfo]:
-        """调用 Prowlarr /api/v1/search 并映射成 TorrentInfo。"""
-        params: List[Tuple[str, Any]] = [("query", keyword), ("type", "search"), ("limit", self._max_results)]
-        params += [("indexerIds", i) for i in self._indexers]
-        with _PROWLARR_SEM:   # 全局限流：批量入库多线程 × 每季多关键词，别把 NAS 上的 Prowlarr 压垮
+    def _search_raw(self, keyword: str, mtype: Optional[MediaType], indexers: Optional[List[int]] = None) -> List[TorrentInfo]:
+        return self._prowlarr_page(keyword, mtype, indexers)[0]
+
+    def _prowlarr_page(self, keyword: str, mtype: Optional[MediaType], indexers: Optional[List[int]] = None,
+                       offset: int = 0, limit: Optional[int] = None) -> Tuple[List[TorrentInfo], int]:
+        """调用 Prowlarr /api/v1/search 并映射成 TorrentInfo；返回 (可用结果, Prowlarr 原始条数)。原始条数为 0 = 这一页没东西了。
+        offset/limit 是 Prowlarr 的分页（渐进搜索按索引器翻页）；单索引器查询不打日志（一次搜索有几十个）。"""
+        single = bool(indexers and len(indexers) == 1)
+        params: List[Tuple[str, Any]] = [("query", keyword), ("type", "search"), ("limit", limit or self._max_results)]
+        if offset:
+            params.append(("offset", offset))
+        params += [("indexerIds", i) for i in (indexers or self._indexers)]
+        with (_PROWLARR_ONE_SEM if single else _PROWLARR_SEM):   # 全局限流：批量入库多线程 × 每季多关键词，别把 NAS 上的 Prowlarr 压垮
             res = RequestUtils(headers={"X-Api-Key": self._prowlarr_key}, timeout=self._timeout).get_res(
                 f"{self._prowlarr_url}/api/v1/search", params=params)
         if res is None or res.status_code != 200:
+            if single:
+                raise RuntimeError(f"Prowlarr 返回 {getattr(res, 'status_code', '无响应')}")
             logger.warning(f"【Prowlarr115】Prowlarr 返回 {getattr(res, 'status_code', '无响应')}")
-            return []
+            return [], 0
+        rows = res.json() or []
         out, skipped = [], 0
-        for r in res.json() or []:
+        for r in rows:
             if r.get("protocol") not in (None, "torrent"):
                 continue
             if r.get("indexerId") in self._exclude_indexers:
@@ -1278,9 +1310,10 @@ class Prowlarr115(_PluginBase):
                 uploadvolumefactor=1.0,
                 category=mtype.value if mtype else None,
             ))
-        logger.info(f"【Prowlarr115】{keyword}：Prowlarr 返回 {len(out)} 条可用资源"
-                    + (f"，跳过 {skipped} 条无 hash 的" if skipped else ""))
-        return out
+        if not single:
+            logger.info(f"【Prowlarr115】{keyword}：Prowlarr 返回 {len(out)} 条可用资源"
+                        + (f"，跳过 {skipped} 条无 hash 的" if skipped else ""))
+        return out, len(rows)
 
     # ---------------- 下载 ----------------
     @eventmanager.register(ChainEventType.ResourceDownload)

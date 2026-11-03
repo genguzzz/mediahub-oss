@@ -9,6 +9,7 @@ import { useConfig } from "@/lib/remoteConfig";
 import { LANG_LABEL, api, type IngestResult, type MediaDetail, type Resource, type SearchName, type SearchResult, type Source } from "@/lib/api";
 import { ago, bytes, ranges } from "@/lib/format";
 import { useQuery } from "@/lib/query";
+import { useSmartStream } from "@/lib/searchStream";
 import { useSettings } from "@/lib/settings";
 import { colors } from "@/lib/theme";
 
@@ -44,9 +45,9 @@ export default function ResourcesScreen() {
     ? { tmdbid, type, season }
     : { tmdbid: mode === "raw" ? tmdbid : undefined, type, season: mode === "raw" ? season : undefined, keyword, keywords, sources: picked };
   const key = `res:${JSON.stringify(body)}`;
-  // Smart search is one MoviePilot call. Source searches go out one request per source (「全部已启用索引器」 =
-  // one per enabled Prowlarr indexer) and fill the list as each answers, instead of waiting for the slowest.
-  const smartQ = useQuery(mode === "smart" && !waiting ? key : null, () => api<SearchResult>("/v1/search", { body, timeoutMs: 160_000 }), { staleMs: 15 * 60_000 });
+  // Smart search streams over SSE (keyword × indexer, sorted as each answers, next page on scroll). Source searches
+  // go out one request per source (「全部已启用索引器」 = one per enabled Prowlarr indexer) and fill the list as each answers.
+  const smart = useSmartStream(mode === "smart" && !waiting ? key : null, { tmdbid, type, season });
   const allSources = useQuery(mode !== "smart" ? "sources" : null, () => api<{ sources: Source[] }>("/v1/sources"), { staleMs: 60_000 });
   // The requests actually sent: 「全部已启用索引器」 expands to each enabled indexer. Sources that are switched off
   // or gone drop out quietly (a saved default can still name them); indexers Prowlarr has paused after failures
@@ -65,7 +66,7 @@ export default function ResourcesScreen() {
     return { expanded: live.filter((x) => !paused(x)), skipped: live.filter(paused).map((x) => byId.get(x)?.name ?? x) };
   }, [mode, picked, allSources.data, now]);
   const streamQ = useStreamSearch(mode !== "smart" && !waiting ? key : null, body, expanded);
-  const q = mode === "smart" ? { ...smartQ, progress: null as null | { done: number; total: number } } : streamQ;
+  const q = mode === "smart" ? smart : streamQ;
   const [kwText, setKwText] = useState<string | null>(null);
   const editKeyword = () => {
     const v = (kwText ?? "").trim();
@@ -175,12 +176,16 @@ export default function ResourcesScreen() {
           <>
             {q.error ? <ErrorBox text={q.error} onRetry={q.refresh} /> : null}
             {q.data?.error ? <ErrorBox text={`部分来源出错：${q.data.error}`} /> : null}
-            {q.loading && !q.data ? <Loading text={mode === "smart" ? "MoviePilot 正在按多个关键词搜索，通常 10–40 秒" : q.progress ? `正在搜索 ${q.progress.total} 个来源，先返回的先显示` : "正在搜索所选来源"} /> : null}
+            {q.loading && !q.data ? <Loading text={q.progress ? `正在搜索 ${q.progress.total} 个来源，先返回的先显示（${q.progress.done}/${q.progress.total}）` : mode === "smart" ? "正在准备关键词和来源" : "正在搜索所选来源"} /> : null}
             {q.data ? (
-              <Text style={[styles.faint, { marginBottom: 4 }]}>
-                {q.data.mode === "smart" ? "智能搜索" : "按来源"} · {q.data.results.length} 条，显示 {list.length} 条 · {q.data.elapsed} 秒
-                {q.data.library && type === "tv" ? ` · 库里本季已有 ${q.data.library.have.length}/${q.data.library.aired.length} 集` : ""}
-              </Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <Text style={[styles.faint, { flex: 1 }]}>
+                  {q.data.mode === "smart" ? "智能搜索" : "按来源"} · {q.data.results.length} 条，显示 {list.length} 条 · {q.data.elapsed} 秒
+                  {q.progress && q.progress.done < q.progress.total ? ` · ${q.progress.done}/${q.progress.total} 个来源已返回` : ""}
+                  {q.data.library && type === "tv" ? ` · 库里本季已有 ${q.data.library.have.length}/${q.data.library.aired.length} 集` : ""}
+                </Text>
+                {mode === "smart" && smart.busy && smart.open ? <PillButton small variant="soft" icon="stop-circle-outline" label="停止" onPress={smart.stop} /> : null}
+              </View>
             ) : null}
           </>
         }
@@ -192,6 +197,13 @@ export default function ResourcesScreen() {
           )
         ) : undefined}
         renderItem={({ item }) => <ResourceRow r={item} submitted={!!submitted[item.id]} onPress={() => setOpen(item)} />}
+        onEndReached={mode === "smart" ? smart.more : undefined}
+        onEndReachedThreshold={0.6}
+        ListFooterComponent={mode === "smart" && smart.data ? (
+          <Text style={[styles.faint, { textAlign: "center", paddingVertical: 12 }]}>
+            {smart.loadingMore ? "正在取下一页…" : smart.hasMore ? "继续上滑加载更多" : smart.open || smart.data.results.length ? "各来源都没有更多了" : ""}
+          </Text>
+        ) : undefined}
       />
 
       <ResourceSheet

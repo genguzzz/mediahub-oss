@@ -159,6 +159,10 @@ class Hub:
             ("/hub/prowlarr/health", self.prowlarr_health, "GET", "Prowlarr 版本、健康提示、每个索引器的状态（暂停到何时、最近失败）"),
             ("/hub/prowlarr/test", self.prowlarr_test, "POST", "测试一个索引器能不能用：{id}；返回失败原因"),
             ("/hub/search", self.search, "POST", "资源搜索：{tmdbid,type,season} 智能（MP 识别+过滤）或 {keyword,sources} 指定来源"),
+            ("/hub/search/stream", self.search_stream, "POST", "开始/加入渐进智能搜索：{tmdbid,type,season,force} → {job}；按关键词×索引器扇出，先回来的先进结果"),
+            ("/hub/search/poll", self.search_poll, "GET", "渐进搜索的当前有序结果：?job=&v=&wait=（wait 秒内阻塞到有变化；v 没变只回状态）"),
+            ("/hub/search/more", self.search_more, "POST", "渐进搜索下一页：{job}；只给上一页成功且还有新结果的来源翻页"),
+            ("/hub/search/cancel", self.search_cancel, "POST", "渐进搜索的一个观看者离开：{job}；都走了就停"),
             ("/hub/library", self.library, "POST", "批量查是否已入库：{items:[{tmdbid,type}]}"),
             ("/hub/library/item", self.library_item, "GET", "某作品在 Emby 里的条目和已有集：tmdbid,type"),
             ("/hub/tmdb/person", self.tmdb_person, "GET", "TMDb 人物：资料 + 全部作品（演员和幕后，带角色/职务，新的在前）：id"),
@@ -352,22 +356,260 @@ class Hub:
                 pass
         elif media:
             have = {1} if self.p._pipe and self.p._pipe.emby.folder_by_tmdb(media.tmdb_id, True, ["电影"]) else set()
+        self._rank(items, kind, media, season, aired, have)
+        return {"ok": True, "elapsed": round(time.time() - t0, 1), "mode": "raw" if (sources or not media) else "smart",
+                "keyword": keyword, "keywords": keywords, "season": season, "error": err,
+                "media": self._media_brief(media) if media else None,
+                "library": {"have": sorted(have), "aired": aired} if media else None, **self._facets(items), "results": items}
+
+    def _rank(self, items: List[dict], kind: str, media: Any, season: Optional[int], aired: List[int], have: set) -> None:
+        """打分、标出库里已有几集、排序（排除的沉底，其余按分数、做种数）。就地修改。"""
         self._score(items, kind, media, season, aired)
         for it in items:
             it["have"] = len(set(it["episodes"]) & have) if kind == "tv" else (1 if have else 0)
         items.sort(key=lambda x: (x["excluded"] is not None, -(x["score"] or 0), -x["seeders"]))
+
+    @staticmethod
+    def _facets(items: List[dict]) -> Dict[str, list]:
+        """App 筛选用的字幕组 / 来源计数。"""
         groups: Dict[str, int] = {}
         srcs: Dict[str, int] = {}
         for it in items:
             if it["group"]:
                 groups[it["group"]] = groups.get(it["group"], 0) + 1
             srcs[it["source"]] = srcs.get(it["source"], 0) + 1
-        return {"ok": True, "elapsed": round(time.time() - t0, 1), "mode": "raw" if (sources or not media) else "smart",
-                "keyword": keyword, "keywords": keywords, "season": season, "error": err,
-                "media": self._media_brief(media) if media else None,
-                "library": {"have": sorted(have), "aired": aired} if media else None,
-                "groups": sorted(groups.items(), key=lambda kv: -kv[1]), "sources": sorted(srcs.items(), key=lambda kv: -kv[1]),
-                "results": items}
+        return {"groups": sorted(groups.items(), key=lambda kv: -kv[1]), "sources": sorted(srcs.items(), key=lambda kv: -kv[1])}
+
+    # ---------------- 渐进搜索（智能模式）----------------
+    # 结果和 search 的智能模式一致（插件多关键词 + 身份声明 + MP 过滤规则/身份匹配 + 选片打分），但每个「关键词 × 索引器」
+    # 是一个独立来源、有自己的分页：第一轮每个来源取第 1 页（第一个关键词先发给所有索引器），回来一个就过滤、匹配、打分、
+    # 并进有序结果；App 滑到底调 search_more，只给上一页成功且还有新结果的来源取下一页，失败或取空的不再请求。
+    # 同一作品同一季共用一个任务：进行中的直接加入，搜完 10 分钟内复用（force 重搜）；每个观看者离开时 search_cancel，
+    # 都走了就停。search_poll 带 wait 时阻塞到有新版本（后端据此推 SSE）。每轮超过 ROUND_DEADLINE 还没回来的来源记为超时。
+    _jobs: Dict[str, dict] = {}
+    _jobs_lock = threading.Lock()
+    ROUND_DEADLINE = 45
+    STREAM_REUSE = 600
+    STREAM_WORKERS = 12
+    PAGE_SIZE = 100
+    ANIME_DEFS = ("mikan", "nekobt", "acgrip", "bangumi-moe", "anibt")   # 只有番剧的索引器（Prowlarr definitionName），非番剧不搜
+
+    def search_stream(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        """开始（或加入）一次渐进智能搜索：{tmdbid, type, season, force} → {job, reused}。"""
+        try:
+            tmdbid = int(payload.get("tmdbid") or 0)
+        except (TypeError, ValueError):
+            tmdbid = 0
+        if not tmdbid:
+            return {"ok": False, "error": "缺少 tmdbid"}
+        kind = "movie" if payload.get("type") == "movie" else "tv"
+        season = int(payload["season"]) if kind == "tv" and payload.get("season") not in (None, "") else None
+        key = f"{kind}:{tmdbid}:{season}"
+        now = time.time()
+        with self._jobs_lock:
+            for k, j in list(self._jobs.items()):
+                if not j["busy"] and j["listeners"] == 0 and now - j["touched"] > self.STREAM_REUSE:
+                    self._jobs.pop(k, None)
+            j = self._jobs.get(key)
+            if j and not j["cancel"].is_set() and (j["busy"] or not payload.get("force")):
+                j["listeners"] += 1
+                j["touched"] = now
+                return {"ok": True, "job": key, "reused": True}
+            j = {"key": key, "tmdbid": tmdbid, "kind": kind, "season": season, "t0": now, "touched": now, "v": 0,
+                 "rv": 0, "busy": True, "round": 0, "listeners": 1, "cancel": threading.Event(), "cond": threading.Condition(),
+                 "lock": threading.Lock(), "media": None, "plan": None, "error": None, "items": [], "seen": set(),
+                 "raw_seen": set(), "pairs": {}, "have": set(), "aired": []}
+            self._jobs[key] = j
+        threading.Thread(target=self._stream_start, args=(j,), name="p115-stream", daemon=True).start()
+        return {"ok": True, "job": key, "reused": False}
+
+    def search_more(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        """下一页：{job}。只给上一页成功且还有新结果的来源取下一页；正在取的时候不重复发。"""
+        j = self._jobs.get(str(payload.get("job") or ""))
+        if not j or j["cancel"].is_set():
+            return {"ok": False, "error": "搜索已过期，请重新搜索"}
+        with self._jobs_lock:
+            if j["busy"]:
+                return {"ok": True, "started": 0, "busy": True}
+            todo = [pid for pid, x in j["pairs"].items() if x["state"] == "more"]
+            if not todo:
+                return {"ok": True, "started": 0, "busy": False}
+            j["busy"] = True
+            j["touched"] = time.time()
+        threading.Thread(target=self._stream_round, args=(j, todo), name="p115-stream", daemon=True).start()
+        return {"ok": True, "started": len(todo), "busy": True}
+
+    def search_cancel(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        """一个观看者离开：{job}。没人看了且还在取就停掉（排队的取消，在途的回来后丢弃）。"""
+        j = self._jobs.get(str(payload.get("job") or ""))
+        if not j:
+            return {"ok": True, "stopped": False}
+        with self._jobs_lock:
+            j["listeners"] = max(0, j["listeners"] - 1)
+            j["touched"] = time.time()
+            stop = j["listeners"] == 0 and j["busy"]
+        if stop:
+            j["cancel"].set()
+            self._bump(j)
+        return {"ok": True, "stopped": stop}
+
+    @staticmethod
+    def _bump(j: dict) -> None:
+        with j["cond"]:
+            j["v"] += 1
+            j["cond"].notify_all()
+
+    def _stream_indexers(self, media: Any) -> List[tuple]:
+        """要搜的索引器 [(id, 名字)]：可用的、分类对得上（剧集要 TV/其他，电影要 Movies/其他），去掉只有番剧的站。"""
+        ids, _ = self._usable_indexers(None)
+        _, ix = self._pw("GET", "/indexer", timeout=15)
+        want = {5000, 8000} if media.type.value == "电视剧" else {2000, 8000}
+        out = []
+        for i in ix or []:
+            if not isinstance(i, dict) or i.get("id") not in ids:
+                continue
+            cats = {c.get("id", 0) // 1000 * 1000 for c in (i.get("capabilities") or {}).get("categories") or [] if c.get("id", 0) < 100000}
+            if (cats and not cats & want) or str(i.get("definitionName") or "").lower() in self.ANIME_DEFS:
+                continue
+            out.append((i["id"], i.get("name") or str(i["id"])))
+        return out
+
+    def _stream_start(self, j: dict) -> None:
+        """识别作品、算关键词、列出来源，然后跑第一轮（每个来源第 1 页）。"""
+        p, kind = self.p, j["kind"]
+        try:
+            media = batch_mod._recognize({"tmdbid": j["tmdbid"], "type": kind})
+            if not media:
+                raise RuntimeError("TMDb 识别失败")
+            if kind == "tv":
+                j["season"] = j["season"] or min((int(s) for s in (media.seasons or {}) if int(s) > 0), default=1)
+                media.season = j["season"]
+            try:
+                if kind == "tv":
+                    j["have"], j["aired"] = batch_mod._emby_eps(p, media, j["season"]), batch_mod._aired(media, j["season"])
+                elif p._pipe and p._pipe.emby.folder_by_tmdb(media.tmdb_id, True, ["电影"]):
+                    j["have"] = {1}
+            except Exception:  # noqa: BLE001
+                pass
+            plan = p._target_plan(media.title, media, [j["season"]] if j["season"] else [])
+            # 来源：番剧是一个直连来源（Nyaa + Mikan，自带多页，不再翻页）；其他是 关键词 × 索引器，第一个关键词排最前
+            srcs = [("直连 Nyaa / Mikan", None, None)] if plan.direct else \
+                [(name, q, iid) for q in plan.queries for iid, name in self._stream_indexers(media)]
+            j["pairs"] = {i: {"name": n, "q": q, "iid": iid, "page": 0, "state": "queued", "raw": 0, "kept": 0, "ms": None, "error": None}
+                          for i, (n, q, iid) in enumerate(srcs)}
+            j["media"], j["plan"] = media, plan
+        except Exception as e:  # noqa: BLE001
+            j["error"], j["busy"] = str(e)[:200], False
+            self._bump(j)
+            return
+        self._stream_round(j, list(j["pairs"]))
+
+    def _stream_round(self, j: dict, todo: List[int]) -> None:
+        """给 todo 里的来源各取下一页；回来一个就过滤、匹配、打分、并进结果。"""
+        from app.chain.search import SearchChain
+        from concurrent.futures import FIRST_COMPLETED, wait
+        p, kind, season, media, plan = self.p, j["kind"], j["season"], j["media"], j["plan"]
+        j["round"] += 1
+        t0 = time.time()
+        for pid in todo:
+            j["pairs"][pid]["state"] = "running"
+        self._bump(j)
+        chain = SearchChain()
+
+        def fetch(pid: int) -> tuple:
+            x = j["pairs"][pid]
+            if j["cancel"].is_set():
+                return [], 0
+            if plan.direct:
+                rows = p._search_anime(*plan.direct)
+                return rows, len(rows)
+            return p._prowlarr_page(x["q"], media.type, [x["iid"]], offset=x["page"] * self.PAGE_SIZE, limit=self.PAGE_SIZE)
+
+        pool = ThreadPoolExecutor(max_workers=self.STREAM_WORKERS, thread_name_prefix="p115-stream")
+        try:
+            futs = {pool.submit(fetch, pid): pid for pid in todo}
+            pending, deadline = set(futs), t0 + self.ROUND_DEADLINE
+            while pending and not j["cancel"].is_set() and time.time() < deadline:
+                finished, pending = wait(pending, timeout=min(0.5, max(0.05, deadline - time.time())), return_when=FIRST_COMPLETED)
+                for f in finished:
+                    x = j["pairs"][futs[f]]
+                    x["ms"] = int((time.time() - t0) * 1000)
+                    try:
+                        batch, raw = f.result()
+                    except Exception as e:  # noqa: BLE001 一个来源失败：不再给它翻页，不影响其他来源
+                        x["state"], x["error"] = "error", str(e)[:160]
+                        self._bump(j)
+                        continue
+                    x["page"] += 1
+                    x["raw"] += raw
+                    fresh = [t for t in p._target_filter(plan, [batch], log=False) if (t.enclosure or t.title) not in j["raw_seen"]]
+                    new_raw = [t for t in batch if (t.enclosure or t.title) not in j["raw_seen"]]
+                    j["raw_seen"].update(t.enclosure or t.title for t in batch)
+                    # 取空、或这一页全是见过的（不支持翻页的站会重复返回第 1 页）、或直连来源：到底了
+                    x["state"] = "more" if raw and new_raw and not plan.direct else "end"
+                    if fresh:
+                        with j["lock"]:   # MP 匹配用全局进度条、会识别标题：同一任务里串行
+                            ctxs = chain._parse_result(torrents=fresh, mediainfo=media, keyword=media.title,
+                                                       season_episodes={season: []} if kind == "tv" else None) or []
+                            new = self._ctx_items(ctxs, j["seen"])
+                            if new:
+                                x["kept"] += len(new)
+                                items = j["items"] + new
+                                self._rank(items, kind, media, season, j["aired"], j["have"])
+                                j["items"] = items
+                                j["rv"] += 1
+                    self._bump(j)
+            end = "cancelled" if j["cancel"].is_set() else "timeout"
+            for pid in todo:
+                if j["pairs"][pid]["state"] == "running":
+                    j["pairs"][pid]["state"] = end
+        except Exception as e:  # noqa: BLE001
+            j["error"] = str(e)[:200]
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+            j["busy"], j["touched"] = False, time.time()
+            self._bump(j)
+            pairs = [j["pairs"][pid] for pid in todo]
+            slow = sorted((x for x in pairs if x["state"] in ("timeout", "error")), key=lambda x: x["name"])[:3]
+            logger.info(f"【Prowlarr115】渐进搜索 {j['key']} 第 {j['round']} 轮：{len(todo)} 个来源，{time.time() - t0:.1f} 秒，"
+                        f"累计 {len(j['items'])} 条" + ("，已取消" if j["cancel"].is_set() else "")
+                        + (f"，出错：{j['error']}" if j["error"] else "")
+                        + ("；" + "、".join(f"{x['name']}「{x['q']}」{x['state']}" for x in slow) if slow else ""))
+
+    def search_poll(self, job: str = "", v: int = -1, wait: float = 0, rv: int = -1) -> Dict[str, Any]:
+        """渐进搜索的当前状态：v 是调用方已有的版本；wait>0 时阻塞到有新版本或超时（最多 25 秒）。
+        rv 是调用方已有的结果版本：结果没变（只是来源状态变了）就不带 results，省得每个来源回来都传整份列表。
+        sources 按索引器汇总：state = running / more（还能翻页）/ end / error / timeout / cancelled。"""
+        j = self._jobs.get(job)
+        if not j:
+            return {"ok": False, "error": "搜索已过期，请重新搜索"}
+        v = int(v)
+        if float(wait) > 0 and v == j["v"]:
+            with j["cond"]:
+                j["cond"].wait_for(lambda: j["v"] != v, timeout=min(float(wait), 25.0))
+        j["touched"] = time.time()
+        rank = {"running": 0, "queued": 0, "more": 1, "timeout": 2, "error": 3, "end": 4, "cancelled": 5}   # 有失败就显示失败
+        per: Dict[str, dict] = {}
+        for x in list(j["pairs"].values()):
+            s_ = per.setdefault(x["name"], {"name": x["name"], "state": x["state"], "pages": 0, "raw": 0, "kept": 0, "ms": None, "error": None})
+            s_["state"] = min(s_["state"], x["state"], key=lambda st: rank.get(st, 9))
+            s_["pages"] = max(s_["pages"], x["page"])
+            s_["raw"] += x["raw"]
+            s_["kept"] += x["kept"]
+            s_["ms"] = max(s_["ms"] or 0, x["ms"] or 0) or None
+            s_["error"] = s_["error"] or x["error"]
+        out = {"ok": True, "job": job, "v": j["v"], "rv": j["rv"], "busy": j["busy"], "round": j["round"], "cancelled": j["cancel"].is_set(),
+               "more": any(x["state"] == "more" for x in j["pairs"].values()), "elapsed": round(time.time() - j["t0"], 1),
+               "error": j["error"], "tasks": sorted(per.values(), key=lambda s_: (rank.get(s_["state"], 9), s_["name"]))}
+        if v == j["v"] or int(rv) == j["rv"] and j["rv"] > 0:
+            return out
+        with j["lock"]:
+            items = list(j["items"])
+        media = j["media"]
+        out.update({"mode": "smart", "season": j["season"], "media": self._media_brief(media) if media else None,
+                    "library": {"have": sorted(j["have"]), "aired": j["aired"]} if media else None, **self._facets(items),
+                    "results": items})
+        return out
 
     @staticmethod
     def _media_brief(m: Any) -> Dict[str, Any]:
@@ -394,7 +636,11 @@ class Hub:
         from app.schemas.types import MediaSource
         ctxs = SearchChain().search_by_id(media_source=MediaSource.TMDB, media_id=str(media.tmdb_id),
                                           mtype=media.type, season=season) or []
-        out, seen = [], set()
+        return self._ctx_items(ctxs, set())
+
+    def _ctx_items(self, ctxs: List[Any], seen: set) -> List[Dict[str, Any]]:
+        """MP 搜索结果（Context）→ App 的资源条目；seen 里已有的 hash 跳过（并记入新的）。"""
+        out = []
         for c in ctxs:
             t, mi = c.torrent_info, c.meta_info
             site = str(t.site_name or "")

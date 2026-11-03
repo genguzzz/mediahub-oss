@@ -777,6 +777,70 @@ app.post("/v1/search", async (req) => {
   return res;
 });
 
+// Progressive smart search as Server-Sent Events. The plugin fans the work's keywords out over every indexer and
+// merges results as each answers; this route waits on the plugin (it blocks until the result changes) and pushes
+// each new snapshot as `data: {type:"update", ...}`. Identical searches share one plugin job (a finished one is
+// reused for 10 min unless force). Closing the connection tells the plugin this viewer left — the last one leaving
+// stops it. Paging: POST /v1/search/stream/more asks the sources whose last page worked for their next one; the
+// update arrives on the same stream. The stream ends after STREAM_MAX or when the job is gone.
+const StreamQuery = z.object({
+  tmdbid: z.coerce.number().int().positive(),
+  type: z.enum(["movie", "tv"]).default("tv"),
+  season: z.coerce.number().int().min(0).optional(),
+  force: z.preprocess((x) => x === true || x === "1" || x === "true", z.boolean()),
+});
+const STREAM_MAX = 10 * 60_000;
+type PollResult = { ok: boolean; error?: string; v: number; rv?: number; busy: boolean; [k: string]: unknown };
+
+app.get("/v1/search/stream", async (req, reply) => {
+  const q = StreamQuery.parse(req.query);
+  const start = await plug<{ ok: boolean; error?: string; job?: string; reused?: boolean }>("POST", "/hub/search/stream", { body: q, timeoutMs: 30_000 });
+  if (!start.ok || !start.job) throw Object.assign(new Error(start.error || "未能开始搜索"), { statusCode: 502 });
+  const job = start.job;
+  reply.hijack();
+  const raw = reply.raw;
+  raw.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "x-accel-buffering": "no" });
+  let open = true;
+  const t0 = Date.now();
+  const send = (ev: unknown) => { if (open) raw.write(`data: ${JSON.stringify(ev)}\n\n`); };
+  raw.on("close", () => {
+    if (!open) return;
+    open = false;
+    void plug("POST", "/hub/search/cancel", { body: { job }, timeoutMs: 15_000 }).catch(() => {});
+    req.log.info({ job, ms: Date.now() - t0 }, "search stream closed");
+  });
+  send({ type: "job", job, reused: !!start.reused });
+  let v = -1;
+  let rv = -1;
+  let fails = 0;
+  let last = 0;
+  while (open && Date.now() - t0 < STREAM_MAX) {
+    try {
+      // Coalesce: a burst of sources answering together becomes one update every 300 ms at most.
+      const gap = 300 - (Date.now() - last);
+      if (gap > 0) await new Promise((r) => setTimeout(r, gap));
+      const r = await plug<PollResult>("GET", "/hub/search/poll", { query: { job, v, rv, wait: 20 }, timeoutMs: 35_000 });
+      fails = 0;
+      if (!r.ok) { send({ type: "error", error: r.error || "搜索已结束" }); break; }
+      if (r.v !== v) {
+        v = r.v;
+        if (typeof r.rv === "number" && "results" in r) rv = r.rv;
+        send({ type: "update", ...r });
+        last = Date.now();
+      } else if (open) raw.write(": ping\n\n");
+    } catch (e) {
+      if (++fails >= 3) { send({ type: "error", error: e instanceof Error ? e.message : String(e) }); break; }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  if (open) raw.end();
+});
+
+app.post("/v1/search/stream/more", async (req) => {
+  const { job } = z.object({ job: z.string().min(1).max(80) }).parse(req.body);
+  return plug("POST", "/hub/search/more", { body: { job }, timeoutMs: 15_000 });
+});
+
 const IngestBody = z.object({
   kind: z.enum(["media", "av", "hentai"]).default("media"),
   magnet: z.string().startsWith("magnet:").max(4000),
