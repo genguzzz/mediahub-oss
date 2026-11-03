@@ -2193,6 +2193,7 @@ class Prowlarr115(_PluginBase):
                     field("root", "115 根目录", cols=4)),
                 row(field("openlist_user", "OpenList 用户", cols=3), field("openlist_pass", "OpenList 密码", cols=3, type="password"),
                     field("lib_ol_root", "媒体库的 OpenList 路径", cols=6)),
+                row(field("openlist_share_base", "OpenList 分享链接域名（外网可达，如 https://example.com:5243；空=用上面的 strm 地址）", cols=12)),
                 row(field("cookie_115", "115 Cookie", "与 OpenList 的 115 存储同一份", 6, type="password"),
                     field("proxy_115", "115 请求代理", "经 NAS 出口，避免异地风控", 6)),
                 row(field("qb_url", "NAS qBittorrent（缓冲）", cols=4), field("qb_user", "qB 用户", cols=2), field("qb_pass", "qB 密码", cols=2, type="password"),

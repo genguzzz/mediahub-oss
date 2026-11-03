@@ -153,6 +153,14 @@ class OpenList:
             raise ClientError(f"读取失败 {p}: {getattr(res, 'status_code', '无响应')}")
         return res.content
 
+    # ---- 分享（/@s/<id> 分享页，/sd/<id>/<相对路径> 免签直链）----
+    def share_list(self) -> List[dict]:
+        return (self.call("/api/share/list?page=1&per_page=500") or {}).get("content") or []
+
+    def share_create(self, files: List[str], expires: str, remark: str) -> dict:
+        """expires：RFC3339（UTC）。返回分享（含 id）。"""
+        return self.call("/api/share/create", {"files": files, "expires": expires, "remark": remark}) or {}
+
     def remote_of_strm(self, stub: str) -> Optional[str]:
         """读 strm 内容，取出它指向的 OpenList 路径。"""
         try:

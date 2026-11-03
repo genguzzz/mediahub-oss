@@ -53,6 +53,7 @@ class FakeOL:
     def __init__(self):
         self.fs = {}
         self.removed = []
+        self.shares = []
 
     def add(self, path: str, size: int = 0, strm: str = None, is_dir: bool = False):
         parts = path.rstrip("/").split("/")
@@ -88,6 +89,14 @@ class FakeOL:
 
     def mkdir(self, p):
         self.add(p, is_dir=True)
+
+    def share_list(self):
+        return list(self.shares)
+
+    def share_create(self, files, expires, remark):
+        sh = {"id": f"s{len(self.shares) + 1}", "files": files, "expires": expires, "remark": remark}
+        self.shares.append(sh)
+        return sh
 
     def copy_undone(self):
         return []
@@ -148,6 +157,13 @@ class FakeEmby:
 
     def __init__(self):
         self.updates = []
+        self.items = {}          # id -> item; children: parent id -> [items]
+        self.children = {}
+
+    def get(self, path, **q):
+        if q.get("Ids"):
+            return {"Items": [self.items[q["Ids"]]] if q["Ids"] in self.items else []}
+        return {"Items": self.children.get(q.get("ParentId"), [])}
 
     def updated(self, paths):
         self.updates += paths

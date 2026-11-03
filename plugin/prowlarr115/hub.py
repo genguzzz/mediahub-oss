@@ -3,6 +3,7 @@
 
 凭据都留在插件配置里：App 后端只拿 MP 的 API key 调这些接口，不直接连 OpenList/qBittorrent 等服务。
 """
+import os
 import re
 import base64
 import hashlib
@@ -176,6 +177,7 @@ class Hub:
             ("/hub/offline", self.offline, "GET", "115 离线任务列表"),
             ("/hub/offline/delete", self.offline_delete, "POST", "删 115 离线任务：{hashes:[..]}"),
             ("/hub/task/remove", self.task_remove, "POST", "从入库列表移除已结束（完成/失败/取消）的任务记录：{hashes:[..]}"),
+            ("/hub/emby/share", self.emby_share, "POST", "Emby 条目生成 OpenList 临时分享：{id, hours}；剧集分享作品目录并列出每集直链"),
             ("/hub/task/delete", self.task_delete, "POST", "删除一个入库任务（进行中的先停下载）：{hash, files}；files=true 连 115/strm/AV/缓冲文件一起删"),
             ("/hub/av/cancel", self.av_cancel, "POST", "取消/删除 AV 记录：{key, files}（files=true 连 115 已下文件）"),
             ("/hub/emby/delete", self.emby_delete, "POST", "删 Emby 条目（电影/剧/季/集）：{id, files, dry_run}；files=true 连 115 原文件一起删"),
@@ -1061,6 +1063,71 @@ class Hub:
         p = self.p._pipe
         root = p.emby.lib_root
         return p.lib_ol + emby_path[len(root):] if emby_path and emby_path.startswith(root + "/") else None
+
+    SHARE_TAG = "mediahub:"
+
+    def emby_share(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        """给 Emby 条目生成 OpenList 临时分享：{id, hours}。电影/单集分享那个视频文件；剧/季分享 115 上这部作品的目录，
+        并列出每集的免签直链（/sd/，电视上的播放器可直接打开）。同一条目还有足够时长的分享就复用。
+        链接域名取插件配置 openlist_share_base（要外网可达），没配就用 openlist_public。"""
+        p = self.p._pipe
+        if not p:
+            return {"ok": False, "error": "流水线未就绪"}
+        iid = str(payload.get("id") or "")
+        if not re.fullmatch(r"\w+", iid):
+            return {"ok": False, "error": "id 不对"}
+        hours = max(1, min(int(payload.get("hours") or 72), 24 * 30))
+        e, ol = p.emby, p.ol
+        it = ((e.get("/Items", Ids=iid, Fields="Path") or {}).get("Items") or [None])[0]
+        if not it:
+            return {"ok": False, "error": "Emby 里没有这个条目"}
+        typ = it.get("Type")
+        if typ not in ("Movie", "Episode", "Video", "Series", "Season"):
+            return {"ok": False, "error": f"不能分享 {typ}"}
+        videos = [it] if typ in ("Movie", "Episode", "Video") else ((e.get("/Items", ParentId=iid, Recursive="true", IncludeItemTypes="Episode,Video",
+                                                                             Fields="Path") or {}).get("Items") or [])
+        eps: List[tuple] = []                  # (季, 集, 名字, 115 路径)
+        for v in videos:
+            stub = self._lib_ol(v.get("Path") or "")
+            r = ol.remote_of_strm(stub) if stub and stub.endswith(".strm") else None
+            if r and r.startswith(p.root + "/") and r.count("/") >= p.root.count("/") + 2:
+                eps.append((v.get("ParentIndexNumber") or 0, v.get("IndexNumber") or 0, v.get("Name") or "", r))
+        if not eps:
+            return {"ok": False, "error": "这个条目的文件不在 115 上（没有指向 115 的 strm），没法分享"}
+        eps.sort()
+        remotes = [x[3] for x in eps]
+        single = len(remotes) == 1
+        target = remotes[0] if single else os.path.commonpath(remotes)
+        if not single and target.count("/") < p.root.count("/") + 2:
+            return {"ok": False, "error": "这部作品的文件分散在多个目录，没法用一个分享"}
+        base = str(self.p._conf.get("openlist_share_base") or ol.public).rstrip("/")
+        tag = f"{self.SHARE_TAG}{iid}"
+        now_ts = time.time()
+        share = None
+        try:
+            for s_ in ol.share_list():
+                exp = s_.get("expires")
+                left = (datetime.fromisoformat(exp.replace("Z", "+00:00")).timestamp() - now_ts) if exp else 1e9
+                if s_.get("remark") == tag and (s_.get("files") or []) == [target] and left > hours * 3600 / 2 and not s_.get("disabled"):
+                    share = s_
+                    break
+        except Exception as err:  # noqa: BLE001 列不出旧分享就新建
+            logger.warning(f"【Prowlarr115】列 OpenList 分享失败：{err}")
+        reused = share is not None
+        if not share:
+            exp = datetime.fromtimestamp(now_ts + hours * 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            share = ol.share_create([target], exp, tag)
+        sid = share.get("id")
+        if not sid:
+            return {"ok": False, "error": "OpenList 没返回分享 id"}
+        q = lambda rel: "/".join(urllib.parse.quote(x, safe="") for x in rel.split("/"))  # noqa: E731
+        if single:
+            files = [{"name": it.get("Name") or remotes[0].rsplit("/", 1)[-1], "url": f"{base}/sd/{sid}"}]
+        else:
+            files = [{"name": (f"S{s:02d}E{n:02d} " if n else "") + name, "url": f"{base}/sd/{sid}/{q(r[len(target) + 1:])}"}
+                     for s, n, name, r in eps]
+        return {"ok": True, "id": sid, "url": f"{base}/@s/{sid}", "expires": share.get("expires"), "title": it.get("Name"),
+                "type": typ, "reused": reused, "files": files}
 
     def emby_delete(self, payload: dict = Body(...)) -> Dict[str, Any]:
         """删一个 Emby 条目：媒体库里的 strm/目录 + Emby 记录；files=true 时连 strm 指向的 115 文件（同名字幕）一起删，

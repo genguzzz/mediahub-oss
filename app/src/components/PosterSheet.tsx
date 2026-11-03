@@ -1,5 +1,5 @@
 // Long-press on any poster: a bottom-up card with the film's details and quick actions (cast, open,
-// mark watched, favourite, copy, source page). One instance lives in the root layout.
+// mark watched, favourite, OpenList share link, copy, source page). One instance lives in the root layout.
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Share, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,18 +9,22 @@ import Animated, { FadeIn, FadeInDown, LinearTransition } from "react-native-rea
 import { CastPanel } from "./CastPanel";
 import { FeedbackForm } from "./FeedbackForm";
 import { Img, MiniTag, type CardData } from "./media";
-import { Sheet, styles, tap, toast, toastError } from "./ui";
+import { CopyText, PillButton, Sheet, styles, tap, toast, toastError } from "./ui";
+import { api } from "@/lib/api";
+import { clock } from "@/lib/format";
 import { embyApi, playbackPlan, type PlaybackPlan } from "@/lib/emby";
 import { openPeek, usePeek } from "@/lib/peek";
 import { colors, radius } from "@/lib/theme";
 import { nativeCaps } from "../../modules/mediahub-player";
 
+interface ShareLink { ok: boolean; error?: string; url: string; expires?: string | null; type: string; reused: boolean; files: { name: string; url: string }[] }
 interface Tile { label: string; icon: keyof typeof Ionicons.glyphMap; run: () => Promise<unknown> | void; destructive?: boolean; keep?: boolean }
 
 export function PosterSheetHost() {
   const c = usePeek();
   const [shown, setShown] = useState<CardData | null>(null);
-  const [mode, setMode] = useState<"menu" | "cast" | "feedback">("menu");
+  const [mode, setMode] = useState<"menu" | "cast" | "feedback" | "share">("menu");
+  const [share, setShare] = useState<ShareLink | null>(null);
   const [plan, setPlan] = useState<PlaybackPlan | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [scan, setScan] = useState(false);
@@ -31,6 +35,7 @@ export function PosterSheetHost() {
       setShown(c);
       setMode("menu");
       setPlan(null);
+      setShare(null);
       setUser(null);
       void nativeCaps().then((x) => setScan(!!x?.ssdp));
       if (c.embyId) void embyApi.item(c.embyId).then((i) => setUser({ played: i.UserData?.Played, fav: i.UserData?.IsFavorite })).catch(() => {});
@@ -60,6 +65,17 @@ export function PosterSheetHost() {
     tiles.push({
       label: user?.fav ? "取消收藏" : "收藏", icon: user?.fav ? "heart-dislike-outline" : "heart-outline",
       run: async () => { await embyApi.setFavorite(id, !user?.fav); toast(user?.fav ? "已取消收藏" : "已收藏"); },
+    });
+  }
+  if (id) {
+    tiles.push({
+      label: "分享链接", icon: "link-outline", keep: true,
+      run: async () => {
+        const r = await api<ShareLink>(`/v1/emby/item/${id}/share`, { body: { hours: 72 }, timeoutMs: 95_000 });
+        if (!r.ok) throw new Error(r.error || "生成失败");
+        setShare(r);
+        setMode("share");
+      },
     });
   }
   for (const a of card.actions ?? []) tiles.push({ label: a.label, icon: a.icon ?? "ellipse-outline", run: a.run, destructive: a.destructive });
@@ -108,6 +124,32 @@ export function PosterSheetHost() {
       {mode === "feedback" ? (
         <Animated.View key="feedback" entering={FadeInDown.duration(240)} layout={LinearTransition.duration(220)} style={{ marginTop: 14 }}>
           <FeedbackForm item={{ embyId: card.embyId, title: card.title, subtitle: card.subtitle, key: card.key }} onDone={close} onCancel={() => setMode("menu")} />
+        </Animated.View>
+      ) : mode === "share" && share ? (
+        <Animated.View key="share" entering={FadeInDown.duration(240)} style={{ marginTop: 14, gap: 10 }}>
+          <Pressable onPress={() => setMode("menu")} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <Ionicons name="chevron-back" size={16} color={colors.primary} />
+            <Text style={{ color: colors.primary, fontWeight: "700" }}>返回</Text>
+          </Pressable>
+          <View style={{ padding: 12, borderRadius: radius.md, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, gap: 4 }}>
+            <Text style={styles.faint}>{share.type === "Series" || share.type === "Season" ? "整部剧的分享页（对方可在浏览器里看）" : "分享页（对方可在浏览器里看）"}</Text>
+            <CopyText label="链接" style={{ fontSize: 14, color: colors.text, fontWeight: "600" }}>{share.url}</CopyText>
+            <Text style={styles.faint}>{share.expires ? `${clock(Date.parse(share.expires) / 1000, Date.now())} 前有效` : "长期有效"}{share.reused ? " · 沿用已有分享" : ""}</Text>
+          </View>
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <PillButton icon="copy-outline" label="复制链接" onPress={async () => { await Clipboard.setStringAsync(share.url); toast("已复制分享链接"); }} style={{ flex: 1 }} />
+            <PillButton variant="soft" icon="share-outline" label="发给别人" onPress={() => { void Share.share({ message: `${card.title}\n${share.url}` }); }} style={{ flex: 1 }} />
+          </View>
+          <Text style={[styles.faint, { marginTop: 4 }]}>{share.files.length > 1 ? `每集直链（电视播放器可直接打开，长按复制）` : "视频直链（电视播放器可直接打开，长按复制）"}</Text>
+          {share.files.map((f) => (
+            <View key={f.url} style={{ paddingVertical: 6, borderBottomWidth: 1, borderColor: colors.border }}>
+              <Text style={{ fontSize: 13, fontWeight: "600", color: colors.text }} numberOfLines={1}>{f.name}</Text>
+              <CopyText label={f.name} style={[styles.faint, { fontSize: 11.5 }]} numberOfLines={1}>{f.url}</CopyText>
+            </View>
+          ))}
+          {share.files.length > 1 ? (
+            <PillButton variant="soft" icon="list-outline" label="复制全部直链" onPress={async () => { await Clipboard.setStringAsync(share.files.map((f) => `${f.name}\n${f.url}`).join("\n")); toast(`已复制 ${share.files.length} 集直链`); }} />
+          ) : null}
         </Animated.View>
       ) : mode === "cast" ? (
         <View style={{ marginTop: 14 }}>

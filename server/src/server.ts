@@ -1096,6 +1096,13 @@ app.post<{ Params: { id: string } }>("/v1/emby/item/:id/delete", async (req) => 
   return plug("POST", "/hub/emby/delete", { body: { id, files: b.files, dry_run: b.dryRun }, timeoutMs: 180_000 });
 });
 
+// Temporary OpenList share for a library item (115 files): a page link, plus per-episode direct links for series.
+app.post<{ Params: { id: string } }>("/v1/emby/item/:id/share", async (req) => {
+  const id = z.string().regex(/^\w+$/).parse(req.params.id);
+  const { hours } = z.object({ hours: z.number().int().min(1).max(720).default(72) }).parse(req.body ?? {});
+  return plug("POST", "/hub/emby/share", { body: { id, hours }, timeoutMs: 90_000 });
+});
+
 app.post("/v1/emby/scan", async () => plug("POST", "/hub/emby/scan"));
 app.get("/v1/emby/activity", async () => plug("GET", "/hub/emby/activity"));
 
