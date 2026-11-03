@@ -225,6 +225,7 @@ export interface Resource {
 export interface SearchResult {
   ok: boolean;
   error?: string | null;
+  notice?: string | null;   // not an error: e.g. indexers Prowlarr paused that were skipped
   elapsed: number;
   mode: "smart" | "raw";
   season: number | null;

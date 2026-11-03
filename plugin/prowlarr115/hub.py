@@ -493,7 +493,7 @@ class Hub:
         asked = [int(x.split(":", 1)[1]) for x in srcs if x.startswith("prowlarr:") and x.split(":", 1)[1].isdigit()]
         ixs: List[tuple] = []
         if asked or "prowlarr" in srcs:
-            ids, note = self._usable_indexers(asked or None)
+            ids, note = self._usable_indexers(None if "prowlarr" in srcs else asked)   # 「全部」包含单选的那些
             if note:
                 j["notes"].append(note)
             names = {i.get("id"): i.get("name") for i in (self._pw("GET", "/indexer", timeout=15)[1] or []) if isinstance(i, dict)}
@@ -649,7 +649,7 @@ class Hub:
             s_["error"] = s_["error"] or x["error"]
         out = {"ok": True, "job": job, "v": j["v"], "rv": j["rv"], "busy": j["busy"], "round": j["round"], "cancelled": j["cancelled"],
                "more": any(x["state"] == "more" for x in j["pairs"].values()), "elapsed": round(time.time() - j["t0"], 1),
-               "error": "；".join(j["notes"] + ([j["error"]] if j["error"] else [])) or None,
+               "error": j["error"], "notice": "；".join(j["notes"]) or None,
                "tasks": sorted(per.values(), key=lambda s_: (rank.get(s_["state"], 9), s_["name"]))}
         if v == j["v"] or (rv == j["rv"] and j["rv"] > 0):
             return out
@@ -743,7 +743,7 @@ class Hub:
         prow = [int(s.split(":", 1)[1]) for s in sources if s.startswith("prowlarr:") and s.split(":", 1)[1].isdigit()]
         skipped = ""
         if prow or "prowlarr" in sources:
-            prow, skipped = self._usable_indexers(prow or None)
+            prow, skipped = self._usable_indexers(None if "prowlarr" in sources else prow)
             if prow:
                 jobs.append(("prowlarr", lambda: self._prowlarr(q, prow)))
         ctx = self._src_ctx
@@ -770,8 +770,8 @@ class Hub:
         return out, "；".join(errs) or None
 
     def _usable_indexers(self, ids: Optional[List[int]]) -> tuple:
-        """Torrent indexers Prowlarr will search now among `ids` (None = all of them), and a note naming the asked-for
-        ones it won't: switched off, gone, or paused after failures until …"""
+        """Torrent indexers Prowlarr will search now among `ids` (None = all of them), and a note naming the ones paused
+        after failures (switched-off or deleted ones are dropped quietly)."""
         try:
             _, ix = self._pw("GET", "/indexer", timeout=15)
             _, st = self._pw("GET", "/indexerstatus", timeout=15)
@@ -794,9 +794,10 @@ class Hub:
             if t > now:
                 paused[x.get("indexerId")] = t.astimezone().strftime("%m-%d %H:%M")
         keep = [i for i in ids if i not in off and i not in paused]
-        notes = [f"{names.get(i, f'索引器 {i}')} 已停用或已删除" for i in ids if i in off] + \
-                [f"{names.get(i, i)} 暂停中（Prowlarr 连续失败后暂停，{paused[i]} 恢复）" for i in ids if i in paused and i not in off]
-        return keep, "；".join(notes)
+        # 停用或已删除的不提（保存的来源列表里常留着旧索引器）；暂停的说一句，几时恢复
+        later = [i for i in ids if i in paused and i not in off]
+        note = ("、".join(names.get(i, str(i)) for i in later) + f" 暂停中（Prowlarr 连续失败后暂停，最早 {min(paused[i] for i in later)} 恢复），已跳过") if later else ""
+        return keep, note
 
     def _prowlarr(self, q: str, ids: List[int]) -> List[dict]:
         params = [("query", q), ("type", "search"), ("limit", 100)] + [("indexerIds", i) for i in ids]

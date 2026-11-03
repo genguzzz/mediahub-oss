@@ -56,7 +56,7 @@ export function useSearchStream(key: string | null, query: StreamQuery) {
             const u = ev as unknown as Update;
             setSt((s) => ({
               ...s,
-              data: u.results ? { ok: true, error: u.error ?? null, elapsed: u.elapsed, mode: u.mode, season: u.season, media: u.media, library: u.library, groups: u.groups, sources: u.sources, results: u.results } : s.data && { ...s.data, elapsed: u.elapsed, error: u.error ?? s.data.error },
+              data: u.results ? { ok: true, error: u.error ?? null, notice: u.notice ?? null, elapsed: u.elapsed, mode: u.mode, season: u.season, media: u.media, library: u.library, groups: u.groups, sources: u.sources, results: u.results } : s.data && { ...s.data, elapsed: u.elapsed, error: u.error ?? s.data.error },
               error: !s.data && !u.results && !u.busy && u.error ? u.error : s.error,
               tasks: u.tasks, busy: u.busy, round: u.round, more: u.more,
             }));

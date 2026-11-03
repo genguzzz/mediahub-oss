@@ -222,3 +222,31 @@ def test_raw_mode_uses_registry_sources_with_their_own_paging(hub, monkeypatch):
 
 def test_raw_mode_needs_keywords_and_sources(hub):
     assert run(hub.search_stream({"mode": "raw", "keywords": [], "sources": ["nyaa"]}))["ok"] is False
+
+
+def test_usable_indexers_drops_gone_quietly_and_notes_paused(hub, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    soon = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    ix = [{"id": 1, "name": "TorrentKitty", "protocol": "torrent", "enable": True},
+          {"id": 2, "name": "YTS", "protocol": "torrent", "enable": True},
+          {"id": 3, "name": "0Magnet", "protocol": "torrent", "enable": False}]
+    monkeypatch.setattr(hub, "_pw", lambda m, path, timeout=15: (200, ix if path == "/indexer" else [{"indexerId": 2, "disabledTill": soon}]))
+    hub.p._exclude_indexers = []
+    keep, note = Hub._usable_indexers(hub, [1, 2, 3, 11])      # 3 switched off, 11 deleted: not mentioned
+    assert keep == [1] and note.startswith("YTS 暂停中") and "0Magnet" not in note and "索引器" not in note
+    keep, note = Hub._usable_indexers(hub, None)                # "all" = enabled ones
+    assert keep == [1] and "YTS" in note
+
+
+def test_raw_all_indexers_wins_over_single_picks_and_notice_is_not_error(hub, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(hub, "_usable_indexers", lambda ids: (seen.setdefault("ids", ids), ([1], "YTS 暂停中，已跳过"))[1])
+    hub.pages[("仁医", 1)] = [[{"title": "Jin S01", "magnetUrl": magnet(9)}]]
+    monkeypatch.setattr(hub, "_prowlarr_map", lambda rows, q: [{"title": r["title"], "magnet": r["magnetUrl"], "size": 1, "seeders": 3, "site": "TorrentKitty"} for r in rows])
+
+    async def go():
+        job = (await hub.search_stream({"mode": "raw", "keywords": ["仁医"], "sources": ["prowlarr", "prowlarr:3", "prowlarr:11"]}))["job"]
+        return await idle(hub, job)
+    r = run(go())
+    assert seen["ids"] is None                                   # 「全部」包含单选的那些
+    assert r["error"] is None and r["notice"] == "YTS 暂停中，已跳过"

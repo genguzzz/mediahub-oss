@@ -157,7 +157,8 @@ export default function ResourcesScreen() {
         ListHeaderComponent={
           <>
             {q.error ? <ErrorBox text={q.error} onRetry={q.refresh} /> : null}
-            {q.data?.error ? <ErrorBox text={`部分来源出错：${q.data.error}`} /> : null}
+            {q.data?.error ? <ErrorBox text={q.data.error} /> : null}
+            {q.data?.notice ? <Text style={[styles.faint, { marginBottom: 6 }]}>{q.data.notice}</Text> : null}
             {q.loading && !q.data ? <Loading text={q.progress ? `正在搜索 ${q.progress.total} 个来源，先返回的先显示（${q.progress.done}/${q.progress.total}）` : mode === "smart" ? "正在准备关键词和来源" : "正在搜索所选来源"} /> : null}
             {q.data ? (
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
