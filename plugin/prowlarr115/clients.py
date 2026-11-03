@@ -159,7 +159,8 @@ class OpenList:
 
     def share_create(self, files: List[str], expires: str, remark: str) -> dict:
         """expires：RFC3339（UTC）。返回分享（含 id）。"""
-        return self.call("/api/share/create", {"files": files, "expires": expires, "remark": remark}) or {}
+        return self.call("/api/share/create", {"files": files, "expires": expires, "remark": remark,
+                                               "order_by": "name", "order_direction": "asc"}) or {}
 
     def remote_of_strm(self, stub: str) -> Optional[str]:
         """读 strm 内容，取出它指向的 OpenList 路径。"""
