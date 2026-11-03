@@ -11,7 +11,7 @@ import hashlib
 import threading
 import time
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -76,7 +76,6 @@ def _indexer_meta(i: dict) -> Dict[str, Any]:
 GROUP_RX = re.compile(r"^\s*[\[【]([^\]】]{2,40})[\]】]")
 EMBY_GET_OK = re.compile(r"^/(Items|Users|Shows|Library/VirtualFolders|Library/MediaFolders|ScheduledTasks|System/Info|"
                          r"System/ActivityLog|Sessions|Genres|Persons)(/|$|\?)")
-_HUB_SEM = threading.BoundedSemaphore(2)      # 同时最多两次 App 搜索（每次会扇出很多请求）
 
 
 def _get(url: str) -> str:
@@ -145,7 +144,8 @@ class Hub:
             ("/hub/prowlarr/delete", self.prowlarr_delete, "POST", "删除索引器：{id}"),
             ("/hub/prowlarr/health", self.prowlarr_health, "GET", "Prowlarr 版本、健康提示、每个索引器的状态（暂停到何时、最近失败）"),
             ("/hub/prowlarr/test", self.prowlarr_test, "POST", "测试一个索引器能不能用：{id}；返回失败原因"),
-            ("/hub/search", self.search, "POST", "资源搜索：{tmdbid,type,season} 智能（MP 识别+过滤）或 {keyword,sources} 指定来源"),
+            ("/hub/search", self.search, "POST", "一次性资源搜索（等搜完或 budget 秒）：{tmdbid,type,season} 智能，或 {keyword|keywords,sources} 按来源；返回 job/busy/more"),
+            ("/hub/search/continue", self.search_continue, "POST", "接着一次搜索：{job, next, budget}；next=取下一页，然后等这一轮搜完"),
             ("/hub/search/stream", self.search_stream, "POST", "开始/加入渐进智能搜索：{tmdbid,type,season,force} → {job}；按关键词×索引器扇出，先回来的先进结果"),
             ("/hub/search/poll", self.search_poll, "GET", "渐进搜索的当前有序结果：?job=&v=&wait=（wait 秒内阻塞到有变化；v 没变只回状态）"),
             ("/hub/search/more", self.search_more, "POST", "渐进搜索下一页：{job}；只给上一页成功且还有新结果的来源翻页"),
@@ -311,46 +311,48 @@ class Hub:
         return {"ok": code in (200, 204)} if code in (200, 204) else {"ok": False, "error": f"删除失败（{code}）"}
 
     # ---------------- 搜索 ----------------
-    def search(self, payload: dict = Body(...)) -> Dict[str, Any]:
-        """两种模式：
-        - 智能：给 tmdbid（+type、season），走 MP 的 search_by_id（插件多关键词、身份声明、MP 季过滤），和网页「搜索资源」一致；
-        - 指定来源：给 keyword + sources（["nyaa","prowlarr:3",...]），原样搜，不过滤季。
-        两种都会按选片策略打分、标出推荐、和 Emby 已有的集对比。"""
-        t0 = time.time()
-        tmdbid, kind = payload.get("tmdbid"), "movie" if payload.get("type") == "movie" else "tv"
-        season = int(payload["season"]) if payload.get("season") not in (None, "") else None
-        sources = [s for s in payload.get("sources") or [] if s]
-        keyword = (payload.get("keyword") or "").strip()
-        # 多个关键词（中文名 / 日文名 / 英文名…）：每个都搜一遍再合并去重，最多 4 个
-        keywords = list(dict.fromkeys(k.strip() for k in (payload.get("keywords") or []) if k and k.strip()))[:4]
-        media, err = None, None
-        if tmdbid:
-            media = batch_mod._recognize({"tmdbid": tmdbid, "type": kind})
-            if not media:
-                return {"ok": False, "error": "TMDb 识别失败"}
-            if kind == "tv" and season is None:
-                season = min((int(s) for s in (media.seasons or {}) if int(s) > 0), default=1)
-        with _HUB_SEM:
-            if sources or not media:
-                items, err = self._raw_multi(keywords or [keyword or (media.title if media else "")],
-                                             sources or list(DEFAULT_DIRECT), kind)
-            else:
-                items = self._smart(media, season)
-        have: set = set()
-        aired: List[int] = []
-        if media and kind == "tv":
-            try:
-                have = batch_mod._emby_eps(self.p, media, season)
-                aired = batch_mod._aired(media, season)
-            except Exception:  # noqa: BLE001
-                pass
-        elif media:
-            have = {1} if self.p._pipe and self.p._pipe.emby.folder_by_tmdb(media.tmdb_id, True, ["电影"]) else set()
-        self._rank(items, kind, media, season, aired, have)
-        return {"ok": True, "elapsed": round(time.time() - t0, 1), "mode": "raw" if (sources or not media) else "smart",
-                "keyword": keyword, "keywords": keywords, "season": season, "error": err,
-                "media": self._media_brief(media) if media else None,
-                "library": {"have": sorted(have), "aired": aired} if media else None, **self._facets(items), "results": items}
+    async def search(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        """一次性搜索（AI 工具、换资源候选用）：跑同一个渐进搜索，等它搜完或到 budget 秒，返回当时的有序结果。
+        智能：{tmdbid, type, season}；按来源：{keyword|keywords, sources}（没给 sources 又没作品时搜默认的番剧直连源）。
+        返回里带 job / busy / more：没搜完可以 search_continue 等剩下的，或取下一页。"""
+        kws = list(payload.get("keywords") or []) or ([payload["keyword"]] if payload.get("keyword") else [])
+        sources = list(payload.get("sources") or [])
+        raw = bool(sources) or not payload.get("tmdbid")
+        start = await self.search_stream({"mode": "raw" if raw else "smart", "tmdbid": payload.get("tmdbid"), "type": payload.get("type"),
+                                          "season": payload.get("season"), "keywords": kws, "force": payload.get("force"),
+                                          "sources": sources or (list(DEFAULT_DIRECT) if raw else [])})
+        if not start.get("ok"):
+            return start
+        return await self._collect(start["job"], float(payload.get("budget") or 40), leave=True)
+
+    async def search_continue(self, payload: dict = Body(...)) -> Dict[str, Any]:
+        """接着一次搜索：{job, next, budget}。next=true 先给还能翻页的来源取下一页；然后等到这一轮搜完或 budget 秒。"""
+        job = str(payload.get("job") or "")
+        j = self._jobs.get(job)
+        if not j or j["cancelled"]:
+            return {"ok": False, "error": "搜索已过期，请重新搜索"}
+        if payload.get("next"):
+            r = await self.search_more({"job": job})
+            if not r.get("ok"):
+                return r
+        return await self._collect(job, float(payload.get("budget") or 40), leave=False)
+
+    async def _collect(self, job: str, budget: float, leave: bool) -> Dict[str, Any]:
+        """等任务这一轮搜完或 budget 秒到，返回完整快照。leave：这次调用算一个观看者，返回时离开但不取消
+        （没搜完的继续在后台跑，接着问或重复搜索时直接复用）。"""
+        end = time.time() + max(3.0, min(budget, 120.0))
+        v = -1
+        try:
+            while True:
+                r = await self.search_poll(job, v=v, wait=max(0.1, end - time.time()))
+                if not r.get("ok") or (not r["busy"] and r["round"] >= 1) or time.time() >= end:
+                    break
+                v = r["v"]
+            return await self.search_poll(job, v=-1)
+        finally:
+            j = self._jobs.get(job)
+            if leave and j:
+                j["listeners"] = max(0, j["listeners"] - 1)
 
     def _rank(self, items: List[dict], kind: str, media: Any, season: Optional[int], aired: List[int], have: set) -> None:
         """打分、标出库里已有几集、排序（排除的沉底，其余按分数、做种数）。就地修改。"""
@@ -682,13 +684,6 @@ class Hub:
                 "effect": m.get("effect") or "", "season": m.get("season"), "episodes": m.get("episodes") or [],
                 "se": m.get("se") or "", "score": None, "why": [], "excluded": None, "recommended": False, "have": 0}
 
-    def _smart(self, media: Any, season: Optional[int]) -> List[Dict[str, Any]]:
-        from app.chain.search import SearchChain
-        from app.schemas.types import MediaSource
-        ctxs = SearchChain().search_by_id(media_source=MediaSource.TMDB, media_id=str(media.tmdb_id),
-                                          mtype=media.type, season=season) or []
-        return self._ctx_items(ctxs, set())
-
     def _ctx_items(self, ctxs: List[Any], seen: set) -> List[Dict[str, Any]]:
         """MP 搜索结果（Context）→ App 的资源条目；seen 里已有的 hash 跳过（并记入新的）。"""
         out = []
@@ -708,20 +703,6 @@ class Hub:
                 out.append(it)
         return out
 
-    def _raw_multi(self, qs: List[str], sources: List[str], kind: str) -> tuple:
-        if len(qs) <= 1:
-            return self._raw(qs[0] if qs else "", sources, kind)
-        out, seen, errs = [], set(), []
-        with ThreadPoolExecutor(max_workers=2) as pool:      # 每个关键词内部还会按来源并发，这里只并 2 个
-            for items, err in pool.map(lambda q: self._raw(q, sources, kind), qs):
-                if err:
-                    errs.append(err)
-                for it in items:
-                    if it["id"] not in seen:
-                        seen.add(it["id"])
-                        out.append(it)
-        return out, "；".join(dict.fromkeys(errs)) or None
-
     @property
     def _src_ctx(self) -> SimpleNamespace:
         """直连来源取页用的上下文：取网页的函数和成人模块（没开时为 None）。"""
@@ -733,42 +714,6 @@ class Hub:
         return self._item(r["title"], r.get("size"), r.get("seeders"), r.get("peers"), r.get("magnet") or "",
                           r.get("site") or r.get("indexer") or (d.name if d else src), d.kind if d else "prowlarr",
                           r.get("pub") or _ts(r.get("ts")), r.get("page") or "", r.get("indexer") or "")
-
-    def _raw(self, q: str, sources: List[str], kind: str) -> tuple:
-        if not q:
-            return [], "缺少关键词"
-        jobs = []
-        # Prowlarr indexers asked for: listed ones (prowlarr:<id>) or every one ("prowlarr"). Prowlarr refuses a
-        # search when its indexers are switched off or paused after failures (400 "all selected indexers being
-        # unavailable"), so only the usable ones are sent; the others are named in the result's note.
-        prow = [int(s.split(":", 1)[1]) for s in sources if s.startswith("prowlarr:") and s.split(":", 1)[1].isdigit()]
-        skipped = ""
-        if prow or "prowlarr" in sources:
-            prow, skipped = self._usable_indexers(None if "prowlarr" in sources else prow)
-            if prow:
-                jobs.append(("prowlarr", lambda: self._prowlarr(q, prow)))
-        ctx = self._src_ctx
-        jobs += [(d.id, lambda d=d: d.fetch(ctx, q, 1)) for d in (DIRECT_SOURCES.get(x) for x in sources) if d and d.available(ctx)]
-        errs, out, seen = [], [], set()
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            futs = [(name, pool.submit(fn)) for name, fn in jobs]
-            for name, f in futs:
-                try:
-                    rows = f.result(timeout=90) or []
-                except FuturesTimeout:
-                    errs.append(f"{name}: 90 秒没有返回（超时）")
-                    continue
-                except Exception as e:  # noqa: BLE001
-                    errs.append(f"{name}: {e or type(e).__name__}")
-                    continue
-                for r in rows:
-                    it = self._row_item(r, name)
-                    if it and it["id"] not in seen:
-                        seen.add(it["id"])
-                        out.append(it)
-        if skipped:
-            errs.append(skipped)
-        return out, "；".join(errs) or None
 
     def _usable_indexers(self, ids: Optional[List[int]]) -> tuple:
         """Torrent indexers Prowlarr will search now among `ids` (None = all of them), and a note naming the ones paused
@@ -799,14 +744,6 @@ class Hub:
         later = [i for i in ids if i in paused and i not in off]
         note = ("、".join(names.get(i, str(i)) for i in later) + f" 暂停中（Prowlarr 连续失败后暂停，最早 {min(paused[i] for i in later)} 恢复），已跳过") if later else ""
         return keep, note
-
-    def _prowlarr(self, q: str, ids: List[int]) -> List[dict]:
-        params = [("query", q), ("type", "search"), ("limit", 100)] + [("indexerIds", i) for i in ids]
-        res = RequestUtils(headers={"X-Api-Key": self.p._prowlarr_key}, timeout=self.p._timeout).get_res(
-            f"{self.p._prowlarr_url}/api/v1/search", params=params)
-        if res is None or res.status_code != 200:
-            raise RuntimeError(self._prowlarr_error(getattr(res, "status_code", None), res))
-        return self._prowlarr_map(res.json() or [], q)
 
     @staticmethod
     def _prowlarr_error(status: Optional[int], res: Any) -> str:
@@ -1575,20 +1512,24 @@ class Hub:
                 eps = [se[1]]
         return eps
 
-    def task_candidates(self, hash: str) -> Dict[str, Any]:  # noqa: A002
+    async def task_candidates(self, hash: str) -> Dict[str, Any]:  # noqa: A002
+        """换资源的候选：和这个任务同一部、同一季、同几集的其他资源（走渐进搜索的一次性收集）。"""
         h = hash.lower()
-        t = (self.p._load_tasks() or {}).get(h)
+        t = (await aio.run(self.p._load_tasks) or {}).get(h)
         if not t:
             return {"ok": False, "error": "任务不存在"}
         meta = t.get("meta") or {}
-        bl = self.p._blacklist()
+        bl = await aio.run(self.p._blacklist)
         if meta.get("kind") in ("av", "hentai"):
             # AV 按番号、里番按系列名在 sukebei 重新搜；同一集优先（里番）
             q = meta.get("code") if meta.get("kind") == "av" else (meta.get("series") or meta.get("title"))
             if not q:
                 return {"ok": False, "error": "这个任务没有番号/系列名，没法重新搜索"}
-            t0 = time.time()
-            items, err = self._raw(q, ["sukebei-av" if meta["kind"] == "av" else "sukebei-anime"], "movie" if meta["kind"] == "av" else "tv")
+            res = await self.search({"keywords": [q], "sources": ["sukebei-av" if meta["kind"] == "av" else "sukebei-anime"],
+                                     "type": "movie" if meta["kind"] == "av" else "tv"})
+            if not res.get("ok"):
+                return res
+            items, err = res.get("results") or [], res.get("error")
             ep = meta.get("ep")
             for it in items:
                 it["current"], it["blacklisted"] = it["id"] == h, (bl.get(it["id"]) or {}).get("reason")
@@ -1596,12 +1537,12 @@ class Hub:
                 it["tags"] = [x for x in (it.get("res"),) if x]
             items.sort(key=lambda it: (bool(ep) and ep not in (it.get("episodes") or [ep]), -it["seeders"]))
             return {"ok": True, "task": {"hash": h, "title": meta.get("title"), "episodes": [ep] if ep else [], "name": t.get("name")},
-                    "elapsed": round(time.time() - t0, 1), "error": err, "results": items[:40]}
+                    "elapsed": res.get("elapsed"), "error": err, "results": items[:40]}
         if not meta.get("tmdbid"):
             return {"ok": False, "error": "这个任务没有 TMDb 作品信息，请用发现页搜索后提交"}
         kind = "movie" if meta.get("type") == "电影" else "tv"
         season = meta.get("merged_season") or meta.get("season")
-        res = self.search({"tmdbid": meta["tmdbid"], "type": kind, "season": season})
+        res = await self.search({"tmdbid": meta["tmdbid"], "type": kind, "season": season})
         if not res.get("ok"):
             return res
         eps = self._task_eps(t) if kind == "tv" else []

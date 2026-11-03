@@ -261,3 +261,44 @@ def test_job_id_stays_short_for_long_source_lists(hub):
         await idle(hub, r["job"])
         assert (await hub.search_more({"job": r["job"]}))["ok"] is True
     run(go())
+
+
+def test_one_shot_search_waits_for_all_sources_then_leaves_without_cancelling(hub):
+    hub.pages[("仁医", 1)] = [[T(1, "仁医 S01 1080p")], [T(3, "仁医 S01E05")]]
+    hub.pages[("JIN", 2)] = [[T(4, "JIN S01 BluRay")]]
+
+    async def go():
+        r = await hub.search({"tmdbid": 46198, "type": "tv", "season": 1})
+        assert r["ok"] and not r["busy"] and ids(r) == {f"{1:040x}", f"{4:040x}"} and r["more"]
+        j = hub._jobs[r["job"]]
+        assert j["listeners"] == 0 and not j["cancelled"]
+        nxt = await hub.search_continue({"job": r["job"], "next": True})       # agent asks for the next page
+        assert f"{3:040x}" in ids(nxt) and not nxt["busy"]
+    run(go())
+
+
+def test_one_shot_budget_returns_partial_and_job_keeps_running(hub):
+    hub.pages[("仁医", 1)] = [[T(1, "仁医 S01 1080p")]]
+    hub.pages[("JIN", 1)] = [[T(4, "JIN S01 BluRay")]]
+
+    async def go():
+        hub.gate[("JIN", 1)] = asyncio.Event()                                  # one slow source
+        r = await hub.search({"tmdbid": 46198, "type": "tv", "budget": 0.01})   # clamped to 3 s
+        assert r["busy"] and ids(r) == {f"{1:040x}"}
+        hub.gate[("JIN", 1)].set()
+        done = await hub.search_continue({"job": r["job"]})                      # wait for the rest
+        assert not done["busy"] and ids(done) == {f"{1:040x}", f"{4:040x}"} and not done["cancelled"]
+    run(go())
+
+
+def test_one_shot_raw_defaults_to_anime_direct_sources(hub, monkeypatch):
+    got = {}
+    for sid in ("nyaa", "animetosho", "mikan"):
+        monkeypatch.setitem(hub_mod.DIRECT_SOURCES, sid, DirectSource(sid, sid, "direct", "", "en", (), "",
+                                                                     lambda ctx, q, page, sid=sid: got.setdefault(sid, q) and []))
+
+    async def go():
+        r = await hub.search({"keyword": "Kusuriya"})
+        assert r["ok"] and r["mode"] == "raw" and not r["busy"]
+    run(go())
+    assert got == {"nyaa": "Kusuriya", "animetosho": "Kusuriya", "mikan": "Kusuriya"}

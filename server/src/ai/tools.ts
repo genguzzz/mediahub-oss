@@ -46,6 +46,26 @@ function routeHint(method: string, url: string): string {
   return `没有这个接口：${method} ${url.split("?")[0]}。不要猜路径，只用接口清单（read_knowledge topic=api）里的。${near.length ? `相近的：\n${near.join("\n")}` : `全部：\n${lines.join("\n")}`}`;
 }
 
+/** A search answer → the list the model sees. Each resource gets a ref (r1, r2…) the model passes to
+ *  ingest_resource; a resource already listed in this chat keeps its ref across find_resources / more_resources. */
+function resourceList(ctx: ToolCtx, r: any) {
+  const byMagnet = new Map(Object.entries(ctx.refs).map(([ref, x]) => [x.magnet, ref]));
+  const list = (r.results ?? []).slice(0, 30).map((x: any) => {
+    let ref = byMagnet.get(x.magnet);
+    if (!ref) {
+      ref = `r${Object.keys(ctx.refs).length + 1}`;
+      ctx.refs[ref] = { title: x.title, magnet: x.magnet, size: x.size, seeders: x.seeders, source: x.source, kind: x.kind, media: r.media ?? null, season: x.season ?? r.season ?? null };
+    }
+    return {
+      ref, title: cut(x.title, 120), sizeGB: Math.round((x.size / 1e9) * 10) / 10, seeders: x.seeders, res: x.res || undefined, codec: x.codec || undefined,
+      group: x.group || undefined, se: x.se || undefined, score: x.score ?? undefined, excluded: x.excluded || undefined, source: x.indexer || x.source,
+    };
+  });
+  const sources = (r.tasks ?? []).map((t: any) => `${t.name}:${t.state}`).slice(0, 30);
+  return { job: r.job, busy: !!r.busy, more: !!r.more, total: r.results?.length ?? 0, elapsed: r.elapsed, media: r.media, season: r.season, library: r.library,
+           notice: r.notice || undefined, error: r.error || undefined, sources, results: list };
+}
+
 async function call(ctx: ToolCtx, method: "GET" | "POST" | "PUT" | "DELETE", url: string, body?: unknown): Promise<any> {
   const r = await ctx.app.inject({
     method, url,
@@ -390,27 +410,29 @@ export const TOOLS: Record<string, Def> = {
   },
   find_resources: {
     tier: "read",
-    description: "搜索可下载的资源，给出资源列表（ref、标题、大小、做种、分辨率、编码、字幕组、季集、评分、被排除的原因、来自哪个索引）。不给 sources = 智能搜索（MoviePilot 按作品搜所有启用的索引，要 tmdbid+type(+season)）；给 sources（list_sources 里的 id，如 nyaa、mikan、prowlarr:3）= 只搜这些源，配合 keywords 给 1-4 个关键词（中文名、英文名、罗马音、别名）。入库时把 ref 交给 ingest_resource。耗时 10-90 秒。",
+    description: "搜索可下载的资源，给出按评分排好的资源列表（ref、标题、大小、做种、分辨率、编码、字幕组、季集、评分、被排除的原因、来自哪个索引）。不给 sources = 智能搜索（作品的多个关键词 × 所有启用的索引，MoviePilot 认作品，要 tmdbid+type(+season)）；给 sources（list_sources 里的 id，如 nyaa、mikan、prowlarr:3）= 只搜这些源，配合 keywords 给 1-4 个关键词（中文名、英文名、罗马音、别名）。各来源并发搜，等全部返回或 budget 秒（默认 40）就给结果；busy=true 表示还有来源没回来、more=true 表示还能翻页，都可以用 more_resources 接着要。入库时把 ref 交给 ingest_resource。",
     input: z.object({
       tmdbid: z.number().int().positive().optional(), type: Type.optional(), season: z.number().int().min(0).optional(),
       keyword: z.string().max(200).optional(), keywords: z.array(z.string().min(1).max(200)).max(4).optional(),
-      sources: z.array(z.string().max(40)).max(20).optional(),
+      sources: z.array(z.string().max(40)).max(20).optional(), budget: z.number().min(5).max(90).optional(),
     }),
     label: (a) => `搜资源${a.keyword || a.keywords?.[0] ? `「${a.keyword || a.keywords[0]}」` : ""}${a.sources?.length ? `（${a.sources.length} 个源）` : ""}`,
     run: async (ctx, a) => {
       if (!a.tmdbid && !a.keyword && !a.keywords?.length) throw new ToolError("需要 tmdbid 或 keyword / keywords");
-      const r = await call(ctx, "POST", "/v1/search", { tmdbid: a.tmdbid, type: a.type ?? "tv", season: a.season, keyword: a.keyword, keywords: a.keywords, sources: a.sources });
+      const r = await call(ctx, "POST", "/v1/search", { tmdbid: a.tmdbid, type: a.type ?? "tv", season: a.season, keyword: a.keyword, keywords: a.keywords, sources: a.sources, budget: a.budget ?? 40 });
       if (r.ok === false) throw new ToolError(r.error || "搜索失败");
-      const start = Object.keys(ctx.refs).length;
-      const list = (r.results ?? []).slice(0, 25).map((x: any, i: number) => {
-        const ref = `r${start + i + 1}`;
-        ctx.refs[ref] = { title: x.title, magnet: x.magnet, size: x.size, seeders: x.seeders, source: x.source, kind: x.kind, media: r.media ?? null, season: x.season ?? r.season ?? null };
-        return {
-          ref, title: cut(x.title, 120), sizeGB: Math.round((x.size / 1e9) * 10) / 10, seeders: x.seeders, res: x.res || undefined, codec: x.codec || undefined,
-          group: x.group || undefined, se: x.se || undefined, score: x.score ?? undefined, excluded: x.excluded || undefined, source: x.indexer || x.source,
-        };
-      });
-      return { media: r.media, season: r.season, library: r.library, results: list };
+      return resourceList(ctx, r);
+    },
+  },
+  more_resources: {
+    tier: "read",
+    description: "接着 find_resources 的一次搜索（给它返回的 job）：next=false 等还没回来的来源（busy=true 时用）；next=true 给还能翻页的来源取下一页（more=true 时用）。返回合并后重新排好的完整列表，已经给过的资源 ref 不变。budget 秒内没回来的先返回。",
+    input: z.object({ job: z.string().min(1).max(80), next: z.boolean().optional(), budget: z.number().min(5).max(90).optional() }),
+    label: (a) => (a.next ? "取下一页资源" : "等剩下的来源"),
+    run: async (ctx, a) => {
+      const r = await call(ctx, "POST", "/v1/search/continue", { job: a.job, next: !!a.next, budget: a.budget ?? 40 });
+      if (r.ok === false) throw new ToolError(r.error || "搜索已过期，请重新 find_resources");
+      return resourceList(ctx, r);
     },
   },
   community_reviews: {

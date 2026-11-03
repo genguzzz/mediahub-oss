@@ -766,15 +766,25 @@ const SearchBody = z.object({
   keyword: z.string().max(200).optional(),
   keywords: z.array(z.string().max(200)).max(4).optional(),
   sources: z.array(z.string().max(40)).max(40).optional(),
+  budget: z.number().min(3).max(120).default(40),   // seconds to wait for the sources; the rest keeps running (see /continue)
+  force: z.boolean().default(false),
 });
 
+// One-shot search (AI tool): the same progressive search as /v1/search/stream, collected until every source has
+// answered or `budget` seconds pass. The answer carries job / busy / more for /v1/search/continue.
 app.post("/v1/search", async (req) => {
   const body = SearchBody.parse(req.body);
   if (!body.tmdbid && !body.keyword && !body.keywords?.length) throw Object.assign(new Error("需要作品或关键词"), { statusCode: 400 });
   const t0 = Date.now();
-  const res = await plug<{ results?: unknown[] }>("POST", "/hub/search", { body, timeoutMs: 150_000 });
-  req.log.info({ tmdbid: body.tmdbid, season: body.season, sources: body.sources?.length ?? 0, results: res.results?.length ?? 0, ms: Date.now() - t0 }, "search");
+  const res = await plug<{ results?: unknown[]; busy?: boolean }>("POST", "/hub/search", { body, timeoutMs: (body.budget + 30) * 1000 });
+  req.log.info({ tmdbid: body.tmdbid, season: body.season, sources: body.sources?.length ?? 0, results: res.results?.length ?? 0, busy: res.busy, ms: Date.now() - t0 }, "search");
   return res;
+});
+
+// Continue a search: wait for its remaining sources, or (next) fetch the next page of the sources that can page.
+app.post("/v1/search/continue", async (req) => {
+  const b = z.object({ job: z.string().min(1).max(80), next: z.boolean().default(false), budget: z.number().min(3).max(120).default(40) }).parse(req.body);
+  return plug("POST", "/hub/search/continue", { body: b, timeoutMs: (b.budget + 30) * 1000 });
 });
 
 // Progressive search as Server-Sent Events — smart (the work's keywords × every indexer, MP matching) or raw
