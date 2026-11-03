@@ -4,6 +4,7 @@
 // signed session, so this provider is index-only; watching goes through the stream providers.
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import * as OpenCC from "opencc-js/t2cn";
 import { config } from "../config.ts";
 import { extImage, extUrl } from "../images.ts";
 import type { CatalogDetail, CatalogItem, CatalogProvider, HomeRow, ListQuery, Page } from "./types.ts";
@@ -251,9 +252,11 @@ export function titlesOf(id: string) {
   return db?.items.find((e) => e.id === id)?.norm ?? "";
 }
 
-// The 里番 library names series in Chinese with the Japanese title as OriginalTitle; hanime's
-// search_titles carries the Japanese title too, so NFKC + dropping punctuation and "THE ANIMATION"
-// makes "らぶみー「楓と鈴」THE ANIMATION" a substring of the hanime entry's titles.
+// The 里番 library names series in (Simplified) Chinese with the Japanese title as OriginalTitle; hanime's
+// search_titles carries the Japanese title, Hanime1 mostly a Traditional Chinese one. NFKC, Traditional →
+// Simplified, dropping punctuation and "THE ANIMATION" makes "らぶみー「楓と鈴」THE ANIMATION" a substring of the
+// hanime entry's titles and 「姐妹調教飼育者 5」 contain the library's 「姐妹调教饲育者」. Every side goes through this.
+const toSimplified = OpenCC.Converter({ from: "tw", to: "cn" });
 export function normTitle(s: string) {
-  return s.normalize("NFKC").toLowerCase().replace(/the animation/g, "").replace(/[^0-9a-z\u3040-\u30ff\u3400-\u9fff]/g, "");
+  return toSimplified(s.normalize("NFKC").toLowerCase()).replace(/the animation/g, "").replace(/[^0-9a-z\u3040-\u30ff\u3400-\u9fff]/g, "");
 }

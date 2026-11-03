@@ -3,7 +3,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { embyCatalog, embyStreams, hentaiLibrary, type EmbyGet } from "./emby.ts";
-import { hanime, titlesOf } from "./hanime.ts";
+import { hanime, normTitle, titlesOf } from "./hanime.ts";
 import { hanime1, hanime1Enabled, hanime1Streams } from "./hanime1.ts";
 import { jable, jableStreams } from "./jable.ts";
 import { javdb } from "./javdb.ts";
@@ -41,11 +41,14 @@ export function registerCatalog(app: FastifyInstance, embyGet: EmbyGet) {
   setTimeout(warm, 5_000);
   setInterval(warm, 25 * 60_000).unref();
 
-  // Mark 里番 index entries that are in the library (AV entries come from the library already).
+  // Mark 里番 index entries (hanime: by its stored titles; Hanime1 and others: the card's Chinese / Japanese title)
+  // that are in the library. AV entries come from the library already.
   async function owned<T extends CatalogItem>(c: CatalogProvider, items: T[]): Promise<T[]> {
-    if (c.id !== "hanime") return items;
+    if (c.kind !== "hentai") return items;
     const match = await hentaiLib.matcher().catch((e: unknown) => { log.warn({ err: errText(e) }, "里番 library match failed"); return null; });
-    return match ? items.map((i) => ({ ...i, inLibrary: !!match(titlesOf(i.id)) })) : items;
+    if (!match) return items;
+    const titles = (i: T) => (c.id === "hanime" ? titlesOf(i.id) : [i.title, (i as { originalTitle?: string }).originalTitle ?? ""].map(normTitle).join("|"));
+    return items.map((i) => ({ ...i, inLibrary: !!match(titles(i)) }));
   }
 
   const catalog = (id: string) => {

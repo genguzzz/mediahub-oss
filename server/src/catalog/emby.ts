@@ -172,22 +172,30 @@ export function embyCatalog(embyGet: EmbyGet, libName = "AV"): EmbyAvCatalog {
 // part. `match` finds the series whose title is contained in a hanime entry's titles (longest wins,
 // so "寝取られた爆乳妻たち2" beats "寝取られた爆乳妻たち").
 export function hentaiLibrary(embyGet: EmbyGet) {
-  let cache: { at: number; series: { id: string; norm: string }[] } | null = null;
+  // Each series is known by its Japanese title (OriginalTitle) and its Chinese name: hanime lists Japanese titles,
+  // Hanime1 Chinese ones. Names need 3+ characters (Latin-only 5+, e.g. not "OVA") so short ones don't match unrelated titles.
+  let cache: { at: number; series: { id: string; norms: string[] }[] } | null = null;
   async function load() {
     if (cache && Date.now() - cache.at < 5 * 60_000) return cache.series;
     const views = (await embyGet<{ Name: string; ItemId: string }[]>("/Library/VirtualFolders")) ?? [];
     const lib = views.find((v) => v.Name === "里番")?.ItemId;
     const r = lib ? await embyGet<{ Items: Item[] }>("/Items", { Recursive: "true", ParentId: lib, IncludeItemTypes: "Series", Limit: 5000, Fields: "OriginalTitle" }) : null;
-    const series = (r?.Items ?? []).map((i) => ({ id: i.Id, norm: normTitle(i.OriginalTitle || i.Name || "") })).filter((x) => x.norm.length >= 2);
+    const series = (r?.Items ?? []).map((i) => ({
+      id: i.Id,
+      norms: [...new Set([normTitle(i.OriginalTitle || ""), normTitle(i.Name || "")])]
+        .filter((n, k) => (k === 0 && i.OriginalTitle ? n.length >= 2 : n.length >= (/^[0-9a-z]+$/.test(n) ? 5 : 3))),
+    })).filter((x) => x.norms.length);
     cache = { at: Date.now(), series };
     return series;
   }
   return {
     async matcher() {
       const series = await load();
+      // `titles`: every known title of a work, normalized (normTitle) and joined by "|"; the longest library title
+      // contained in it wins.
       return (titles: string) => {
-        let best: { id: string; norm: string } | undefined;
-        for (const s of series) if (titles.includes(s.norm) && (!best || s.norm.length > best.norm.length)) best = s;
+        let best: { id: string; len: number } | undefined;
+        for (const s of series) for (const n of s.norms) if (titles.includes(n) && (!best || n.length > best.len)) best = { id: s.id, len: n.length };
         return best?.id;
       };
     },

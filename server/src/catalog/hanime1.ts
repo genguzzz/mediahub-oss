@@ -7,6 +7,7 @@
 // `hanime1` in SOURCE_PROXY (egress.ts); without one the index is not offered. Its stream plays its own works and,
 // matched by Japanese title and episode, hanime works (hanime.tv's own stream needs a signed session).
 import { proxyOf } from "../egress.ts";
+import { normTitle } from "./hanime.ts";
 import { decode, proxied, text, UA } from "./http.ts";
 import type { CatalogDetail, CatalogItem, CatalogProvider, HomeRow, ListQuery, Page, ResolvedStream, StreamProvider, StreamSource } from "./types.ts";
 
@@ -104,7 +105,7 @@ export function parseWatch(html: string, id: string): Watch {
   return {
     sources,
     detail: {
-      id, title: cn, originalTitle: jp !== cn ? jp : undefined,
+      id, title: cn, originalTitle: jp !== cn ? jp : undefined, aliases: [cn, jp].map(normTitle).join("|"),
       poster: `https://vdownload.hembed.com/image/cover/${id}.jpg`, landscape: thumb || null,
       rating: null, date: meta?.[2] ?? null, tags,
       overview: text(caption?.[1] ?? ""),
