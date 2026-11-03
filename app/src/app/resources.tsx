@@ -113,11 +113,15 @@ export default function ResourcesScreen() {
           returnKeyType="search"
           autoCorrect={false}
           autoCapitalize="none"
-          clearButtonMode="while-editing"
           placeholder="关键词"
           placeholderTextColor={colors.textFaint}
           style={{ flex: 1, fontSize: 15, color: colors.text }}
         />
+        {(kwText ?? keyword) ? (
+          <Pressable onPress={() => { tap(); setKwText(""); }} hitSlop={10} accessibilityLabel="清空关键词">
+            <Ionicons name="close-circle" size={18} color={colors.textFaint} />
+          </Pressable>
+        ) : null}
       </View>
       {mode !== "smart" ? (
         <Pressable onPress={() => { tap(); setSourceSheet(true); }} style={{ marginHorizontal: 16, marginBottom: 8 }}>
@@ -160,7 +164,6 @@ export default function ResourcesScreen() {
             {q.error ? <ErrorBox text={q.error} onRetry={q.refresh} /> : null}
             {q.data?.error ? <ErrorBox text={q.data.error} /> : null}
             {q.data?.notice ? <Text style={[styles.faint, { marginBottom: 6 }]}>{q.data.notice}</Text> : null}
-            {q.loading && !q.data ? <Loading text={q.progress ? `正在搜索 ${q.progress.total} 个来源，先返回的先显示（${q.progress.done}/${q.progress.total}）` : mode === "smart" ? "正在准备关键词和来源" : "正在搜索所选来源"} /> : null}
             {q.data ? (
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 4 }}>
                 <Text style={[styles.faint, { flex: 1 }]}>
@@ -173,7 +176,10 @@ export default function ResourcesScreen() {
             ) : null}
           </>
         }
-        ListEmptyComponent={q.data ? (
+        // While sources are still answering, an empty list means "not yet", not "nothing found"
+        ListEmptyComponent={q.busy && q.open ? (
+          <Loading text={q.progress ? `正在搜索 ${q.progress.total} 个来源，先返回的先显示（${q.progress.done}/${q.progress.total}）` : mode === "smart" ? "正在准备关键词和来源" : "正在搜索所选来源"} />
+        ) : q.data ? (
           hideExcluded && excludedCount && all?.length === excludedCount ? (
             <EmptyState icon="funnel-outline" text={`找到 ${excludedCount} 条，都被选片策略排除了（${[...new Set((all ?? []).map((x) => x.excluded).filter(Boolean))].slice(0, 2).join("；")}）`} action={<PillButton small variant="soft" icon="eye-outline" label="显示这些资源" onPress={() => setHideExcluded(false)} />} />
           ) : (
