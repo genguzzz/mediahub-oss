@@ -263,12 +263,23 @@ export class LoginRequired extends Error {
 
 // `cookie`: a logged-in session (JavDB); pages fetched with and without it are cached apart.
 // `headers`: extra request headers a source expects (they replace the defaults of the same name).
+const TRANSIENT = new Set([502, 503, 504, 520, 521, 522, 523, 524]);
+export const RETRY_WAITS = [1500, 3000];
+
 export function proxied(url: string, cookie = "", source: Source = "javdb", headers: Record<string, string> = {}): Promise<string> {
   return remember(`proxy:${cookie ? "auth:" : ""}${url}`, MIN_INTERVAL.plain, () => timed("proxy", url, async () => {
-    const res = await proxiedRaw(url, { ...headers, ...(cookie ? { cookie } : {}) }, {}, source);
+    let res = await proxiedRaw(url, { ...headers, ...(cookie ? { cookie } : {}) }, {}, source);
+    // The site or Cloudflare briefly down (502/503/504, Cloudflare 520–524; Hanime1 gave 502s for ~90 s on 2026-11-04):
+    // try again a little later instead of failing the page. A Cloudflare challenge is handled in proxiedRaw.
+    for (const wait of RETRY_WAITS) {
+      if (!TRANSIENT.has(res.status)) break;
+      await res.body?.cancel();
+      await new Promise((r) => setTimeout(r, wait));
+      res = await proxiedRaw(url, { ...headers, ...(cookie ? { cookie } : {}) }, {}, source);
+    }
     if (res.url && new URL(res.url).pathname === "/login") throw new LoginRequired("JavDB");
     if (res.status === 404) return "";
-    if (!res.ok) throw new Error(`页面返回 ${res.status}`);
+    if (!res.ok) throw new Error(TRANSIENT.has(res.status) ? `站点暂时不可用（${res.status}），稍后再试` : `页面返回 ${res.status}`);
     const text = await res.text();
     if (text.includes("Due to copyright restrictions")) throw new Error("索引站拒绝了当前出口地区");
     return text;
