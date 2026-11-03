@@ -250,3 +250,14 @@ def test_raw_all_indexers_wins_over_single_picks_and_notice_is_not_error(hub, mo
     r = run(go())
     assert seen["ids"] is None                                   # 「全部」包含单选的那些
     assert r["error"] is None and r["notice"] == "YTS 暂停中，已跳过"
+
+
+def test_job_id_stays_short_for_long_source_lists(hub):
+    srcs = ["prowlarr"] + [f"prowlarr:{i}" for i in range(40)] + ["nyaa", "mikan", "dmhy"]
+
+    async def go():
+        r = await hub.search_stream({"mode": "raw", "keywords": ["Coherence", "彗星来的那一夜"], "sources": srcs})
+        assert len(r["job"]) == 16
+        await idle(hub, r["job"])
+        assert (await hub.search_more({"job": r["job"]}))["ok"] is True
+    run(go())

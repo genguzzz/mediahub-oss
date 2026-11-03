@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { FlatList, Linking, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
@@ -49,6 +49,7 @@ export default function ResourcesScreen() {
     : { mode: "raw", tmdbid: mode === "raw" ? tmdbid : undefined, type, season: mode === "raw" ? season : undefined, keywords, sources: picked };
   const key = `res:${JSON.stringify(query)}`;
   const q = useSearchStream(waiting ? null : key, query);
+  const scrolled = useRef(false);
   const [kwText, setKwText] = useState<string | null>(null);
   const editKeyword = () => {
     const v = (kwText ?? "").trim();
@@ -180,7 +181,9 @@ export default function ResourcesScreen() {
           )
         ) : undefined}
         renderItem={({ item }) => <ResourceRow r={item} submitted={!!submitted[item.id]} onPress={() => setOpen(item)} />}
-        onEndReached={q.more}
+        // Next page only after the user scrolls: a short list sits "at its end" right after loading
+        onScrollBeginDrag={() => { scrolled.current = true; }}
+        onEndReached={() => { if (scrolled.current) { scrolled.current = false; q.more(); } }}
         onEndReachedThreshold={0.6}
         ListFooterComponent={q.data ? (
           <Text style={[styles.faint, { textAlign: "center", paddingVertical: 12 }]}>

@@ -74,9 +74,12 @@ export function useSearchStream(key: string | null, query: StreamQuery) {
   const more = useCallback(() => {
     if (!st.job || st.busy || !st.more || !st.open) return;
     setSt((s) => ({ ...s, busy: true }));
+    // A failed or empty request turns paging off (it is never retried by itself: the list is still at its end and
+    // onEndReached would fire again at once — that loop was the flicker of 2026-11-04).
+    const stopPaging = (error: string | null) => setSt((s) => ({ ...s, busy: false, more: false, error: error ?? s.error }));
     void api<{ ok: boolean; started?: number; error?: string }>("/v1/search/stream/more", { body: { job: st.job } })
-      .then((r) => { if (!r.ok || !r.started) setSt((s) => ({ ...s, busy: false, more: r.ok ? false : s.more, error: r.ok ? s.error : r.error ?? s.error })); })
-      .catch(() => setSt((s) => ({ ...s, busy: false })));
+      .then((r) => { if (!r.ok) stopPaging(r.error || "未能加载下一页"); else if (!r.started) stopPaging(null); })
+      .catch((e: unknown) => stopPaging(`未能加载下一页：${e instanceof Error ? e.message : String(e)}`));
   }, [st.job, st.busy, st.more, st.open]);
 
   const stop = useCallback(() => {

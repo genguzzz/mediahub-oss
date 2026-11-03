@@ -401,22 +401,23 @@ class Hub:
         if not raw and not tmdbid:
             return {"ok": False, "error": "缺少 tmdbid"}
         key = f"raw:{kind}:{tmdbid}:{season}:{'|'.join(keywords)}:{','.join(sources)}" if raw else f"{kind}:{tmdbid}:{season}"
+        jid = hashlib.sha1(key.encode()).hexdigest()[:16]     # 对外的任务 id：短、固定长度（key 可能很长）
         now = time.time()
         for k, j in list(self._jobs.items()):
             if not j["busy"] and j["listeners"] == 0 and now - j["touched"] > self.STREAM_REUSE:
                 self._jobs.pop(k, None)
-        j = self._jobs.get(key)
+        j = self._jobs.get(jid)
         if j and not j["cancelled"] and (j["busy"] or not payload.get("force")):
             j["listeners"] += 1
             j["touched"] = now
-            return {"ok": True, "job": key, "reused": True}
-        j = {"key": key, "raw": raw, "tmdbid": tmdbid, "kind": kind, "season": season, "keywords": keywords, "sources": sources,
+            return {"ok": True, "job": jid, "reused": True}
+        j = {"key": key, "id": jid, "raw": raw, "tmdbid": tmdbid, "kind": kind, "season": season, "keywords": keywords, "sources": sources,
              "t0": now, "touched": now, "v": 0, "rv": 0, "busy": True, "round": 0, "listeners": 1, "cancelled": False,
              "changed": asyncio.Event(), "lock": asyncio.Lock(), "task": None, "media": None, "plan": None, "error": None,
              "notes": [], "items": [], "seen": set(), "raw_seen": set(), "pairs": {}, "have": set(), "aired": []}
-        self._jobs[key] = j
+        self._jobs[jid] = j
         j["task"] = asyncio.create_task(self._stream_start(j))
-        return {"ok": True, "job": key, "reused": False}
+        return {"ok": True, "job": jid, "reused": False}
 
     async def search_more(self, payload: dict = Body(...)) -> Dict[str, Any]:
         """下一页：{job}。只给上一页成功且还有新结果的来源取下一页；正在取时不重复发。"""
