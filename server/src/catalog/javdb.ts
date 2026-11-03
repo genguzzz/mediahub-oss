@@ -53,11 +53,11 @@ const NEEDS_LOGIN = new Set(["u_weekly", "u_monthly", "u_latest"]);
 
 // Every JavDB page: with the logged-in session when there is one; a redirect to /login with a session
 // means it expired (marked, then reported).
-async function get(path: string, ttlMs: number, needsLogin = false): Promise<string> {
+async function get(path: string, needsLogin = false): Promise<string> {
   const cookie = await javdbCookie();
   if (needsLogin && !cookie) throw new LoginRequired("JavDB");
   try {
-    return await proxied(BASE + path, ttlMs, cookie);
+    return await proxied(BASE + path, cookie);
   } catch (e) {
     // 無碼 pages answer a missing/expired session with a redirect to /login (lists, detail) or a bare 403 (rankings).
     const denied = e instanceof LoginRequired || (needsLogin && e instanceof Error && /返回 403/.test(e.message));
@@ -74,18 +74,18 @@ async function list(q: ListQuery): Promise<Page<CatalogItem>> {
   else if (q.tag) {
     const tagPage = tagPages.get(q.tag);
     if (!tagPage) throw Object.assign(new Error("先打开带这个标签的作品，再点标签"), { statusCode: 404 });
-    return page(await get(`${tagPage}${tagPage.includes("?") ? "&" : "?"}page=${q.page}`, 60 * 60_000, true), q.page);
+    return page(await get(`${tagPage}${tagPage.includes("?") ? "&" : "?"}page=${q.page}`, true), q.page);
   }
   else path = (LISTS[q.sort] ?? LISTS.weekly)(q.page);
   const ranking = !q.person && !q.q && path.startsWith("/rankings");
   if (ranking && q.page > 1) return { items: [], total: 0, page: q.page, hasMore: false };
-  const html = await get(path, ranking || q.sort === "latest" || q.sort === "u_latest" ? 20 * 60_000 : 60 * 60_000, NEEDS_LOGIN.has(q.sort));
+  const html = await get(path, NEEDS_LOGIN.has(q.sort));
   const r = page(html, q.page);
   return ranking ? { ...r, hasMore: false, total: r.items.length } : r;
 }
 
 async function item(id: string): Promise<CatalogDetail | null> {
-  const html = await get(`/v/${encodeURIComponent(id)}`, 6 * 3600_000);
+  const html = await get(`/v/${encodeURIComponent(id)}`);
   if (!html) return null;
   const blocks = new Map<string, string>();
   for (const m of html.matchAll(/<div class="panel-block[^"]*">\s*<strong>([^<:：]+)[:：]?<\/strong>([\s\S]*?)<\/div>/g)) blocks.set(m[1].trim(), m[2]);
@@ -132,7 +132,7 @@ async function item(id: string): Promise<CatalogDetail | null> {
 }
 
 async function persons(sort: string, n: number): Promise<Page<Person>> {
-  const html = await get(`/actors/${sort === "uncensored" ? "uncensored" : "censored"}?page=${n}`, 6 * 3600_000);
+  const html = await get(`/actors/${sort === "uncensored" ? "uncensored" : "censored"}?page=${n}`);
   const items = chunks(html, /<div class="box actor-box">/).map((h): Person | null => {
     const id = /href="\/actors\/(\w+)"/.exec(h)?.[1];
     if (!id) return null;

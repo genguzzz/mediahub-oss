@@ -59,13 +59,13 @@ async function list(q: ListQuery): Promise<Page<CatalogItem>> {
   } else if (q.sort === "latest") url = block("/latest-updates/", "list_videos_latest_videos_list", { sort_by: "post_date", from: q.page });
   else if (q.sort === "uncensored" || q.sort === "uncensored_hot") url = block("/categories/uncensored/", "list_videos_common_videos_list", { sort_by: q.sort === "uncensored" ? "post_date" : HOT.month, from: q.page });
   else url = block("/hot/", "list_videos_common_videos_list", { sort_by: HOT[q.sort] ?? HOT.week, from: q.page });
-  return page(await flare(url, q.sort === "latest" || q.sort === "today" ? 20 * 60_000 : 60 * 60_000), q.page);
+  return page(await flare(url), q.page);
 }
 
 interface VideoPage { title: string; code: string; cover: string | null; hls: string | null; people: { id: string; name: string }[]; tags: string[]; views: number; note: string }
 
-async function video(slug: string, ttlMs = 15 * 60_000): Promise<VideoPage | null> {
-  const html = await flare(`${BASE}/videos/${encodeURIComponent(slug)}/?lang=jp`, ttlMs, true);
+async function video(slug: string): Promise<VideoPage | null> {
+  const html = await flare(`${BASE}/videos/${encodeURIComponent(slug)}/?lang=jp`, true);
   if (!html || /<title>404/.test(html)) return null;
   const og = (p: string) => decode(new RegExp(`<meta property="og:${p}" content="([^"]*)"`).exec(html)?.[1] ?? "");
   const full = og("title");
@@ -89,7 +89,7 @@ async function persons(sort: string, n: number): Promise<Page<Person>> {
   const by: Record<string, string> = { hot: "avg_videos_popularity", count: "total_videos", recent: "last_content_date", name: "title" };
   // "人气" is the site's own default order of /models/ (the avg-popularity sort favours one-hit names).
   const url = sort === "hot" || !by[sort] ? `${BASE}/models/${n > 1 ? `${n}/` : ""}?lang=jp` : block("/models/", "list_models_models_list", { sort_by: by[sort], from: n });
-  const html = await flare(url, 6 * 3600_000);
+  const html = await flare(url);
   const raw = chunks(html, /<div class="horizontal-img-box/);
   const items = raw.map((h): Person | null => {
     const id = /href="https:\/\/jable\.tv\/models\/([^/"]+)\/"/.exec(h)?.[1];

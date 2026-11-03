@@ -15,7 +15,7 @@ const log = logger("hanime");
 
 const DB_URL = "https://guest.freeanimehentai.net/api/v11/search_hvs";
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
-const REFRESH_MS = 6 * 3600_000;
+const REFRESH_MS = 30 * 60_000;   // checked on each request: older than this → refresh in the background (whole index, ~3.5k entries)
 const FILE = path.join(config.cacheDir, "catalog", "hanime.json");
 // Minor-coded settings stay hidden (the only filter; see REJECT in jable.ts).
 const HIDDEN_TAGS = new Set(["school girl", "2000-year-old dragon girl"]);

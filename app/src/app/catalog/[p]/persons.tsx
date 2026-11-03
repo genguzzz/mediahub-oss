@@ -19,7 +19,7 @@ export default function Persons() {
   const [sort, setSort] = useState<string | undefined>(undefined);
   const cur = sort ?? info?.personIndexSorts[0]?.id ?? "";
   const [text, setText] = useState("");
-  const q = usePaged(`catalog:${p}:persons:${cur}`, async (page) => (await catalogApi.persons(p, cur, page)).items, { id: (x) => x.id, maxPages: 60, staleMs: 30 * 60_000 });
+  const q = usePaged(`catalog:${p}:persons:${cur}`, async (page) => (await catalogApi.persons(p, cur, page)).items, { id: (x) => x.id, maxPages: 60, staleMs: 60_000 });
   const scroll = useAutoMore(q.autoMore);
   const cols = width > 500 ? 5 : 4;
   const size = Math.floor((width - 32 - (cols - 1) * 8) / cols) - 8;

@@ -35,7 +35,7 @@ export default function CatalogList() {
       const r = await catalogApi.list(p, q, page, SIZE);
       return r.total ? { items: r.items, total: r.total } : r.hasMore ? r.items : { items: r.items, total: (page - 1) * SIZE + r.items.length };
     },
-    { id: (c) => c.id, maxPages: 120, staleMs: 10 * 60_000 },
+    { id: (c) => c.id, maxPages: 120, staleMs: 60_000 },
   );
   const scroll = useAutoMore(list.autoMore);
   const isHentai = info?.kind === "hentai";

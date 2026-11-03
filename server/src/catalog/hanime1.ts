@@ -24,7 +24,7 @@ const HEADERS = {
   "accept-language": "zh-TW,zh;q=0.9,en;q=0.8,ja;q=0.7",
   referer: `${BASE}/`,
 };
-const page = (path: string, ttlMs: number) => proxied(`${BASE}${path}`, ttlMs, "", "hanime1", HEADERS);
+const page = (path: string) => proxied(`${BASE}${path}`, "", "hanime1", HEADERS);
 
 // Cards: genre lists use portrait covers ("home-rows-videos-div"), keyword searches landscape thumbnails.
 export function cards(html: string): CatalogItem[] {
@@ -60,14 +60,14 @@ async function list(q: ListQuery): Promise<Page<CatalogItem>> {
   else if (!link) params.set("genre", "裏番");
   params.set("sort", SORT[q.sort] ?? SORT.week);
   if (q.page > 1) params.set("page", String(q.page));
-  const html = await page(`/search?${params}`, q.sort === "new" || q.sort === "day" ? 20 * 60_000 : 60 * 60_000);
+  const html = await page(`/search?${params}`);
   return { items: cards(html), total: 0, page: q.page, hasMore: /rel="next"/.test(html) };
 }
 
 interface Watch { detail: CatalogDetail; sources: { uri: string; size: number }[] }
 
-async function watch(id: string, ttlMs = 10 * 60_000): Promise<Watch | null> {
-  const html = await page(`/watch?v=${encodeURIComponent(id)}`, ttlMs);
+async function watch(id: string): Promise<Watch | null> {
+  const html = await page(`/watch?v=${encodeURIComponent(id)}`);
   return html ? parseWatch(html, id) : null;
 }
 
@@ -121,7 +121,7 @@ export const hanime1: CatalogProvider = {
   list,
   async item(id: string) {
     if (!/^\d{1,9}$/.test(id)) return null;
-    return (await watch(id, 30 * 60_000))?.detail ?? null;
+    return (await watch(id))?.detail ?? null;
   },
   async tags() {
     return [];
@@ -148,7 +148,7 @@ export const hanime1Streams: StreamProvider = {
   // The MP4 link expires: read the watch page again (5-min cache) right before playing.
   async resolve(ref: string): Promise<ResolvedStream> {
     if (!/^\d{1,9}$/.test(ref)) throw new Error("播放源参数不对");
-    const w = await watch(ref, 5 * 60_000);
+    const w = await watch(ref);
     const best = w?.sources.sort((a, b) => b.size - a.size)[0];
     if (!best) throw new Error("Hanime1 页面里没有播放地址");
     return { uri: best.uri, headers: { Referer: `${BASE}/`, "User-Agent": UA }, title: w!.detail.originalTitle ?? w!.detail.title, poster: w!.detail.landscape ?? null };

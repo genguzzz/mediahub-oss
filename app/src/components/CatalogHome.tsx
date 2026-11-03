@@ -23,9 +23,9 @@ export function CatalogHome({ kind }: { kind: CatalogKind }) {
   const wideW = Math.floor((width - 16 * 2 - 12) / 2);
   const providers = useQuery("catalog:providers", catalogApi.providers, { staleMs: 60 * 60_000 });
   const info = providers.data?.providers.find((x) => x.id === p);
-  const home = useQuery(`catalog:${p}:home`, () => catalogApi.home(p), { staleMs: 10 * 60_000 });
+  const home = useQuery(`catalog:${p}:home`, () => catalogApi.home(p), { staleMs: 60_000 });   // the server refetches the site per request (1–3 min floor)
   const tags = useQuery(info?.tagFilter ? `catalog:${p}:tags` : null, () => catalogApi.tags(p), { staleMs: 60 * 60_000 });
-  const persons = useQuery(info?.people ? `catalog:${p}:persons:home` : null, () => catalogApi.persons(p, info?.personIndexSorts[0]?.id ?? "", 1), { staleMs: 30 * 60_000 });
+  const persons = useQuery(info?.people ? `catalog:${p}:persons:home` : null, () => catalogApi.persons(p, info?.personIndexSorts[0]?.id ?? "", 1), { staleMs: 60_000 });
   const list = (title: string, q: ListQuery) => router.push({ pathname: "/catalog/[p]", params: { p, title, ...q } });
 
   return (

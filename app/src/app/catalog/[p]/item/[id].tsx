@@ -22,7 +22,7 @@ export default function CatalogItemScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const q = useQuery(`catalog:${p}:item:${id}`, () => catalogApi.item(p, id), { staleMs: 5 * 60_000 });
+  const q = useQuery(`catalog:${p}:item:${id}`, () => catalogApi.item(p, id), { staleMs: 60_000 });
   const play = usePlaySource();
   const providers = useQuery("catalog:providers", catalogApi.providers, { staleMs: 60 * 60_000 });
   // The detail says whether its tags open lists (the providers list is cached for an hour).

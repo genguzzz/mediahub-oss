@@ -40,15 +40,32 @@ async function timed<T>(via: string, url: string, run: () => Promise<T>): Promis
 const FLARE = process.env.FLARESOLVERR_URL ?? "http://127.0.0.1:8191/v1";
 export const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
 
+// Pages are fetched from the site on every request. The cache only enforces a minimum interval per page (so the
+// home's rows, scrolling and several viewers hit the site once a minute, not once each) — longer for pages behind
+// Cloudflare, whose loads are costly and get challenged when frequent — and keeps the last good copy to answer
+// with when a refetch fails (challenge, timeout), so a hiccup shows slightly old results instead of an error.
+export const MIN_INTERVAL = { plain: 60_000, cloudflare: 3 * 60_000 };
+const KEEP_GOOD = 24 * 3600_000;
 const cache = new Map<string, { at: number; ttl: number; value: Promise<string> }>();
-onClearCaches(() => cache.clear());
-function remember(key: string, ttlMs: number, fn: () => Promise<string>): Promise<string> {
+const good = new Map<string, { at: number; value: string }>();
+onClearCaches(() => { cache.clear(); good.clear(); });
+function remember(key: string, minMs: number, fn: () => Promise<string>): Promise<string> {
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < hit.ttl) return hit.value;
-  const value = fn();
-  cache.set(key, { at: Date.now(), ttl: ttlMs, value });
-  value.catch(() => cache.delete(key));
+  const value = fn().then(
+    (v) => { good.set(key, { at: Date.now(), value: v }); return v; },
+    (e: unknown) => {
+      cache.delete(key);
+      const g = good.get(key);
+      if (g && Date.now() - g.at < KEEP_GOOD && !(e instanceof LoginRequired)) {
+        log.warn({ key: key.slice(0, 160), err: errText(e), ageMin: Math.round((Date.now() - g.at) / 60_000) }, "refetch failed, serving the last good copy");
+        return g.value;
+      }
+      throw e;
+    });
+  cache.set(key, { at: Date.now(), ttl: minMs, value });
   if (cache.size > 800) for (const [k, v] of cache) if (Date.now() - v.at > v.ttl) cache.delete(k);
+  if (good.size > 1500) for (const [k, v] of good) if (Date.now() - v.at > KEEP_GOOD) good.delete(k);
   return value;
 }
 
@@ -105,8 +122,8 @@ async function withClearance(url: string): Promise<string | null> {
   return text;
 }
 
-export function flare(url: string, ttlMs = 30 * 60_000, urgent = false): Promise<string> {
-  return remember(`flare:${url}`, ttlMs, async () => {
+export function flare(url: string, urgent = false): Promise<string> {
+  return remember(`flare:${url}`, MIN_INTERVAL.cloudflare, async () => {
     const fast = await timed("cf-clearance", url, () => withClearance(url)).catch(() => null);
     return fast !== null ? fast : viaBrowser(url, urgent);
   });
@@ -246,8 +263,8 @@ export class LoginRequired extends Error {
 
 // `cookie`: a logged-in session (JavDB); pages fetched with and without it are cached apart.
 // `headers`: extra request headers a source expects (they replace the defaults of the same name).
-export function proxied(url: string, ttlMs = 30 * 60_000, cookie = "", source: Source = "javdb", headers: Record<string, string> = {}): Promise<string> {
-  return remember(`proxy:${cookie ? "auth:" : ""}${url}`, ttlMs, () => timed("proxy", url, async () => {
+export function proxied(url: string, cookie = "", source: Source = "javdb", headers: Record<string, string> = {}): Promise<string> {
+  return remember(`proxy:${cookie ? "auth:" : ""}${url}`, MIN_INTERVAL.plain, () => timed("proxy", url, async () => {
     const res = await proxiedRaw(url, { ...headers, ...(cookie ? { cookie } : {}) }, {}, source);
     if (res.url && new URL(res.url).pathname === "/login") throw new LoginRequired("JavDB");
     if (res.status === 404) return "";
