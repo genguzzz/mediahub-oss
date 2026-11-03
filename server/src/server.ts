@@ -777,24 +777,29 @@ app.post("/v1/search", async (req) => {
   return res;
 });
 
-// Progressive smart search as Server-Sent Events. The plugin fans the work's keywords out over every indexer and
-// merges results as each answers; this route waits on the plugin (it blocks until the result changes) and pushes
+// Progressive search as Server-Sent Events — smart (the work's keywords × every indexer, MP matching) or raw
+// (given keywords × picked sources). The plugin merges results as each source answers; this route waits on the plugin (it blocks until the result changes) and pushes
 // each new snapshot as `data: {type:"update", ...}`. Identical searches share one plugin job (a finished one is
 // reused for 10 min unless force). Closing the connection tells the plugin this viewer left — the last one leaving
 // stops it. Paging: POST /v1/search/stream/more asks the sources whose last page worked for their next one; the
 // update arrives on the same stream. The stream ends after STREAM_MAX or when the job is gone.
+const many = (max: number) => z.preprocess((x) => (x === undefined ? [] : Array.isArray(x) ? x : [x]), z.array(z.string().min(1).max(200)).max(max));
 const StreamQuery = z.object({
-  tmdbid: z.coerce.number().int().positive(),
+  mode: z.enum(["smart", "raw"]).default("smart"),
+  tmdbid: z.coerce.number().int().positive().optional(),
   type: z.enum(["movie", "tv"]).default("tv"),
   season: z.coerce.number().int().min(0).optional(),
+  kw: many(4),                       // raw mode: keywords (repeat ?kw=)
+  src: many(80),                     // raw mode: sources (repeat ?src=): prowlarr, prowlarr:<id>, nyaa, mikan…
   force: z.preprocess((x) => x === true || x === "1" || x === "true", z.boolean()),
-});
+}).refine((q) => (q.mode === "raw" ? q.kw.length > 0 && q.src.length > 0 : !!q.tmdbid), { message: "智能搜索需要作品；按来源搜索需要关键词和来源" });
 const STREAM_MAX = 10 * 60_000;
 type PollResult = { ok: boolean; error?: string; v: number; rv?: number; busy: boolean; [k: string]: unknown };
 
 app.get("/v1/search/stream", async (req, reply) => {
   const q = StreamQuery.parse(req.query);
-  const start = await plug<{ ok: boolean; error?: string; job?: string; reused?: boolean }>("POST", "/hub/search/stream", { body: q, timeoutMs: 30_000 });
+  const body = { mode: q.mode, tmdbid: q.tmdbid, type: q.type, season: q.season, keywords: q.kw, sources: q.src, force: q.force };
+  const start = await plug<{ ok: boolean; error?: string; job?: string; reused?: boolean }>("POST", "/hub/search/stream", { body, timeoutMs: 30_000 });
   if (!start.ok || !start.job) throw Object.assign(new Error(start.error || "未能开始搜索"), { statusCode: 502 });
   const job = start.job;
   reply.hijack();

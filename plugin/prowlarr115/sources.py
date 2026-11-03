@@ -11,7 +11,8 @@ import html
 import re
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, Dict, List
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Tuple
 
 NYAA = "https://nyaa.si/"
 MIKAN = "https://mikanani.me/RSS/Search?searchstr="
@@ -161,3 +162,47 @@ def _safe(fn, *a):
         return fn(*a)
     except Exception:  # noqa: BLE001
         return []
+
+
+# ---------------- 直连来源注册表 ----------------
+@dataclass(frozen=True)
+class DirectSource:
+    """一个直连来源（不经 Prowlarr）：App 来源列表里的展示信息，和怎么取一页。
+    fetch(ctx, 关键词, 第几页) → 来源条目 [{title, magnet, size, seeders, peers, pub|ts, site}]；
+    ctx.get(url) 取网页，ctx.adult 是插件的成人模块（没开时为 None）。paged=False 的来源一页就是全部。"""
+    id: str
+    name: str
+    kind: str                   # direct（影视/动漫）/ adult
+    note: str
+    lang: str
+    tags: Tuple[str, ...]
+    desc: str
+    fetch: Callable[[Any, str, int], List[Dict]]
+    paged: bool = False
+    needs_adult: bool = False
+    privacy: str = "public"
+
+    def available(self, ctx: Any) -> bool:
+        return not self.needs_adult or getattr(ctx, "adult", None) is not None
+
+
+DIRECT_SOURCES: Dict[str, DirectSource] = {s.id: s for s in (
+    DirectSource("nyaa", "Nyaa", "direct", "番剧，按做种数", "en", ("动漫", "外文"),
+                 "东亚媒体为主的公开站，番剧最全（含生肉、英字、合集），英文名/罗马音搜得最准",
+                 lambda ctx, q, page: nyaa_limited(ctx.get, q, "seeders", page), paged=True),
+    DirectSource("animetosho", "AnimeTosho", "direct", "Nyaa/AniDex 镜像，合集在前", "en", ("动漫", "外文"),
+                 "Nyaa、AniDex、TokyoTosho 的镜像，可按大小排序，老番 BD 合集不会被新单集挤掉",
+                 lambda ctx, q, page: animetosho(ctx.get, q, "size-d", page) + (animetosho(ctx.get, q, "", page) if page == 1 else []),
+                 paged=True),
+    DirectSource("mikan", "Mikan", "direct", "中文字幕组，用中文名搜", "zh", ("动漫", "中文"),
+                 "蜜柑计划：中文字幕组的周更和合集，用中文名搜", lambda ctx, q, page: mikan_rss(ctx.get, q)),
+    DirectSource("dmhy", "动漫花园", "direct", "中文字幕组最全，用中文名搜", "zh", ("动漫", "中文"),
+                 "share.dmhy.org：国内字幕组发布最全（周更、合集、BDRip），用中文名搜；RSS 不带体积",
+                 lambda ctx, q, page: dmhy_rss(ctx.get, q)),
+    DirectSource("sukebei-av", "sukebei 真人", "adult", "AV 番号", "ja", ("成人",), "sukebei.nyaa 真人分类，按番号搜",
+                 lambda ctx, q, page: ctx.adult.sukebei_rows(q, "av"), needs_adult=True),
+    DirectSource("sukebei-anime", "sukebei 动画", "adult", "里番", "ja", ("成人", "动漫"), "sukebei.nyaa 动画分类，里番",
+                 lambda ctx, q, page: ctx.adult.sukebei_rows(q, "hentai"), needs_adult=True),
+)}
+
+DEFAULT_DIRECT = ("nyaa", "animetosho", "mikan")   # 只给关键词、没选来源时搜这几个（番剧直连）

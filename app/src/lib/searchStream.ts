@@ -1,5 +1,5 @@
-// Progressive smart search over SSE (/v1/search/stream): the server pushes the whole sorted result list each time a
-// source (keyword × indexer) answers. Scrolling to the end asks for the next page of the sources whose last page
+// Progressive search over SSE (/v1/search/stream), smart (the work's keywords × every indexer, MoviePilot matching)
+// or raw (given keywords × picked sources): the server pushes the sorted result list each time a source answers. Scrolling to the end asks for the next page of the sources whose last page
 // worked (more()); the update arrives on the same stream. Leaving the screen or stop() closes the stream, which
 // tells the server this viewer left. refresh() searches again from scratch (force).
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -14,7 +14,19 @@ interface State { job: string | null; data: SearchResult | null; tasks: StreamTa
 
 const EMPTY: State = { job: null, data: null, tasks: [], busy: true, round: 0, more: false, error: null, open: false };
 
-export function useSmartStream(key: string | null, query: { tmdbid?: number; type: string; season?: number | null }) {
+export interface StreamQuery { mode: "smart" | "raw"; tmdbid?: number; type: string; season?: number | null; keywords?: string[]; sources?: string[] }
+
+function queryString(q: StreamQuery, force: boolean) {
+  const p: string[] = [`mode=${q.mode}`, `type=${q.type}`];
+  if (q.tmdbid) p.push(`tmdbid=${q.tmdbid}`);
+  if (q.season != null) p.push(`season=${q.season}`);
+  for (const k of q.keywords ?? []) p.push(`kw=${encodeURIComponent(k)}`);
+  for (const s of q.sources ?? []) p.push(`src=${encodeURIComponent(s)}`);
+  if (force) p.push("force=1");
+  return p.join("&");
+}
+
+export function useSearchStream(key: string | null, query: StreamQuery) {
   const [st, setSt] = useState<State>(EMPTY);
   const [run, setRun] = useState(0);
   const force = useRef(false);
@@ -23,12 +35,11 @@ export function useSmartStream(key: string | null, query: { tmdbid?: number; typ
   q.current = query;
 
   useEffect(() => {
-    if (!key || !q.current.tmdbid) return;
+    if (!key) return;
     const ac = new AbortController();
     abort.current = ac;
     setSt({ ...EMPTY, open: true });
-    const { tmdbid, type, season } = q.current;
-    const qs = `tmdbid=${tmdbid}&type=${type}${season != null ? `&season=${season}` : ""}${force.current ? "&force=1" : ""}`;
+    const qs = queryString(q.current, force.current);
     force.current = false;
     void (async () => {
       try {
@@ -45,8 +56,8 @@ export function useSmartStream(key: string | null, query: { tmdbid?: number; typ
             const u = ev as unknown as Update;
             setSt((s) => ({
               ...s,
-              data: u.results ? { ok: true, error: u.error ?? null, elapsed: u.elapsed, mode: "smart", season: u.season, media: u.media, library: u.library, groups: u.groups, sources: u.sources, results: u.results } : s.data,
-              error: !u.results && u.error ? u.error : s.error,
+              data: u.results ? { ok: true, error: u.error ?? null, elapsed: u.elapsed, mode: u.mode, season: u.season, media: u.media, library: u.library, groups: u.groups, sources: u.sources, results: u.results } : s.data && { ...s.data, elapsed: u.elapsed, error: u.error ?? s.data.error },
+              error: !s.data && !u.results && !u.busy && u.error ? u.error : s.error,
               tasks: u.tasks, busy: u.busy, round: u.round, more: u.more,
             }));
           }

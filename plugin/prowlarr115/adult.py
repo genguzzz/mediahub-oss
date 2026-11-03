@@ -403,6 +403,11 @@ class Adult:
             t["emby"] = -now()
             self.notify("⚠️ 里番 " + (lib or t["dir"].rsplit("/", 2)[-2]), "入库 3 小时 Emby 还没按 Bangumi 刮削：在 App 里反馈或用 mpctl hentai fix")
 
+    def sukebei_rows(self, q: str, kind: str) -> List[dict]:
+        """资源搜索用的 sukebei 一页（kind: av / hentai）：带磁力的来源条目。"""
+        return [dict(r, magnet=magnet(r["hash"]), site="sukebei", peers=0)
+                for r in self.sukebei(q, CAT_REAL if kind == "av" else CAT_ANIME) if len(r.get("hash") or "") == 40]
+
     def sukebei(self, q: str = "", cat: str = CAT_ANIME) -> List[dict]:
         """sukebei RSS（直连，全局串行 + 429 退避）。返回 [{title, hash, size, seeders, cat}]。"""
         url = f"{SUKEBEI}&c={cat}" + (f"&q={urllib.parse.quote(q)}" if q else "")

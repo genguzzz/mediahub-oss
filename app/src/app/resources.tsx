@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { FlatList, Linking, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
@@ -6,10 +6,10 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Card, CopyText, Chip, ChipRow, EmptyState, ErrorBox, IconButton, Loading, PillButton, Row, Screen, Sheet, Tag, TopBar, confirm, styles, tap, toast, toastError, Pull } from "@/components/ui";
 import { SourceMeta } from "@/components/sources";
 import { useConfig } from "@/lib/remoteConfig";
-import { LANG_LABEL, api, type IngestResult, type MediaDetail, type Resource, type SearchName, type SearchResult, type Source } from "@/lib/api";
+import { LANG_LABEL, api, type IngestResult, type MediaDetail, type Resource, type SearchName, type Source } from "@/lib/api";
 import { ago, bytes, ranges } from "@/lib/format";
 import { useQuery } from "@/lib/query";
-import { useSmartStream } from "@/lib/searchStream";
+import { useSearchStream, type StreamQuery } from "@/lib/searchStream";
 import { useSettings } from "@/lib/settings";
 import { colors } from "@/lib/theme";
 
@@ -41,32 +41,14 @@ export default function ResourcesScreen() {
   // Raw searches wait for the names when there's a work, so the first search already uses the best keyword.
   const waiting = mode === "raw" && !!tmdbid && !p.keyword && !chosen && !detail.data && !detail.error;
 
-  const body = mode === "smart"
-    ? { tmdbid, type, season }
-    : { tmdbid: mode === "raw" ? tmdbid : undefined, type, season: mode === "raw" ? season : undefined, keyword, keywords, sources: picked };
-  const key = `res:${JSON.stringify(body)}`;
-  // Smart search streams over SSE (keyword × indexer, sorted as each answers, next page on scroll). Source searches
-  // go out one request per source (「全部已启用索引器」 = one per enabled Prowlarr indexer) and fill the list as each answers.
-  const smart = useSmartStream(mode === "smart" && !waiting ? key : null, { tmdbid, type, season });
-  const allSources = useQuery(mode !== "smart" ? "sources" : null, () => api<{ sources: Source[] }>("/v1/sources"), { staleMs: 60_000 });
-  // The requests actually sent: 「全部已启用索引器」 expands to each enabled indexer. Sources that are switched off
-  // or gone drop out quietly (a saved default can still name them); indexers Prowlarr has paused after failures
-  // (downTill ahead) are left out and named in the header — Prowlarr would refuse them anyway.
-  const [now] = useState(() => Date.now());
-  const { expanded, skipped } = useMemo(() => {
-    if (mode === "smart") return { expanded: null, skipped: [] as string[] };
-    if (!allSources.data) return { expanded: picked.includes("prowlarr") ? null : picked, skipped: [] as string[] };
-    const byId = new Map(allSources.data.sources.map((x) => [x.id, x]));
-    const on = (id: string) => { const x = byId.get(id); return !!x && x.enabled !== false && x.prowlarrEnabled !== false; };
-    const paused = (id: string) => { const x = byId.get(id); return !!x?.downTill && new Date(x.downTill).getTime() > now; };
-    const all = picked.includes("prowlarr")
-      ? [...new Set([...picked.filter((x) => x !== "prowlarr"), ...allSources.data.sources.filter((x) => x.kind === "prowlarr").map((x) => x.id)])]
-      : picked;
-    const live = all.filter(on);
-    return { expanded: live.filter((x) => !paused(x)), skipped: live.filter(paused).map((x) => byId.get(x)?.name ?? x) };
-  }, [mode, picked, allSources.data, now]);
-  const streamQ = useStreamSearch(mode !== "smart" && !waiting ? key : null, body, expanded);
-  const q = mode === "smart" ? smart : streamQ;
+  // Both modes stream over SSE and fill the list as each source answers (sorted by score), next page on scroll:
+  // smart = the work's keywords × every indexer with MoviePilot's matching; raw = these keywords × the picked sources
+  // (「全部已启用索引器」 is expanded on the server, which skips paused indexers and says so in the result's note).
+  const query: StreamQuery = mode === "smart"
+    ? { mode: "smart", tmdbid, type, season }
+    : { mode: "raw", tmdbid: mode === "raw" ? tmdbid : undefined, type, season: mode === "raw" ? season : undefined, keywords, sources: picked };
+  const key = `res:${JSON.stringify(query)}`;
+  const q = useSearchStream(waiting ? null : key, query);
   const [kwText, setKwText] = useState<string | null>(null);
   const editKeyword = () => {
     const v = (kwText ?? "").trim();
@@ -138,7 +120,7 @@ export default function ResourcesScreen() {
       </View>
       {mode !== "smart" ? (
         <Pressable onPress={() => { tap(); setSourceSheet(true); }} style={{ marginHorizontal: 16, marginBottom: 8 }}>
-          <Text style={styles.faint} numberOfLines={2}>{keywords.length > 1 ? `另有 ${keywords.length - 1} 个关键词 · ` : ""}来源 {expanded?.length ?? picked.length} 个{skipped.length ? `（${skipped.join("、")} 暂停中，已跳过）` : ""}{q.progress && q.progress.done < q.progress.total ? ` · ${q.progress.done}/${q.progress.total} 个已返回` : ""} · 点这里修改</Text>
+          <Text style={styles.faint} numberOfLines={2}>{keywords.length > 1 ? `另有 ${keywords.length - 1} 个关键词 · ` : ""}来源 {q.progress?.total ?? picked.length} 个{q.progress && q.progress.done < q.progress.total ? ` · ${q.progress.done}/${q.progress.total} 个已返回` : ""} · 点这里修改</Text>
         </Pressable>
       ) : null}
 
@@ -184,7 +166,7 @@ export default function ResourcesScreen() {
                   {q.progress && q.progress.done < q.progress.total ? ` · ${q.progress.done}/${q.progress.total} 个来源已返回` : ""}
                   {q.data.library && type === "tv" ? ` · 库里本季已有 ${q.data.library.have.length}/${q.data.library.aired.length} 集` : ""}
                 </Text>
-                {mode === "smart" && smart.busy && smart.open ? <PillButton small variant="soft" icon="stop-circle-outline" label="停止" onPress={smart.stop} /> : null}
+                {q.busy && q.open ? <PillButton small variant="soft" icon="stop-circle-outline" label="停止" onPress={q.stop} /> : null}
               </View>
             ) : null}
           </>
@@ -197,11 +179,11 @@ export default function ResourcesScreen() {
           )
         ) : undefined}
         renderItem={({ item }) => <ResourceRow r={item} submitted={!!submitted[item.id]} onPress={() => setOpen(item)} />}
-        onEndReached={mode === "smart" ? smart.more : undefined}
+        onEndReached={q.more}
         onEndReachedThreshold={0.6}
-        ListFooterComponent={mode === "smart" && smart.data ? (
+        ListFooterComponent={q.data ? (
           <Text style={[styles.faint, { textAlign: "center", paddingVertical: 12 }]}>
-            {smart.loadingMore ? "正在取下一页…" : smart.hasMore ? "继续上滑加载更多" : smart.open || smart.data.results.length ? "各来源都没有更多了" : ""}
+            {q.loadingMore ? "正在取下一页…" : q.hasMore ? "继续上滑加载更多" : q.data.results.length ? "各来源都没有更多了" : ""}
           </Text>
         ) : undefined}
       />
@@ -438,62 +420,5 @@ function SourceSheet({ visible, onClose, picked, keywords, names, showAdult, onA
       <PillButton small variant="soft" icon="settings-outline" label="管理索引源（默认来源、添加 Prowlarr 索引器）" onPress={() => { onClose(); router.push("/indexers"); }} style={{ marginTop: 12, alignSelf: "center" }} />
     </Sheet>
   );
-}
-
-// Source search, one request per source, merged as they answer (de-duplicated by magnet); the chips'
-// counts come from the merged list. `refresh` runs it again.
-function useStreamSearch(key: string | null, body: Record<string, unknown>, sources: string[] | null) {
-  const [nonce, setNonce] = useState(0);
-  const [st, setSt] = useState<{ run: string; data: SearchResult | null; done: number; total: number } | null>(null);
-  const bodyRef = useRef(body);
-  useEffect(() => { bodyRef.current = body; });
-  const run = key && sources ? `${key}#${sources.join(",")}#${nonce}` : null;
-  useEffect(() => {
-    if (!run || !sources?.length) return;
-    let alive = true;
-    const t0 = Date.now();
-    const seen = new Set<string>();
-    const errors: string[] = [];
-    let merged: SearchResult | null = null;
-    let done = 0;
-    const count = (rs: Resource[], f: (r: Resource) => string | undefined): [string, number][] => {
-      const m = new Map<string, number>();
-      for (const r of rs) { const k = f(r); if (k) m.set(k, (m.get(k) ?? 0) + 1); }
-      return [...m.entries()].sort((a, b) => b[1] - a[1]);
-    };
-    for (const one of sources) {
-      void api<SearchResult>("/v1/search", { body: { ...bodyRef.current, sources: [one] }, timeoutMs: 160_000 })
-        .then((r) => {
-          const add = r.results.filter((x) => { const k = x.magnet || x.id; if (seen.has(k)) return false; seen.add(k); return true; });
-          const prev: SearchResult | null = merged;
-          merged = { ...(prev ?? r), results: [...(prev?.results ?? []), ...add] };
-          if (r.error && !errors.includes(r.error)) errors.push(r.error);
-        })
-        .catch((e: unknown) => { errors.push(`${one}：${e instanceof Error ? e.message : String(e)}`); })
-        .finally(() => {
-          done++;
-          if (!alive) return;
-          const m: SearchResult | null = merged;
-          setSt({
-            run,
-            done,
-            total: sources.length,
-            data: m ? { ...m, sources: count(m.results, (x) => x.source), groups: count(m.results, (x) => x.group || undefined), elapsed: Math.round((Date.now() - t0) / 100) / 10, error: errors.join("；") || null } : null,
-          });
-        });
-    }
-    return () => { alive = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [run]);
-  const cur = st && st.run === run ? st : null;
-  const failedAll = cur && cur.done === cur.total && !cur.data;
-  const none = !!run && sources?.length === 0;   // every picked source is paused or switched off
-  return {
-    data: cur?.data ?? undefined,
-    loading: !!run && !none && (!cur || cur.done < cur.total),
-    error: none ? "选中的来源都暂停中或已停用，换几个来源再搜" : failedAll ? "所有来源都没有返回结果" : undefined,
-    refresh: () => setNonce((n) => n + 1),
-    progress: run && sources ? { done: cur?.done ?? 0, total: sources.length } : null,
-  };
 }
 

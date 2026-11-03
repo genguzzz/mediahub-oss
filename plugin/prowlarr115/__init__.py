@@ -40,10 +40,11 @@ from app.sdk.network import RequestUtils
 
 from fastapi import Body
 
+from . import aio
 from . import batch as batch_mod
 from .adult import AV_REJECT, CAT_ANIME, CAT_REAL, CODE_ONLY, JUNK_RX, Adult, av_code, rejected
 from .adult import magnet as adult_magnet
-from .clients import ClientError, Emby
+from .clients import Emby
 from .hub import Hub
 from .pipeline import LIBS, Pipeline, btih as _pipe_btih, ep_of, with_trackers
 from .policy import DEFAULT_POLICY, DEFAULT_QUERY_TEMPLATES, gb_per_hour, load_policy, query_context, render_queries, runtime_minutes, veto, year_conflict
@@ -61,7 +62,6 @@ _PROWLARR_SEM = threading.BoundedSemaphore(4)   # NAS 只有 2GB：2026-10-11 �
 # 当前这次搜索的目标媒体和季号（由包装后的 SearchChain 入口设置），插件资源源调用里拿不到它们
 _TARGET: ContextVar = ContextVar("prowlarr115_target", default=None)
 _SEASONS: ContextVar = ContextVar("prowlarr115_seasons", default=None)
-_PROWLARR_ONE_SEM = threading.BoundedSemaphore(12)   # 单索引器查询（App 渐进搜索按索引器扇出）很轻，限流放宽
 # 同一轮搜索（MP v3.1.2+ 的 SearchSources：网页渐进式搜索、自动订阅）会按每个别名各调一次插件；
 # 插件第一次就用全部关键词搜完，同一轮后面的调用返回空，避免重复结果和重复请求 Prowlarr
 _ROUND: ContextVar = ContextVar("prowlarr115_round", default=None)
@@ -829,7 +829,7 @@ class Prowlarr115(_PluginBase):
 
     def get_api(self) -> List[Dict[str, Any]]:
         """插件 API：运维（测试、任务、重试、批量、AV/里番）+ App 聚合接口 /hub/*。"""
-        return [
+        apis = [
             {"path": "/test", "endpoint": self.api_test, "methods": ["GET"], "summary": "测试 Prowlarr/OpenList/115/qB/Emby 连通"},
             {"path": "/tasks", "endpoint": self.api_tasks, "methods": ["GET"], "summary": "下载任务（115 离线/缓冲/入库/刮削）"},
             {"path": "/run", "endpoint": self.api_run, "methods": ["POST"], "summary": "立即推进一次任务"},
@@ -858,7 +858,8 @@ class Prowlarr115(_PluginBase):
             {"path": "/adult/status", "endpoint": self.api_adult_status, "methods": ["GET"], "summary": "AV/里番 状态"},
             {"path": "/adult/run", "endpoint": self.api_adult_run, "methods": ["POST"], "summary": "立即推进 AV/里番（full=true 含 RSS 和全量搜索）"},
             {"path": "/adult/import", "endpoint": self.api_adult_import, "methods": ["POST"], "summary": "导入旧 NAS 脚本状态：{av, hentai, catalog}"},
-        ] + self._hub_api().routes()
+        ] + self._hub_api().routes()   # 下面统一包成 async（见 aio.py）
+        return [dict(a, endpoint=aio.to_async(a["endpoint"])) for a in apis]
 
     _hub = None
 
@@ -1205,14 +1206,14 @@ class Prowlarr115(_PluginBase):
     _cache: Dict[str, tuple] = {}
     CACHE_TTL = 1200
 
-    def _search(self, keyword: str, mtype: Optional[MediaType], indexers: Optional[List[int]] = None) -> List[TorrentInfo]:
+    def _search(self, keyword: str, mtype: Optional[MediaType]) -> List[TorrentInfo]:
         """带缓存的 Prowlarr 查询：同一关键词 20 分钟内复用（订阅定时搜索、批量入库会反复查同一部，Prowlarr 在 2G 内存的 NAS 上）。"""
         import copy
-        key = f"{mtype.value if mtype else ''}|{keyword}|{','.join(map(str, indexers or []))}"
+        key = f"{mtype.value if mtype else ''}|{keyword}"
         hit = self._cache.get(key)
         if hit and time.time() - hit[0] < self.CACHE_TTL:
             return copy.deepcopy(hit[1])
-        res = self._search_raw(keyword, mtype, indexers)
+        res = self._search_raw(keyword, mtype)
         if len(self._cache) > 300:
             self._cache.clear()
         self._cache[key] = (time.time(), res)
@@ -1244,27 +1245,20 @@ class Prowlarr115(_PluginBase):
         self._cache[key] = (time.time(), out)
         return copy.deepcopy(out)
 
-    def _search_raw(self, keyword: str, mtype: Optional[MediaType], indexers: Optional[List[int]] = None) -> List[TorrentInfo]:
-        return self._prowlarr_page(keyword, mtype, indexers)[0]
-
-    def _prowlarr_page(self, keyword: str, mtype: Optional[MediaType], indexers: Optional[List[int]] = None,
-                       offset: int = 0, limit: Optional[int] = None) -> Tuple[List[TorrentInfo], int]:
-        """调用 Prowlarr /api/v1/search 并映射成 TorrentInfo；返回 (可用结果, Prowlarr 原始条数)。原始条数为 0 = 这一页没东西了。
-        offset/limit 是 Prowlarr 的分页（渐进搜索按索引器翻页）；单索引器查询不打日志（一次搜索有几十个）。"""
-        single = bool(indexers and len(indexers) == 1)
-        params: List[Tuple[str, Any]] = [("query", keyword), ("type", "search"), ("limit", limit or self._max_results)]
-        if offset:
-            params.append(("offset", offset))
-        params += [("indexerIds", i) for i in (indexers or self._indexers)]
-        with (_PROWLARR_ONE_SEM if single else _PROWLARR_SEM):   # 全局限流：批量入库多线程 × 每季多关键词，别把 NAS 上的 Prowlarr 压垮
+    def _search_raw(self, keyword: str, mtype: Optional[MediaType]) -> List[TorrentInfo]:
+        """调用 Prowlarr /api/v1/search（全部索引器）并映射成 TorrentInfo。"""
+        params: List[Tuple[str, Any]] = [("query", keyword), ("type", "search"), ("limit", self._max_results)]
+        params += [("indexerIds", i) for i in self._indexers]
+        with _PROWLARR_SEM:   # 全局限流：批量入库多线程 × 每季多关键词，别把 NAS 上的 Prowlarr 压垮
             res = RequestUtils(headers={"X-Api-Key": self._prowlarr_key}, timeout=self._timeout).get_res(
                 f"{self._prowlarr_url}/api/v1/search", params=params)
         if res is None or res.status_code != 200:
-            if single:
-                raise RuntimeError(f"Prowlarr 返回 {getattr(res, 'status_code', '无响应')}")
             logger.warning(f"【Prowlarr115】Prowlarr 返回 {getattr(res, 'status_code', '无响应')}")
-            return [], 0
-        rows = res.json() or []
+            return []
+        return self._prowlarr_torrents(res.json() or [], keyword, mtype)
+
+    def _prowlarr_torrents(self, rows: List[dict], keyword: str, mtype: Optional[MediaType], log: bool = True) -> List[TorrentInfo]:
+        """Prowlarr 搜索结果 → TorrentInfo：去掉成人/音频书籍分类、垃圾、做种太少、没有 hash（115 离线用不了）的。"""
         out, skipped = [], 0
         for r in rows:
             if r.get("protocol") not in (None, "torrent"):
@@ -1310,10 +1304,10 @@ class Prowlarr115(_PluginBase):
                 uploadvolumefactor=1.0,
                 category=mtype.value if mtype else None,
             ))
-        if not single:
+        if log:
             logger.info(f"【Prowlarr115】{keyword}：Prowlarr 返回 {len(out)} 条可用资源"
                         + (f"，跳过 {skipped} 条无 hash 的" if skipped else ""))
-        return out, len(rows)
+        return out
 
     # ---------------- 下载 ----------------
     @eventmanager.register(ChainEventType.ResourceDownload)
