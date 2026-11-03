@@ -118,8 +118,11 @@ export default function ResourcesScreen() {
           style={{ flex: 1, fontSize: 15, color: colors.text }}
         />
         {(kwText ?? keyword) ? (
-          <Pressable onPress={() => { tap(); setKwText(""); }} hitSlop={10} accessibilityLabel="清空关键词">
-            <Ionicons name="close-circle" size={18} color={colors.textFaint} />
+          // iOS clear-button look: a filled circle in the secondary text color with the card color cut out,
+          // readable on every theme in light and dark (textFaint on card was too close in dark).
+          <Pressable onPress={() => { tap(); setKwText(""); }} hitSlop={10} accessibilityRole="button" accessibilityLabel="清空关键词"
+            style={({ pressed }) => ({ width: 18, height: 18, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: colors.textSoft, opacity: pressed ? 0.6 : 1 })}>
+            <Ionicons name="close" size={12} color={colors.card} />
           </Pressable>
         ) : null}
       </View>
